@@ -5,6 +5,7 @@
 //! `gix`. Rendering and key handling live in `helix-term`.
 
 pub mod diff;
+pub mod patch;
 pub mod repository;
 pub mod transient;
 
@@ -12,6 +13,7 @@ pub use diff::{
     parse_unified_diff, render_patch, DiffHunk, DiffLine, DiffLineKind, FileDiff, FileStatus,
     HunkHeader,
 };
+pub use patch::{apply_patch, build_partial_patch, ApplyError, Selection};
 pub use repository::{Repository, StatusEntry};
 pub use transient::{
     MagitCommand, TransientAction, TransientArgument, TransientGroup, TransientMenu,

@@ -5,11 +5,14 @@
 //! [`crate::parse_unified_diff`], so the model has a single source of truth
 //! and works the same whether a diff came from here or from `git diff`.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 
-use imara_diff::{Algorithm, BasicLineDiffPrinter, InternedInput, UnifiedDiffConfig};
+use imara_diff::{Algorithm, InternedInput, UnifiedDiffConfig, UnifiedDiffPrinter};
+use imara_diff::{Interner, Token};
 
 use crate::diff::{FileDiff, FileStatus};
+use crate::patch::Selection;
 
 /// What can go wrong talking to a repository.
 #[derive(Debug, thiserror::Error)]
@@ -20,6 +23,12 @@ pub enum Error {
     NoWorkTree,
     #[error("git error: {0}")]
     Git(String),
+    #[error("the selection contains no change to apply")]
+    NothingSelected,
+    #[error("{0} is binary; stage the whole file instead")]
+    BinaryFile(PathBuf),
+    #[error(transparent)]
+    Apply(#[from] crate::patch::ApplyError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -196,21 +205,26 @@ impl Repository {
             Err(err) => return Err(err.into()),
         };
 
-        if is_binary(&old) || is_binary(&new) {
-            return Ok(Some(FileDiff {
+        Ok(self.diff_contents(entry, &old, &new))
+    }
+
+    /// Builds the `FileDiff` between two blobs of one path.
+    fn diff_contents(&self, entry: &StatusEntry, old: &[u8], new: &[u8]) -> Option<FileDiff> {
+        if is_binary(old) || is_binary(new) {
+            return Some(FileDiff {
                 path: entry.path.clone(),
                 status: entry.status.clone(),
                 hunks: Vec::new(),
                 folded: false,
                 binary: true,
-            }));
+            });
         }
 
-        let old = String::from_utf8_lossy(&old).into_owned();
-        let new = String::from_utf8_lossy(&new).into_owned();
+        let old = String::from_utf8_lossy(old).into_owned();
+        let new = String::from_utf8_lossy(new).into_owned();
         let body = unified_diff(&old, &new);
         if body.is_empty() {
-            return Ok(None);
+            return None;
         }
 
         // Give the parser the file header it expects, so that one code path
@@ -231,9 +245,124 @@ impl Repository {
             _ => format!("diff --git a/{source} b/{target}\n--- a/{source}\n+++ b/{target}\n"),
         };
 
-        Ok(crate::parse_unified_diff(&format!("{header}{body}"))
+        crate::parse_unified_diff(&format!("{header}{body}"))
             .into_iter()
-            .next())
+            .next()
+    }
+
+    /// The diff of every file that differs between HEAD and the index.
+    ///
+    /// These are the staged changes, and the ones `unstage` reverses.
+    pub fn staged_diff(&self) -> Result<Vec<FileDiff>> {
+        let index = self.inner.index_or_empty().map_err(git)?;
+        let mut diffs = Vec::new();
+
+        for entry in index.entries() {
+            let rela_path = PathBuf::from(entry.path(&index).to_string());
+            let staged = self.blob(entry.id).unwrap_or_default();
+            let head = self.blob_at_head(&rela_path).unwrap_or_default();
+
+            if head == staged {
+                continue;
+            }
+
+            let status = if head.is_empty() {
+                FileStatus::Added
+            } else {
+                FileStatus::Modified
+            };
+            let status_entry = StatusEntry {
+                path: rela_path,
+                status,
+                untracked: false,
+            };
+
+            if let Some(diff) = self.diff_contents(&status_entry, &head, &staged) {
+                diffs.push(diff);
+            }
+        }
+
+        diffs.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(diffs)
+    }
+
+    /// Applies the selected part of `file`'s diff to the index.
+    ///
+    /// `file` must come from [`Repository::worktree_diff`], whose old side is
+    /// the index.
+    pub fn stage(&self, file: &FileDiff, selection: &Selection) -> Result<()> {
+        self.update_index(file, selection, false)
+    }
+
+    /// Reverses the selected part of `file`'s diff out of the index.
+    ///
+    /// `file` must come from [`Repository::staged_diff`], whose new side is
+    /// the index.
+    pub fn unstage(&self, file: &FileDiff, selection: &Selection) -> Result<()> {
+        self.update_index(file, selection, true)
+    }
+
+    /// The shared half of staging and unstaging.
+    ///
+    /// Rather than shelling out to `git apply --cached`, the patch is applied
+    /// to the index's own copy of the file in memory; the result is written as
+    /// a blob and the index entry repointed at it. Nothing touches the working
+    /// tree, so a failed apply cannot cost the user their edits.
+    fn update_index(&self, file: &FileDiff, selection: &Selection, reverse: bool) -> Result<()> {
+        let patch = crate::build_partial_patch(file, selection).ok_or(Error::NothingSelected)?;
+
+        let rela_path = file.path.clone();
+        let base = self.index_blob(&rela_path).unwrap_or_default();
+        let base = String::from_utf8(base).map_err(|_| Error::BinaryFile(rela_path.clone()))?;
+
+        let updated = crate::apply_patch(&base, &patch, reverse)?;
+        let oid = self
+            .inner
+            .write_blob(updated.as_bytes())
+            .map_err(git)?
+            .detach();
+
+        let index = self.inner.index_or_empty().map_err(git)?;
+        let mut index = gix::fs::FileSnapshot::into_owned_or_cloned(index);
+        let path = gix::path::into_bstr(rela_path.as_path()).into_owned();
+
+        match index
+            .entry_mut_by_path_and_stage(path.as_ref(), gix::index::entry::Stage::Unconflicted)
+        {
+            Some(entry) => {
+                entry.id = oid;
+                // The index no longer matches what was last stat'ed on disk;
+                // zeroing it makes git re-read rather than trust the cache.
+                entry.stat = gix::index::entry::Stat::default();
+            }
+            None => {
+                index.dangerously_push_entry(
+                    gix::index::entry::Stat::default(),
+                    oid,
+                    gix::index::entry::Flags::empty(),
+                    gix::index::entry::Mode::FILE,
+                    path.as_ref(),
+                );
+                index.sort_entries();
+            }
+        }
+
+        index
+            .write(gix::index::write::Options::default())
+            .map_err(git)?;
+        Ok(())
+    }
+
+    /// The contents of a path as recorded in the index.
+    fn index_blob(&self, rela_path: &Path) -> Option<Vec<u8>> {
+        let index = self.inner.index_or_empty().ok()?;
+        let path = gix::path::into_bstr(rela_path);
+        let entry = index.entry_by_path(path.as_ref())?;
+        self.blob(entry.id)
+    }
+
+    fn blob(&self, id: gix::ObjectId) -> Option<Vec<u8>> {
+        Some(self.inner.find_object(id).ok()?.detach().data)
     }
 
     /// The contents of a path as of HEAD.
@@ -263,9 +392,68 @@ pub fn unified_diff(old: &str, new: &str) -> String {
     let input = InternedInput::new(old, new);
     let diff = imara_diff::Diff::compute(Algorithm::Histogram, &input);
     diff.unified_diff(
-        &BasicLineDiffPrinter(&input.interner),
+        &NewlinePreservingPrinter(&input.interner),
         UnifiedDiffConfig::default(),
         &input,
     )
     .to_string()
+}
+
+/// A unified-diff printer that marks a line lacking a trailing newline.
+///
+/// imara-diff's own printer silently adds the newline back, which would be a
+/// correctness bug here: staging a file whose last line lost its newline would
+/// write the newline into the index. git's `\ No newline at end of file`
+/// marker carries that fact, and the parser reads it back.
+struct NewlinePreservingPrinter<'a>(&'a Interner<&'a str>);
+
+impl NewlinePreservingPrinter<'_> {
+    fn write_token(&self, mut f: impl fmt::Write, prefix: char, token: Token) -> fmt::Result {
+        let text = self.0[token];
+        write!(f, "{prefix}{text}")?;
+        if !text.ends_with('\n') {
+            writeln!(f)?;
+            writeln!(f, "\\ No newline at end of file")?;
+        }
+        Ok(())
+    }
+}
+
+impl UnifiedDiffPrinter for NewlinePreservingPrinter<'_> {
+    fn display_header(
+        &self,
+        mut f: impl fmt::Write,
+        start_before: u32,
+        start_after: u32,
+        len_before: u32,
+        len_after: u32,
+    ) -> fmt::Result {
+        writeln!(
+            f,
+            "@@ -{},{} +{},{} @@",
+            start_before + 1,
+            len_before,
+            start_after + 1,
+            len_after
+        )
+    }
+
+    fn display_context_token(&self, f: impl fmt::Write, token: Token) -> fmt::Result {
+        self.write_token(f, ' ', token)
+    }
+
+    fn display_hunk(
+        &self,
+        mut f: impl fmt::Write,
+        before: &[Token],
+        after: &[Token],
+    ) -> fmt::Result {
+        for &token in before {
+            self.write_token(&mut f, '-', token)?;
+        }
+        for &token in after {
+            self.write_token(&mut f, '+', token)?;
+        }
+        Ok(())
+    }
 }

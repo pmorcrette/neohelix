@@ -1,0 +1,258 @@
+//! Staging and unstaging against real repositories.
+//!
+//! The index is read back with `git` itself, so these assert what git sees,
+//! not what this crate believes it wrote.
+
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+
+use helix_magit::{Repository, Selection};
+
+fn git(dir: &Path, args: &[&str]) -> Option<String> {
+    let out = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The content of a path as git records it in the index.
+fn index_content(dir: &Path, path: &str) -> String {
+    git(dir, &["show", &format!(":{path}")]).unwrap_or_default()
+}
+
+fn fixture(initial: &str) -> Option<tempfile::TempDir> {
+    let dir = tempfile::tempdir().unwrap();
+    git(dir.path(), &["init", "--initial-branch=main"])?;
+    git(dir.path(), &["config", "user.email", "t@e.invalid"])?;
+    git(dir.path(), &["config", "user.name", "T"])?;
+
+    fs::write(dir.path().join("f.txt"), initial).unwrap();
+    git(dir.path(), &["add", "."])?;
+    git(dir.path(), &["commit", "-m", "initial"])?;
+    Some(dir)
+}
+
+macro_rules! fixture_or_skip {
+    ($initial:expr) => {
+        match fixture($initial) {
+            Some(dir) => dir,
+            None => {
+                eprintln!("skipping: no usable git binary");
+                return;
+            }
+        }
+    };
+}
+
+const FAR_APART_OLD: &str = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\n";
+const FAR_APART_NEW: &str = "A\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nL\n";
+
+#[test]
+fn staging_a_whole_file_matches_git_add() {
+    let dir = fixture_or_skip!("one\ntwo\nthree\n");
+    fs::write(dir.path().join("f.txt"), "one\nTWO\nthree\n").unwrap();
+
+    let repo = Repository::discover(dir.path()).unwrap();
+    let diffs = repo.worktree_diff().unwrap();
+    repo.stage(&diffs[0], &Selection::File).unwrap();
+
+    assert_eq!(index_content(dir.path(), "f.txt"), "one\nTWO\nthree\n");
+    // Nothing is left unstaged, exactly as after `git add`.
+    assert_eq!(
+        git(dir.path(), &["diff", "--name-only"]).unwrap().trim(),
+        ""
+    );
+    assert_eq!(
+        git(dir.path(), &["diff", "--cached", "--name-only"])
+            .unwrap()
+            .trim(),
+        "f.txt"
+    );
+}
+
+#[test]
+fn staging_one_hunk_leaves_the_rest_unstaged() {
+    let dir = fixture_or_skip!(FAR_APART_OLD);
+    fs::write(dir.path().join("f.txt"), FAR_APART_NEW).unwrap();
+
+    let repo = Repository::discover(dir.path()).unwrap();
+    let diffs = repo.worktree_diff().unwrap();
+    assert_eq!(diffs[0].hunks.len(), 2);
+
+    repo.stage(&diffs[0], &Selection::Hunk(0)).unwrap();
+
+    // Only the first edit reached the index.
+    assert_eq!(
+        index_content(dir.path(), "f.txt"),
+        "A\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\n"
+    );
+    // The second edit is still pending, and git agrees the file is both
+    // staged and unstaged.
+    assert_eq!(
+        git(dir.path(), &["diff", "--name-only"]).unwrap().trim(),
+        "f.txt"
+    );
+    assert_eq!(
+        git(dir.path(), &["diff", "--cached", "--name-only"])
+            .unwrap()
+            .trim(),
+        "f.txt"
+    );
+}
+
+#[test]
+fn staging_individual_lines_puts_only_those_lines_in_the_index() {
+    let dir = fixture_or_skip!("a\nb\n");
+    fs::write(dir.path().join("f.txt"), "a\nX\nY\nb\n").unwrap();
+
+    let repo = Repository::discover(dir.path()).unwrap();
+    let diffs = repo.worktree_diff().unwrap();
+
+    let additions: Vec<usize> = diffs[0].hunks[0]
+        .lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.kind == helix_magit::DiffLineKind::Addition)
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(additions.len(), 2);
+
+    repo.stage(
+        &diffs[0],
+        &Selection::Lines {
+            hunk: 0,
+            lines: vec![additions[0]],
+        },
+    )
+    .unwrap();
+
+    assert_eq!(index_content(dir.path(), "f.txt"), "a\nX\nb\n");
+}
+
+#[test]
+fn unstaging_reverses_what_was_staged() {
+    let dir = fixture_or_skip!("one\ntwo\nthree\n");
+    fs::write(dir.path().join("f.txt"), "one\nTWO\nthree\n").unwrap();
+    git(dir.path(), &["add", "f.txt"]).unwrap();
+    assert_eq!(index_content(dir.path(), "f.txt"), "one\nTWO\nthree\n");
+
+    let repo = Repository::discover(dir.path()).unwrap();
+    let staged = repo.staged_diff().unwrap();
+    assert_eq!(staged.len(), 1, "the change is staged");
+
+    repo.unstage(&staged[0], &Selection::File).unwrap();
+
+    // The index is back to HEAD; the edit survives in the working tree.
+    assert_eq!(index_content(dir.path(), "f.txt"), "one\ntwo\nthree\n");
+    assert_eq!(
+        fs::read_to_string(dir.path().join("f.txt")).unwrap(),
+        "one\nTWO\nthree\n"
+    );
+    assert_eq!(
+        git(dir.path(), &["diff", "--cached", "--name-only"])
+            .unwrap()
+            .trim(),
+        ""
+    );
+}
+
+#[test]
+fn unstaging_one_hunk_keeps_the_other_staged() {
+    let dir = fixture_or_skip!(FAR_APART_OLD);
+    fs::write(dir.path().join("f.txt"), FAR_APART_NEW).unwrap();
+    git(dir.path(), &["add", "f.txt"]).unwrap();
+
+    let repo = Repository::discover(dir.path()).unwrap();
+    let staged = repo.staged_diff().unwrap();
+    assert_eq!(staged[0].hunks.len(), 2);
+
+    repo.unstage(&staged[0], &Selection::Hunk(0)).unwrap();
+
+    // The first edit was pulled back out; the second is still staged.
+    assert_eq!(
+        index_content(dir.path(), "f.txt"),
+        "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nL\n"
+    );
+}
+
+#[test]
+fn staging_then_unstaging_returns_the_index_to_head() {
+    let dir = fixture_or_skip!(FAR_APART_OLD);
+    fs::write(dir.path().join("f.txt"), FAR_APART_NEW).unwrap();
+
+    let repo = Repository::discover(dir.path()).unwrap();
+    let diffs = repo.worktree_diff().unwrap();
+    repo.stage(&diffs[0], &Selection::File).unwrap();
+    assert_eq!(index_content(dir.path(), "f.txt"), FAR_APART_NEW);
+
+    let staged = repo.staged_diff().unwrap();
+    repo.unstage(&staged[0], &Selection::File).unwrap();
+
+    assert_eq!(index_content(dir.path(), "f.txt"), FAR_APART_OLD);
+}
+
+#[test]
+fn staging_an_untracked_file_adds_an_index_entry() {
+    let dir = fixture_or_skip!("a\n");
+    fs::write(dir.path().join("new.txt"), "fresh\nfile\n").unwrap();
+
+    let repo = Repository::discover(dir.path()).unwrap();
+    let diffs = repo.worktree_diff().unwrap();
+    let new_file = diffs
+        .iter()
+        .find(|diff| diff.path == Path::new("new.txt"))
+        .expect("the untracked file is in the diff");
+
+    repo.stage(new_file, &Selection::File).unwrap();
+
+    assert_eq!(index_content(dir.path(), "new.txt"), "fresh\nfile\n");
+    assert!(git(dir.path(), &["diff", "--cached", "--name-only"])
+        .unwrap()
+        .contains("new.txt"));
+}
+
+#[test]
+fn staging_a_file_that_lost_its_trailing_newline_keeps_it_lost() {
+    let dir = fixture_or_skip!("a\nb\n");
+    fs::write(dir.path().join("f.txt"), "a\nb").unwrap();
+
+    let repo = Repository::discover(dir.path()).unwrap();
+    let diffs = repo.worktree_diff().unwrap();
+    repo.stage(&diffs[0], &Selection::File).unwrap();
+
+    assert_eq!(index_content(dir.path(), "f.txt"), "a\nb");
+    assert_eq!(
+        git(dir.path(), &["diff", "--name-only"]).unwrap().trim(),
+        "",
+        "the worktree and index agree"
+    );
+}
+
+#[test]
+fn staging_a_stale_diff_is_refused_without_touching_the_index() {
+    let dir = fixture_or_skip!("one\ntwo\nthree\n");
+    fs::write(dir.path().join("f.txt"), "one\nTWO\nthree\n").unwrap();
+
+    let repo = Repository::discover(dir.path()).unwrap();
+    let diffs = repo.worktree_diff().unwrap();
+
+    // Someone rewrites the file — and so the index's side of the diff — from
+    // under the captured diff.
+    fs::write(dir.path().join("f.txt"), "completely\ndifferent\n").unwrap();
+    git(dir.path(), &["add", "f.txt"]).unwrap();
+
+    let before = index_content(dir.path(), "f.txt");
+    assert!(repo.stage(&diffs[0], &Selection::File).is_err());
+    assert_eq!(
+        index_content(dir.path(), "f.txt"),
+        before,
+        "a refused apply leaves the index alone"
+    );
+}
