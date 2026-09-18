@@ -266,9 +266,14 @@ becomes its own node, and a file that should be one node becomes one. None of
 this exists in the fork, and it is what people reach for once a notes
 directory is more than a few weeks old.
 
-- [ ] Extract the subtree at point into a node of its own, in a new file, and
-      leave a link behind where it was. This is the command that keeps a notes
-      directory from turning into a handful of enormous files.
+- [ ] Extract the subtree at point into a node of its own, in a new file. This
+      is the command that keeps a notes directory from turning into a handful
+      of enormous files.
+
+  This item first said the extraction leaves a link behind. Reading upstream's
+  implementation showed it does not, and does not need to: the subtree carries
+  its `:ID:` into the new file, so links that already pointed at it keep
+  resolving.
 - [ ] Promote the whole buffer to a single file-level node, and demote a
       file-level node so its content becomes a subtree.
 - [ ] Refile a node into another node, which is not Org's own refile: the

@@ -411,6 +411,11 @@ impl MappableCommand {
         jumplist_picker, "Open jumplist picker",
         roam_node_find, "Find Org-Roam node",
         roam_backlinks_toggle, "Toggle Org-Roam backlinks panel",
+        roam_promote_buffer, "Promote the buffer to a single Org-Roam node",
+        roam_demote_buffer, "Demote the Org-Roam file node to a heading",
+        roam_extract_subtree, "Extract the subtree at the cursor into its own node",
+        roam_replace_links, "Replace legacy roam: links with id: links",
+        roam_refile, "Refile the subtree at the cursor into another Org-Roam node",
         magit, "Open the Magit transient menu",
         terminal, "Open the integrated terminal",
         symbol_picker, "Open symbol picker",
@@ -3579,6 +3584,67 @@ pub fn toggle_roam_backlinks(compositor: &mut crate::compositor::Compositor) -> 
         true
     } else {
         false
+    }
+}
+
+/// Turns a file whose whole content is one heading into a file-level node.
+fn roam_promote_buffer(cx: &mut Context) {
+    crate::roam::promote_buffer(cx.editor);
+}
+
+/// Turns a file-level node into a single heading holding the file.
+fn roam_demote_buffer(cx: &mut Context) {
+    crate::roam::demote_buffer(cx.editor);
+}
+
+/// Extracts the subtree at the cursor into a node of its own.
+fn roam_extract_subtree(cx: &mut Context) {
+    crate::roam::extract_subtree(cx.editor);
+}
+
+/// Rewrites this buffer's legacy `roam:` links as `id:` links.
+fn roam_replace_links(cx: &mut Context) {
+    crate::roam::replace_roam_links(cx.editor);
+}
+
+/// Picks a node and refiles the subtree at the cursor into it.
+pub fn roam_refile_picker(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    let targets = crate::roam::refile_targets(editor);
+    if targets.is_empty() {
+        editor.set_status("No Org-Roam nodes indexed. Check `editor.roam.directory`.");
+        return None;
+    }
+
+    let columns = [
+        ui::PickerColumn::new(
+            "title",
+            |item: &crate::roam::RefileTarget, _: &PathStyleConfig| item.title.as_str().into(),
+        ),
+        ui::PickerColumn::new(
+            "path",
+            |item: &crate::roam::RefileTarget, config: &PathStyleConfig| {
+                config.stylize(Some(item.path.as_path()), None)
+            },
+        ),
+    ];
+
+    let picker = Picker::new(
+        columns,
+        0, // title
+        targets,
+        PathStyleConfig::new(&editor.theme),
+        |cx, target, _action| {
+            crate::roam::refile_into(cx.editor, &target.path, target.id);
+        },
+    );
+
+    Some(Box::new(overlaid(picker)))
+}
+
+/// Opens the refile picker.
+fn roam_refile(cx: &mut Context) {
+    if let Some(picker) = roam_refile_picker(cx.editor) {
+        cx.push_layer(picker);
     }
 }
 

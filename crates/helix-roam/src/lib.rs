@@ -10,6 +10,7 @@ mod link;
 mod node;
 pub mod parser;
 pub mod query;
+pub mod restructure;
 pub mod scanner;
 
 pub use graph::RoamGraph;
@@ -18,6 +19,7 @@ pub use node::{Node, Timestamp, TodoState};
 pub use parser::{parse_org, FileSettings, ParsedFile};
 pub use query::NodeQuery;
 pub use scanner::{reindex_file, scan_directory, IndexStats};
+pub use uuid::Uuid;
 
 #[cfg(test)]
 mod tests {

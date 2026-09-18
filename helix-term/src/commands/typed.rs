@@ -2239,6 +2239,49 @@ fn roam_node_find(
     Ok(())
 }
 
+macro_rules! roam_buffer_command {
+    ($name:ident, $call:path) => {
+        fn $name(
+            cx: &mut compositor::Context,
+            _args: Args,
+            event: PromptEvent,
+        ) -> anyhow::Result<()> {
+            if event == PromptEvent::Validate {
+                $call(cx.editor);
+            }
+            Ok(())
+        }
+    };
+}
+
+roam_buffer_command!(roam_promote_buffer, crate::roam::promote_buffer);
+roam_buffer_command!(roam_demote_buffer, crate::roam::demote_buffer);
+roam_buffer_command!(roam_extract_subtree, crate::roam::extract_subtree);
+roam_buffer_command!(roam_replace_links, crate::roam::replace_roam_links);
+
+fn roam_refile(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let callback = async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                if let Some(picker) = crate::commands::roam_refile_picker(editor) {
+                    compositor.push(picker);
+                }
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
 fn roam_backlinks_toggle(
     cx: &mut compositor::Context,
     _args: Args,
@@ -3732,6 +3775,61 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &["roam-backlinks"],
         doc: "Show or hide the Org-Roam backlinks panel.",
         fun: roam_backlinks_toggle,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-promote-buffer",
+        aliases: &["roam-promote"],
+        doc: "Turn a buffer holding one heading into an Org-Roam file node.",
+        fun: roam_promote_buffer,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-demote-buffer",
+        aliases: &["roam-demote"],
+        doc: "Turn an Org-Roam file node into a single heading holding the file.",
+        fun: roam_demote_buffer,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-extract-subtree",
+        aliases: &["roam-extract"],
+        doc: "Extract the subtree at the cursor into a node of its own.",
+        fun: roam_extract_subtree,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-replace-links",
+        aliases: &[],
+        doc: "Rewrite this buffer's legacy roam: links as id: links.",
+        fun: roam_replace_links,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-refile",
+        aliases: &[],
+        doc: "Refile the subtree at the cursor into another Org-Roam node.",
+        fun: roam_refile,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
