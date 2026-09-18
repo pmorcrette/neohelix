@@ -38,7 +38,8 @@ You are developing a custom fork of Helix in Rust. The goal is to integrate:
 remains after them is Emacs integration rather than Org, and is named at the
 end of Task 1.16. Tasks 1.17 to 1.20 were derived the same way from Org-Roam's
 own sources: the interactive commands its modules define, its extensions, and
-the schema its database stores.*
+the schema its database stores. Task 1.21 was derived from Org's
+`org-options-keywords` and `org-startup-options` declarations directly.*
 
 ### Task 1.4: Section Folding
 
@@ -324,6 +325,53 @@ Two extensions upstream ships that the fork has no equivalent of.
 - [ ] Export: resolve `id:` links to something meaningful in the exported
       output rather than leaving a raw UUID. This is a prerequisite for
       Task 1.9's export being useful on a notes directory at all.
+
+### Task 1.21: In-Buffer Settings
+
+Org defines 33 `#+KEYWORD:` settings and 70 `#+STARTUP:` options driving 29
+variables. The fork's parser reads two of them, `#+title:` and `#+filetags:`,
+and silently ignores the rest.
+
+This matters more than a missing feature would, because several of these change
+how a file must be *read*. Ignoring them does not remove a capability; it
+produces a wrong index that nothing reports.
+
+- [ ] `#+TODO:`, `#+SEQ_TODO:`, `#+TYP_TODO:`. The parser currently leaves TODO
+      keywords in the headline title on purpose — the code says so — because
+      the keyword set is per-file and guessing would be worse. The consequence
+      is that a node reads `TODO Write the thing` in the picker, and matches
+      that way when Task 1.8 looks for unlinked references. Reading the keyword
+      declaration is what makes stripping them safe.
+- [ ] `#+SETUPFILE:`, which pulls settings in from another file. This one is
+      structural: it means a file's meaning depends on a second file, and the
+      indexer currently reparses exactly one file per save. A setupfile change
+      has to invalidate every file that includes it.
+- [ ] `#+PROPERTY:` for file-level property defaults, which Task 1.11's
+      inheritance builds on.
+- [ ] `#+TAGS:` and `#+PRIORITIES:`, which define the tag alist and the
+      priority range a file uses. Priority cookies are currently stripped for
+      any letter, without knowing the declared range.
+- [ ] `#+CATEGORY:` and `#+ARCHIVE:`, needed by Tasks 1.7 and 1.5 respectively.
+- [ ] `#+DRAWERS:` for custom drawer names, so a drawer the file declares is
+      not parsed as content.
+- [ ] `#+STARTUP:` folding and visibility options (`overview`, `content`,
+      `showeverything`, `hidedrawers`, `hideblocks`, …), which is how a file
+      says how it wants to open. These feed Task 1.4 and are useless before it.
+- [ ] `#+STARTUP:` logging options (`logdone`, `logdrawer`, `logrepeat`, …),
+      which Task 1.11 needs to know what to record.
+- [ ] The export and citation keywords — `#+OPTIONS:`, `#+INCLUDE:`,
+      `#+MACRO:`, `#+BIBLIOGRAPHY:`, `#+CITE_EXPORT:` — belong with Tasks 1.9
+      and 1.14 rather than here.
+- [ ] Keyword matching must be case-insensitive, as Org's is. The parser
+      already lowercases keys, so this is a property to keep rather than add.
+
+*On the global variables: Org ships 1037 `defcustom` declarations, concentrated
+in `org.el` (165), `org-agenda.el` (119) and the export backends (`ox-html`
+69, `ox-latex` 59, `ox` 54). Porting that surface is not a goal and is not
+filed as a gap. Most of it is Emacs presentation or export tuning that the fork
+will re-decide in Helix's own configuration idiom. What is filed above is the
+subset that changes how a file parses, because those are the ones where being
+wrong is silent.*
 
 ---
 
