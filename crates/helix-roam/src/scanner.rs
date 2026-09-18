@@ -84,6 +84,9 @@ fn apply_parsed(graph: &mut RoamGraph, parsed: &[ParsedFile], errors: usize) -> 
         for (key, id) in &file.refs {
             graph.register_ref(key.clone(), *id);
         }
+        for (key, id) in &file.citations {
+            graph.add_citation(key.clone(), *id);
+        }
     }
 
     for file in parsed {

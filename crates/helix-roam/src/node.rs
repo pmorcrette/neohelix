@@ -2,6 +2,42 @@ use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
+/// A headline's TODO state.
+///
+/// Carries whether it means "done" because only the declaring file knows, and
+/// the graph spans files.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TodoState {
+    /// The keyword as written, e.g. `NEXT`.
+    pub keyword: String,
+    /// Whether the file puts this keyword after the `|`.
+    pub done: bool,
+}
+
+/// An Org timestamp, reduced to the parts a query needs.
+///
+/// Field order makes the derived ordering chronological. Repeaters, warning
+/// periods and ranges are not modelled here — a timestamp carrying one is
+/// still read for its date, and the full model belongs to the agenda work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Timestamp {
+    pub year: i32,
+    pub month: u32,
+    pub day: u32,
+    /// `None` for a date without a time of day.
+    pub hour: Option<u32>,
+    pub minute: Option<u32>,
+    /// `<…>` is active and appears in the agenda; `[…]` is not.
+    pub active: bool,
+}
+
+impl Timestamp {
+    /// The date alone, for comparing days rather than instants.
+    pub fn date(&self) -> (i32, u32, u32) {
+        (self.year, self.month, self.day)
+    }
+}
+
 /// A single Org-Roam node.
 ///
 /// In Org-Roam v2 a node is any headline — or the file-level preamble — that
@@ -20,6 +56,27 @@ pub struct Node {
     pub tags: Vec<String>,
     /// Alternative titles declared through `:ROAM_ALIASES:`.
     pub aliases: Vec<String>,
+    /// Outline depth: 1 for a top-level headline, 0 for the file-level node.
+    pub level: usize,
+    /// The node's TODO state, when its headline carries one.
+    pub todo: Option<TodoState>,
+    /// The priority letter, when the headline carries a cookie the file
+    /// declares.
+    pub priority: Option<char>,
+    /// `SCHEDULED:` from the planning line under the headline.
+    pub scheduled: Option<Timestamp>,
+    /// `DEADLINE:` from the same line.
+    pub deadline: Option<Timestamp>,
+    /// Titles of the headlines above this one, outermost first.
+    ///
+    /// Complete regardless of which ancestors are themselves nodes: a
+    /// headline without an `:ID:` still names a level of the outline.
+    pub outline_path: Vec<String>,
+    /// Properties of the node's drawer, keys lowercased.
+    ///
+    /// Excludes the ones with fields of their own — `:ID:`,
+    /// `:ROAM_ALIASES:` and `:ROAM_REFS:` — so nothing is stored twice.
+    pub properties: Vec<(String, String)>,
     /// Zero-based line of the node's `:ID:` property within `file_path`.
     ///
     /// This is what the node picker jumps to, so it points at the `:ID:`
@@ -36,6 +93,13 @@ impl Node {
             file_path: file_path.into(),
             tags: Vec::new(),
             aliases: Vec::new(),
+            level: 0,
+            todo: None,
+            priority: None,
+            scheduled: None,
+            deadline: None,
+            outline_path: Vec::new(),
+            properties: Vec::new(),
             line: 0,
         }
     }

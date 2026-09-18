@@ -6,6 +6,7 @@ use petgraph::visit::EdgeRef;
 use petgraph::Direction;
 use uuid::Uuid;
 
+use crate::query::NodeQuery;
 use crate::{Link, Node};
 
 /// An in-memory Org-Roam v2 knowledge graph.
@@ -31,6 +32,8 @@ pub struct RoamGraph {
     /// [`RoamGraph::add_link_deferred`] parks those here until
     /// [`RoamGraph::resolve_pending_links`] can place them.
     pending: Vec<(Uuid, Uuid, Link)>,
+    /// Bibliography keys, each mapped to the nodes citing them.
+    citations: HashMap<String, Vec<Uuid>>,
     /// `:ROAM_REFS:` keys, each mapped to the node claiming it.
     ///
     /// A link whose target is not an `[[id:…]]` resolves through this map, so
@@ -164,6 +167,32 @@ impl RoamGraph {
     }
 
     /// The node claiming `key` as one of its `:ROAM_REFS:`.
+    /// Records that `node_id` cites `key`.
+    pub fn add_citation(&mut self, key: impl Into<String>, node_id: Uuid) {
+        let citing = self.citations.entry(key.into()).or_default();
+        if !citing.contains(&node_id) {
+            citing.push(node_id);
+        }
+    }
+
+    /// The nodes citing `key`.
+    pub fn cited_by(&self, key: &str) -> Vec<&Node> {
+        self.citations
+            .get(key)
+            .map(|ids| ids.iter().filter_map(|id| self.get_node(id)).collect())
+            .unwrap_or_default()
+    }
+
+    /// Every bibliography key the graph has seen.
+    pub fn citation_keys(&self) -> impl Iterator<Item = &str> {
+        self.citations.keys().map(String::as_str)
+    }
+
+    /// The nodes matching `query`, in insertion order.
+    pub fn query(&self, query: &NodeQuery) -> Vec<&Node> {
+        self.nodes().filter(|node| query.matches(node)).collect()
+    }
+
     pub fn resolve_ref(&self, key: &str) -> Option<Uuid> {
         self.refs.get(key).copied()
     }
@@ -174,6 +203,12 @@ impl RoamGraph {
     /// slot, which silently invalidates that node's cached index, so the
     /// `:ID:` map is repaired here rather than left stale.
     pub fn remove_node(&mut self, node_id: &Uuid) -> Option<Node> {
+        // A node that is going away must not leave its citations behind.
+        self.citations.retain(|_, citing| {
+            citing.retain(|id| id != node_id);
+            !citing.is_empty()
+        });
+
         let index = self.indices.remove(node_id)?;
         let last = NodeIndex::new(self.graph.node_count() - 1);
 
