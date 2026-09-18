@@ -13,4 +13,11 @@ homepage.workspace = true
 
 [dependencies]
 petgraph = { version = "0.6", default-features = false, features = ["graphmap", "stable_graph"] }
-uuid = { version = "1.0", features = ["v4"] }
+uuid = { version = "1.0", features = ["v4", "v5"] }
+ignore = "0.4"
+parking_lot.workspace = true
+tokio = { version = "1", features = ["rt"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { version = "1", features = ["rt", "macros"] }

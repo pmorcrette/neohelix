@@ -8,10 +8,14 @@
 mod graph;
 mod link;
 mod node;
+pub mod parser;
+pub mod scanner;
 
 pub use graph::RoamGraph;
 pub use link::Link;
 pub use node::Node;
+pub use parser::{parse_org, ParsedFile};
+pub use scanner::{reindex_file, scan_directory, IndexStats};
 
 #[cfg(test)]
 mod tests {
@@ -132,6 +136,134 @@ mod tests {
         assert!(graph.get_node(&unknown).is_none());
         assert!(graph.get_backlinks(&unknown).is_empty());
         assert!(graph.get_forward_links(&unknown).is_empty());
+    }
+
+    #[test]
+    fn removing_a_node_keeps_every_other_lookup_valid() {
+        // petgraph fills the freed slot with its last node, which invalidates
+        // that node's cached index unless the id map is repaired.
+        let mut graph = RoamGraph::new();
+        let nodes: Vec<Node> = (0..8).map(|i| node(&format!("n{i}"))).collect();
+        let ids: Vec<Uuid> = nodes.iter().map(|n| n.id).collect();
+
+        for node in nodes {
+            graph.insert_node(node);
+        }
+        // A hub every other node links to.
+        for (i, id) in ids.iter().enumerate() {
+            if i != 0 {
+                assert!(graph.add_link(*id, ids[0], Link::Id));
+            }
+        }
+
+        // Remove from the middle, which is where the swap-with-last happens.
+        assert_eq!(graph.remove_node(&ids[3]).unwrap().title, "n3");
+
+        assert_eq!(graph.node_count(), 7);
+        assert!(!graph.contains_node(&ids[3]));
+        for (i, id) in ids.iter().enumerate() {
+            if i == 3 {
+                continue;
+            }
+            let found = graph.get_node(id).expect("node should still resolve");
+            assert_eq!(found.id, *id, "id map points at the wrong node");
+            assert_eq!(found.title, format!("n{i}"));
+        }
+
+        // n3's link to the hub went with it; the other six remain.
+        assert_eq!(graph.get_backlinks(&ids[0]).len(), 6);
+    }
+
+    #[test]
+    fn removing_the_last_node_is_handled() {
+        let mut graph = RoamGraph::new();
+        let a = node("a");
+        let b = node("b");
+        let (a_id, b_id) = (a.id, b.id);
+        graph.insert_node(a);
+        graph.insert_node(b);
+
+        assert!(graph.remove_node(&b_id).is_some());
+        assert_eq!(graph.get_node(&a_id).unwrap().title, "a");
+
+        assert!(graph.remove_node(&a_id).is_some());
+        assert!(graph.is_empty());
+        assert!(graph.remove_node(&a_id).is_none());
+    }
+
+    #[test]
+    fn remove_nodes_in_file_drops_only_that_file() {
+        let mut graph = RoamGraph::new();
+        let keep = node("keep");
+        let drop_a = Node::new(Uuid::new_v4(), "a", "/notes/gone.org");
+        let drop_b = Node::new(Uuid::new_v4(), "b", "/notes/gone.org");
+        let (keep_id, drop_a_id) = (keep.id, drop_a.id);
+
+        graph.insert_node(keep);
+        graph.insert_node(drop_a);
+        graph.insert_node(drop_b);
+        assert!(graph.add_link(drop_a_id, keep_id, Link::Id));
+
+        let removed = graph.remove_nodes_in_file(std::path::Path::new("/notes/gone.org"));
+
+        assert_eq!(removed.len(), 2);
+        assert_eq!(graph.node_count(), 1);
+        assert!(graph.contains_node(&keep_id));
+        assert!(graph.get_backlinks(&keep_id).is_empty());
+    }
+
+    #[test]
+    fn deferred_links_are_placed_once_their_target_appears() {
+        let mut graph = RoamGraph::new();
+        let source = node("source");
+        let source_id = source.id;
+        let target_id = Uuid::new_v4();
+
+        graph.insert_node(source);
+        graph.add_link_deferred(source_id, target_id, Link::Id);
+
+        assert_eq!(graph.pending_link_count(), 1);
+        assert_eq!(graph.link_count(), 0);
+
+        // The target is indexed later, by a save of another file.
+        graph.insert_node(Node::new(target_id, "target", "/notes/target.org"));
+        assert_eq!(graph.resolve_pending_links(), 1);
+
+        assert_eq!(graph.pending_link_count(), 0);
+        assert_eq!(titles(&graph.get_backlinks(&target_id)), ["source"]);
+    }
+
+    #[test]
+    fn pending_links_are_dropped_with_their_source() {
+        let mut graph = RoamGraph::new();
+        let source = node("source");
+        let source_id = source.id;
+        graph.insert_node(source);
+        graph.add_link_deferred(source_id, Uuid::new_v4(), Link::Id);
+
+        graph.remove_nodes_in_file(std::path::Path::new("/notes/source.org"));
+
+        assert_eq!(graph.pending_link_count(), 0);
+        assert_eq!(graph.resolve_pending_links(), 0);
+    }
+
+    #[test]
+    fn refs_resolve_to_the_node_claiming_them() {
+        let mut graph = RoamGraph::new();
+        let paper = node("paper");
+        let paper_id = paper.id;
+        graph.insert_node(paper);
+        graph.register_ref("https://example.test/paper", paper_id);
+
+        assert_eq!(
+            graph.resolve_ref("https://example.test/paper"),
+            Some(paper_id)
+        );
+        assert_eq!(graph.resolve_ref("https://example.test/other"), None);
+
+        // A ref does not outlive the node that claimed it.
+        graph.remove_node(&paper_id);
+        assert_eq!(graph.resolve_ref("https://example.test/paper"), None);
     }
 
     #[test]

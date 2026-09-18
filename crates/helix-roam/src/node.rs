@@ -20,6 +20,11 @@ pub struct Node {
     pub tags: Vec<String>,
     /// Alternative titles declared through `:ROAM_ALIASES:`.
     pub aliases: Vec<String>,
+    /// Zero-based line of the node's `:ID:` property within `file_path`.
+    ///
+    /// This is what the node picker jumps to, so it points at the `:ID:`
+    /// itself rather than at the headline above it.
+    pub line: usize,
 }
 
 impl Node {
@@ -31,6 +36,7 @@ impl Node {
             file_path: file_path.into(),
             tags: Vec::new(),
             aliases: Vec::new(),
+            line: 0,
         }
     }
 
@@ -43,6 +49,12 @@ impl Node {
     /// Builder-style setter for [`Node::aliases`].
     pub fn with_aliases<T: Into<String>>(mut self, aliases: impl IntoIterator<Item = T>) -> Self {
         self.aliases = aliases.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Builder-style setter for [`Node::line`].
+    pub fn with_line(mut self, line: usize) -> Self {
+        self.line = line;
         self
     }
 

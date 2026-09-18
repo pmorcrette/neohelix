@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
@@ -24,6 +25,17 @@ pub struct RoamGraph {
     graph: DiGraph<Node, Link>,
     /// Maps a node's `:ID:` to its position in `graph`.
     indices: HashMap<Uuid, NodeIndex>,
+    /// Links whose endpoints were not both known when they were recorded.
+    ///
+    /// A file may link to a node in a file that has not been indexed yet, so
+    /// [`RoamGraph::add_link_deferred`] parks those here until
+    /// [`RoamGraph::resolve_pending_links`] can place them.
+    pending: Vec<(Uuid, Uuid, Link)>,
+    /// `:ROAM_REFS:` keys, each mapped to the node claiming it.
+    ///
+    /// A link whose target is not an `[[id:…]]` resolves through this map, so
+    /// citing a node's external identifier produces a [`Link::Ref`] edge.
+    refs: HashMap<String, Uuid>,
 }
 
 impl RoamGraph {
@@ -83,6 +95,97 @@ impl RoamGraph {
     /// Returns an empty vector for an unknown id. The order is unspecified.
     pub fn get_forward_links(&self, node_id: &Uuid) -> Vec<(&Node, &Link)> {
         self.neighbours(node_id, Direction::Outgoing)
+    }
+
+    /// Records a link, parking it if either endpoint is still unknown.
+    ///
+    /// Indexing visits files in directory order, so a link is routinely seen
+    /// before its target. Unlike [`RoamGraph::add_link`], this never drops
+    /// one: [`RoamGraph::resolve_pending_links`] places it once both ends are
+    /// in the graph.
+    pub fn add_link_deferred(&mut self, source: Uuid, target: Uuid, link: Link) {
+        if !self.add_link(source, target, link) {
+            self.pending.push((source, target, link));
+        }
+    }
+
+    /// Places every parked link whose endpoints are now both known.
+    ///
+    /// Returns how many were placed. Links whose source no longer exists are
+    /// discarded; links whose target is still missing stay parked, so a node
+    /// added by a later save picks up the backlinks pointing at it.
+    pub fn resolve_pending_links(&mut self) -> usize {
+        let mut placed = 0;
+        let mut still_pending = Vec::new();
+
+        for (source, target, link) in std::mem::take(&mut self.pending) {
+            if self.add_link(source, target, link) {
+                placed += 1;
+            } else if self.indices.contains_key(&source) {
+                still_pending.push((source, target, link));
+            }
+        }
+
+        self.pending = still_pending;
+        placed
+    }
+
+    /// The number of links still waiting for their target to be indexed.
+    pub fn pending_link_count(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// Drops every node parsed out of `path`, along with its links.
+    ///
+    /// Returns the ids that were removed, so a caller re-indexing the file can
+    /// tell which nodes disappeared from it.
+    pub fn remove_nodes_in_file(&mut self, path: &Path) -> Vec<Uuid> {
+        let doomed: Vec<Uuid> = self
+            .graph
+            .node_weights()
+            .filter(|node| node.file_path == path)
+            .map(|node| node.id)
+            .collect();
+
+        for id in &doomed {
+            self.remove_node(id);
+        }
+
+        // Links out of the removed nodes must not linger as pending work.
+        self.pending
+            .retain(|(source, _, _)| self.indices.contains_key(source));
+
+        doomed
+    }
+
+    /// Registers a `:ROAM_REFS:` key for `node_id`.
+    pub fn register_ref(&mut self, key: impl Into<String>, node_id: Uuid) {
+        self.refs.insert(key.into(), node_id);
+    }
+
+    /// The node claiming `key` as one of its `:ROAM_REFS:`.
+    pub fn resolve_ref(&self, key: &str) -> Option<Uuid> {
+        self.refs.get(key).copied()
+    }
+
+    /// Removes a node and every link touching it.
+    ///
+    /// `petgraph::Graph` fills the hole by moving its last node into the freed
+    /// slot, which silently invalidates that node's cached index, so the
+    /// `:ID:` map is repaired here rather than left stale.
+    pub fn remove_node(&mut self, node_id: &Uuid) -> Option<Node> {
+        let index = self.indices.remove(node_id)?;
+        let last = NodeIndex::new(self.graph.node_count() - 1);
+
+        let removed = self.graph.remove_node(index)?;
+        self.refs.retain(|_, claimant| claimant != node_id);
+
+        if index != last {
+            let moved = self.graph[index].id;
+            self.indices.insert(moved, index);
+        }
+
+        Some(removed)
     }
 
     /// Looks a node up by its `:ID:`, in `O(1)`.
