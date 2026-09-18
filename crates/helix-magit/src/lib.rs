@@ -4,11 +4,13 @@
 //! model of a diff, the transient-menu model, and a thin Git layer over
 //! `gix`. Rendering and key handling live in `helix-term`.
 
+pub mod command;
 pub mod diff;
 pub mod patch;
 pub mod repository;
 pub mod transient;
 
+pub use command::{resolve, GitCommand, GitOutput, Plan, Requirement};
 pub use diff::{
     parse_unified_diff, render_patch, DiffHunk, DiffLine, DiffLineKind, FileDiff, FileStatus,
     HunkHeader,

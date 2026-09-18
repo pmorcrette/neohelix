@@ -1,4 +1,5 @@
 mod completion;
+pub mod confirm;
 pub mod diff_view;
 mod document;
 pub(crate) mod editor;

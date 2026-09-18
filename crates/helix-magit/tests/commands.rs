@@ -1,0 +1,235 @@
+//! Running the resolved commands against real repositories.
+
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+
+use helix_magit::command::{head_is_pushed, head_message, GitCommand};
+use helix_magit::transient::MagitCommand;
+use helix_magit::{resolve, Requirement};
+
+fn git(dir: &Path, args: &[&str]) -> Option<String> {
+    let out = Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_AUTHOR_NAME", "T")
+        .env("GIT_AUTHOR_EMAIL", "t@e.invalid")
+        .env("GIT_COMMITTER_NAME", "T")
+        .env("GIT_COMMITTER_EMAIL", "t@e.invalid")
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// A repository with one commit and a bare remote to push to.
+fn fixture() -> Option<(tempfile::TempDir, std::path::PathBuf)> {
+    let dir = tempfile::tempdir().unwrap();
+    let work = dir.path().join("work");
+    let remote = dir.path().join("remote.git");
+    fs::create_dir_all(&work).unwrap();
+
+    Command::new("git")
+        .args(["init", "--bare", remote.to_str()?])
+        .output()
+        .ok()?;
+    git(
+        dir.path(),
+        &["init", "--initial-branch=main", work.to_str()?],
+    )?;
+    git(&work, &["config", "user.email", "t@e.invalid"])?;
+    git(&work, &["config", "user.name", "T"])?;
+    git(&work, &["remote", "add", "origin", remote.to_str()?])?;
+
+    fs::write(work.join("f.txt"), "one\n").unwrap();
+    git(&work, &["add", "."])?;
+    git(&work, &["commit", "-m", "initial"])?;
+    git(&work, &["push", "-u", "origin", "main"])?;
+
+    Some((dir, work))
+}
+
+macro_rules! fixture_or_skip {
+    () => {
+        match fixture() {
+            Some(pair) => pair,
+            None => {
+                eprintln!("skipping: no usable git binary");
+                return;
+            }
+        }
+    };
+}
+
+/// Runs a resolved plan, as the editor would.
+fn run(work: &Path, command: MagitCommand, args: &[&str]) -> helix_magit::GitOutput {
+    let args: Vec<String> = args.iter().map(ToString::to_string).collect();
+    let plan = resolve(command, &args).expect("this action runs something");
+    assert_eq!(
+        plan.requirement,
+        Requirement::None,
+        "this plan still needs input"
+    );
+    GitCommand::new(work, plan.args).run().unwrap()
+}
+
+#[test]
+fn a_commit_is_created_from_a_message_file() {
+    let (_dir, work) = fixture_or_skip!();
+    fs::write(work.join("f.txt"), "two\n").unwrap();
+    git(&work, &["add", "f.txt"]).unwrap();
+
+    // The editor writes the message to a file and passes it with `-F`, which
+    // is what keeps the subprocess from wanting an editor.
+    let message = work.join(".git").join("COMMIT_EDITMSG_HELIX");
+    fs::write(&message, "a new commit\n\nwith a body\n").unwrap();
+
+    let plan = resolve(MagitCommand::Commit, &[]).unwrap();
+    let mut args = plan.args;
+    args.push("-F".into());
+    args.push(message.to_string_lossy().into_owned());
+
+    let output = GitCommand::new(&work, args).run().unwrap();
+    assert!(output.success, "{}", output.summary());
+
+    assert_eq!(head_message(&work).unwrap(), "a new commit\n\nwith a body");
+}
+
+#[test]
+fn extend_folds_the_staged_changes_into_head() {
+    let (_dir, work) = fixture_or_skip!();
+    let before = git(&work, &["rev-list", "--count", "HEAD"]).unwrap();
+
+    fs::write(work.join("f.txt"), "extended\n").unwrap();
+    git(&work, &["add", "f.txt"]).unwrap();
+
+    let output = run(&work, MagitCommand::CommitExtend, &[]);
+    assert!(output.success, "{}", output.summary());
+
+    // The message is untouched and no commit was added.
+    assert_eq!(head_message(&work).unwrap(), "initial");
+    assert_eq!(
+        git(&work, &["rev-list", "--count", "HEAD"]).unwrap(),
+        before
+    );
+    assert_eq!(git(&work, &["show", "HEAD:f.txt"]).unwrap(), "extended\n");
+}
+
+#[test]
+fn a_push_reaches_the_remote() {
+    let (_dir, work) = fixture_or_skip!();
+    fs::write(work.join("f.txt"), "pushed\n").unwrap();
+    git(&work, &["add", "f.txt"]).unwrap();
+    git(&work, &["commit", "-m", "second"]).unwrap();
+
+    let output = run(&work, MagitCommand::Push, &[]);
+    assert!(output.success, "{}", output.summary());
+
+    // The remote now has the commit, which is what `head_is_pushed` reads.
+    assert!(head_is_pushed(&work));
+    let local = git(&work, &["rev-parse", "HEAD"]).unwrap();
+    let remote = git(&work, &["rev-parse", "origin/main"]).unwrap();
+    assert_eq!(local, remote);
+}
+
+#[test]
+fn an_unpushed_commit_is_recognised_as_such() {
+    let (_dir, work) = fixture_or_skip!();
+    assert!(head_is_pushed(&work), "the fixture pushed its first commit");
+
+    fs::write(work.join("f.txt"), "local only\n").unwrap();
+    git(&work, &["add", "f.txt"]).unwrap();
+    git(&work, &["commit", "-m", "local"]).unwrap();
+
+    assert!(
+        !head_is_pushed(&work),
+        "a commit that was never pushed must not look pushed"
+    );
+}
+
+#[test]
+fn a_fetch_updates_the_remote_tracking_branch() {
+    let (_dir, work) = fixture_or_skip!();
+
+    // Another clone pushes something the first one has not seen.
+    let other = work.parent().unwrap().join("other");
+    let remote = work.parent().unwrap().join("remote.git");
+    // The bare repo's HEAD may still point at an unborn default branch, so
+    // the branch to work on is named explicitly.
+    let cloned = Command::new("git")
+        .args([
+            "clone",
+            "-b",
+            "main",
+            remote.to_str().unwrap(),
+            other.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        cloned.status.success(),
+        "clone failed: {}",
+        String::from_utf8_lossy(&cloned.stderr)
+    );
+    git(&other, &["config", "user.email", "t@e.invalid"]).unwrap();
+    git(&other, &["config", "user.name", "T"]).unwrap();
+    fs::write(other.join("f.txt"), "from elsewhere\n").unwrap();
+    git(&other, &["add", "f.txt"]).unwrap();
+    git(&other, &["commit", "-m", "elsewhere"]).unwrap();
+    git(&other, &["push"]).unwrap();
+
+    let output = run(&work, MagitCommand::Fetch, &[]);
+    assert!(output.success, "{}", output.summary());
+
+    assert_eq!(
+        git(&work, &["show", "origin/main:f.txt"]).unwrap(),
+        "from elsewhere\n"
+    );
+}
+
+#[test]
+fn a_failing_command_reports_gits_own_message() {
+    let (_dir, work) = fixture_or_skip!();
+    // Nothing is staged, so the commit is refused.
+    let plan = resolve(MagitCommand::CommitFixup, &[]).unwrap();
+    let output = GitCommand::new(&work, plan.args).run().unwrap();
+
+    assert!(!output.success);
+    assert!(
+        !output.summary().is_empty(),
+        "the failure should carry a message"
+    );
+}
+
+#[test]
+fn a_command_that_would_want_an_editor_does_not_hang() {
+    let (_dir, work) = fixture_or_skip!();
+    fs::write(work.join("f.txt"), "amended\n").unwrap();
+    git(&work, &["add", "f.txt"]).unwrap();
+
+    // `commit --amend` without `--no-edit` or `-F` opens an editor. With the
+    // environment this crate sets, it must finish instead of blocking.
+    let started = std::time::Instant::now();
+    let output = GitCommand::new(&work, vec!["commit".into(), "--amend".into()])
+        .run()
+        .unwrap();
+
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "the command blocked on an editor"
+    );
+    assert!(output.success, "{}", output.summary());
+    // `GIT_EDITOR=true` accepts the existing message unchanged.
+    assert_eq!(head_message(&work).unwrap(), "initial");
+}
+
+#[test]
+fn a_rebase_abort_outside_a_rebase_fails_without_hanging() {
+    let (_dir, work) = fixture_or_skip!();
+    let output = run(&work, MagitCommand::RebaseAbort, &[]);
+    assert!(!output.success);
+    assert!(!output.summary().is_empty());
+}

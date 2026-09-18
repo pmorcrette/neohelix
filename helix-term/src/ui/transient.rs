@@ -223,7 +223,7 @@ impl Component for TransientOverlay {
         }
     }
 
-    fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
+    fn handle_event(&mut self, event: &Event, _cx: &mut Context) -> EventResult {
         let Event::Key(key) = event else {
             // The menu is modal: swallow everything, so a stray mouse event
             // does not reach the editor underneath.
@@ -243,7 +243,7 @@ impl Component for TransientOverlay {
                 ..
             } => match self.menu.handle_key(*c) {
                 TransientEvent::Toggled => return EventResult::Consumed(None),
-                TransientEvent::Run(command) => return self.run(command, cx, close),
+                TransientEvent::Run(command) => return self.run(command, close),
                 // An unbound key does nothing rather than leaking through to
                 // the editor, which is what makes the menu modal.
                 TransientEvent::Unhandled => return EventResult::Consumed(None),
@@ -260,7 +260,7 @@ impl Component for TransientOverlay {
 }
 
 impl TransientOverlay {
-    fn run(&mut self, command: MagitCommand, cx: &mut Context, close: Callback) -> EventResult {
+    fn run(&mut self, command: MagitCommand, close: Callback) -> EventResult {
         match command {
             MagitCommand::OpenMenu(kind) => {
                 self.menu = kind.menu();
@@ -278,45 +278,20 @@ impl TransientOverlay {
                     }
                 })))
             }
-            // Running git is the next sprint's work. Reporting the resolved
-            // command line makes the menu verifiable now, and is honest about
-            // not having touched the repository.
             command => {
-                cx.editor.set_status(format!(
-                    "{} (not executed yet): {}",
-                    describe(command),
-                    self.command_preview()
-                ));
-                EventResult::Consumed(Some(close))
+                let Some(plan) = helix_magit::resolve(command, &self.menu.args()) else {
+                    return EventResult::Consumed(Some(close));
+                };
+                let workdir = self.workdir.clone();
+
+                // The menu goes away first, so a confirmation or a prompt is
+                // not stacked on top of it.
+                EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                    compositor.remove(TransientOverlay::ID);
+                    crate::magit::execute(compositor, cx, plan, workdir);
+                })))
             }
         }
-    }
-}
-
-fn describe(command: MagitCommand) -> &'static str {
-    match command {
-        MagitCommand::Commit => "commit",
-        MagitCommand::CommitAmend => "commit --amend",
-        MagitCommand::CommitExtend => "commit --amend --no-edit",
-        MagitCommand::CommitFixup => "commit --fixup",
-        MagitCommand::Push => "push",
-        MagitCommand::PushToUpstream => "push upstream",
-        MagitCommand::PushElsewhere => "push elsewhere",
-        MagitCommand::Pull => "pull",
-        MagitCommand::Fetch => "fetch",
-        MagitCommand::FetchAll => "fetch --all",
-        MagitCommand::BranchCheckout => "checkout",
-        MagitCommand::BranchCreate => "branch",
-        MagitCommand::BranchCreateAndCheckout => "checkout -b",
-        MagitCommand::BranchDelete => "branch -d",
-        MagitCommand::RebaseOntoUpstream => "rebase upstream",
-        MagitCommand::RebaseInteractive => "rebase --interactive",
-        MagitCommand::RebaseAbort => "rebase --abort",
-        MagitCommand::RebaseContinue => "rebase --continue",
-        MagitCommand::OpenMenu(_)
-        | MagitCommand::Status
-        | MagitCommand::Refresh
-        | MagitCommand::Quit => "magit",
     }
 }
 
@@ -380,20 +355,28 @@ mod tests {
     }
 
     #[test]
-    fn every_command_has_a_description() {
-        // `describe` feeds the status line; an empty one would be a silent
-        // action.
-        for command in [
-            MagitCommand::Commit,
-            MagitCommand::CommitAmend,
-            MagitCommand::Push,
-            MagitCommand::Pull,
-            MagitCommand::Fetch,
-            MagitCommand::BranchCreate,
-            MagitCommand::RebaseInteractive,
-            MagitCommand::Refresh,
+    fn every_action_a_menu_offers_resolves_or_opens_another_menu() {
+        // An action that neither runs a command nor opens a menu would be a
+        // key that silently does nothing.
+        for kind in [
+            MenuKind::Main,
+            MenuKind::Commit,
+            MenuKind::Push,
+            MenuKind::Pull,
+            MenuKind::Branch,
+            MenuKind::Rebase,
         ] {
-            assert!(!describe(command).is_empty(), "{command:?} has no label");
+            let menu = kind.menu();
+            for action in menu.groups.iter().flat_map(|group| &group.actions) {
+                let handled = matches!(
+                    action.command,
+                    MagitCommand::OpenMenu(_)
+                        | MagitCommand::Status
+                        | MagitCommand::Refresh
+                        | MagitCommand::Quit
+                ) || helix_magit::resolve(action.command, &[]).is_some();
+                assert!(handled, "{kind:?} binds '{}' to nothing", action.key);
+            }
         }
     }
 }

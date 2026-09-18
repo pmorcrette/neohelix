@@ -117,6 +117,21 @@ impl DiffView {
         Ok(view)
     }
 
+    /// Re-reads the repository after something outside the view changed it.
+    ///
+    /// Used after a git command runs: the index, HEAD or the working tree may
+    /// all have moved, and the view has no other way to know.
+    pub fn refresh(&mut self, editor: &mut Editor) {
+        match Repository::discover(&self.workdir) {
+            Ok(repository) => {
+                if let Err(err) = self.reload(&repository) {
+                    editor.set_error(err.to_string());
+                }
+            }
+            Err(err) => editor.set_error(err.to_string()),
+        }
+    }
+
     /// Re-reads the repository, keeping the cursor as close as it can.
     ///
     /// Staging changes the shape of the tree — a fully staged file leaves the
