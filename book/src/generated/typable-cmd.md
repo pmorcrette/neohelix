@@ -53,6 +53,7 @@
 | `:show-directory`, `:pwd` | Show the current working directory. |
 | `:encoding` | Set encoding. Based on `https://encoding.spec.whatwg.org`. |
 | `:character-info`, `:char` | Get info about the character under the primary cursor. |
+| `:magit` | Open the Magit transient menu. |
 | `:roam-node-find`, `:rnf` | Open the Org-Roam node picker. |
 | `:roam-backlinks-toggle`, `:roam-backlinks` | Show or hide the Org-Roam backlinks panel. |
 | `:roam-reindex` | Re-index the Org-Roam directory from scratch. |

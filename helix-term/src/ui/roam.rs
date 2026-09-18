@@ -117,7 +117,7 @@ impl Component for RoamBacklinks {
                 inner.width as usize,
                 |_| muted_style,
                 true,
-                true,
+                false,
             );
             return;
         }
@@ -140,7 +140,7 @@ impl Component for RoamBacklinks {
                 inner.width as usize,
                 |_| title_style,
                 true,
-                true,
+                false,
             );
             y += 1;
 
@@ -148,6 +148,8 @@ impl Component for RoamBacklinks {
                 surface.set_string_truncated(
                     inner.x,
                     y,
+                    // A long path is more useful from its tail, so this one
+                    // elides the start.
                     &format!("  {}", entry.location),
                     inner.width as usize,
                     |_| text_style,

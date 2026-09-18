@@ -108,10 +108,11 @@
 | `jumplist_picker` | Open jumplist picker | normal: `` <space>j ``, select: `` <space>j `` |
 | `roam_node_find` | Find Org-Roam node | normal: `` <space>rf ``, select: `` <space>rf `` |
 | `roam_backlinks_toggle` | Toggle Org-Roam backlinks panel | normal: `` <space>rb ``, select: `` <space>rb `` |
+| `magit` | Open the Magit transient menu | normal: `` <space>gm ``, select: `` <space>gm `` |
 | `symbol_picker` | Open symbol picker |  |
 | `syntax_symbol_picker` | Open symbol picker from syntax information |  |
 | `lsp_or_syntax_symbol_picker` | Open symbol picker from LSP or syntax information | normal: `` <space>s ``, select: `` <space>s `` |
-| `changed_file_picker` | Open changed file picker | normal: `` <space>g ``, select: `` <space>g `` |
+| `changed_file_picker` | Open changed file picker | normal: `` <space>gg ``, select: `` <space>gg `` |
 | `select_references_to_symbol_under_cursor` | Select symbol references | normal: `` <space>h ``, select: `` <space>h `` |
 | `workspace_symbol_picker` | Open workspace symbol picker |  |
 | `syntax_workspace_symbol_picker` | Open workspace symbol picker from syntax information |  |

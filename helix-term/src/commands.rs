@@ -411,6 +411,7 @@ impl MappableCommand {
         jumplist_picker, "Open jumplist picker",
         roam_node_find, "Find Org-Roam node",
         roam_backlinks_toggle, "Toggle Org-Roam backlinks panel",
+        magit, "Open the Magit transient menu",
         symbol_picker, "Open symbol picker",
         syntax_symbol_picker, "Open symbol picker from syntax information",
         lsp_or_syntax_symbol_picker, "Open symbol picker from LSP or syntax information",
@@ -3391,6 +3392,38 @@ fn buffer_picker(cx: &mut Context) {
         Some((meta.id.into(), lines))
     });
     cx.push_layer(Box::new(overlaid(picker)));
+}
+
+/// Builds the Magit transient overlay, or reports why the repository could
+/// not be opened.
+///
+/// Shared by the `magit` static command and `:magit`, which reach the
+/// compositor by different routes.
+pub fn magit_overlay(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    // Prefer the focused document's repository, so a buffer opened from
+    // elsewhere shows its own repository rather than the editor's cwd.
+    let from = doc!(editor)
+        .path()
+        .and_then(|path| path.parent())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(helix_stdx::env::current_working_dir);
+
+    match helix_magit::Repository::discover(&from) {
+        Ok(repository) => Some(Box::new(ui::transient::TransientOverlay::new(
+            helix_magit::transient::main_menu(),
+            repository.head_description(),
+        ))),
+        Err(err) => {
+            editor.set_error(err.to_string());
+            None
+        }
+    }
+}
+
+fn magit(cx: &mut Context) {
+    if let Some(overlay) = magit_overlay(cx.editor) {
+        cx.push_layer(overlay);
+    }
 }
 
 /// Builds the Org-Roam node picker, or reports why there is nothing to pick.

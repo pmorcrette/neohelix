@@ -1713,6 +1713,7 @@ dependencies = [
  "helix-event",
  "helix-loader",
  "helix-lsp",
+ "helix-magit",
  "helix-roam",
  "helix-stdx",
  "helix-tui",
