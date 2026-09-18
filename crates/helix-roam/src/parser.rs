@@ -45,6 +45,158 @@ pub struct ParsedFile {
     pub links: Vec<ParsedLink>,
     /// `:ROAM_REFS:` entries, each mapped to the node that claims it.
     pub refs: Vec<(String, Uuid)>,
+    /// What the file declared about how it should be read.
+    pub settings: FileSettings,
+}
+
+/// What a file declares about how it should be read.
+///
+/// Org lets a file redefine its own TODO keywords, priority range and tag set.
+/// Reading a file without them does not lose a feature — it produces a wrong
+/// result: a headline's keyword ends up inside its title, and every consumer
+/// of that title inherits the mistake.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileSettings {
+    /// TODO keywords meaning "not done", in the order declared.
+    pub todo_keywords: Vec<String>,
+    /// TODO keywords meaning "done".
+    pub done_keywords: Vec<String>,
+    /// Priority letters the file recognises, highest first.
+    pub priorities: Vec<char>,
+    /// `#+CATEGORY:`, which the agenda groups by.
+    pub category: Option<String>,
+    /// `#+ARCHIVE:`, where archiving sends a subtree.
+    pub archive: Option<String>,
+    /// Tags offered by `#+TAGS:`, for completion rather than for parsing.
+    pub declared_tags: Vec<String>,
+    /// Drawer names declared through `#+DRAWERS:`.
+    pub drawers: Vec<String>,
+    /// `#+STARTUP:` options, in the order given.
+    pub startup: Vec<String>,
+}
+
+impl Default for FileSettings {
+    /// Org's own defaults, used by a file that declares nothing.
+    fn default() -> Self {
+        Self {
+            todo_keywords: vec!["TODO".to_string()],
+            done_keywords: vec!["DONE".to_string()],
+            priorities: vec!['A', 'B', 'C'],
+            category: None,
+            archive: None,
+            declared_tags: Vec::new(),
+            drawers: Vec::new(),
+            startup: Vec::new(),
+        }
+    }
+}
+
+impl FileSettings {
+    /// Whether `word` is a TODO keyword in this file, done or not.
+    pub fn is_todo_keyword(&self, word: &str) -> bool {
+        self.todo_keywords.iter().any(|kw| kw == word)
+            || self.done_keywords.iter().any(|kw| kw == word)
+    }
+
+    /// Reads every setting a file declares.
+    ///
+    /// A separate pass, because these keywords are not required to precede the
+    /// headlines they govern: a sequential reader would apply `#+TODO:` only
+    /// to what follows it. The scan is a `#+` test per line, which costs far
+    /// less than the link scanning the main pass already does.
+    pub fn scan(text: &str) -> Self {
+        let mut settings = Self::default();
+        let mut declared_todo = false;
+
+        for line in text.lines() {
+            let trimmed = line.trim_start();
+            if !trimmed.starts_with("#+") {
+                continue;
+            }
+            let Some((keyword, value)) = parse_keyword(trimmed) else {
+                continue;
+            };
+
+            match keyword.as_str() {
+                // All three spellings declare a sequence; Org distinguishes
+                // them only by how the keywords are meant to be cycled.
+                "todo" | "seq_todo" | "typ_todo" => {
+                    let (active, done) = parse_todo_sequence(value);
+                    if !declared_todo {
+                        // The first declaration replaces Org's defaults; later
+                        // ones add sequences rather than replacing them.
+                        settings.todo_keywords.clear();
+                        settings.done_keywords.clear();
+                        declared_todo = true;
+                    }
+                    settings.todo_keywords.extend(active);
+                    settings.done_keywords.extend(done);
+                }
+                "priorities" => {
+                    if let Some(range) = parse_priorities(value) {
+                        settings.priorities = range;
+                    }
+                }
+                "category" => settings.category = Some(value.to_string()),
+                "archive" => settings.archive = Some(value.to_string()),
+                "tags" => settings.declared_tags.extend(parse_tag_declaration(value)),
+                "drawers" => settings
+                    .drawers
+                    .extend(value.split_whitespace().map(str::to_string)),
+                "startup" => settings
+                    .startup
+                    .extend(value.split_whitespace().map(str::to_string)),
+                _ => {}
+            }
+        }
+
+        settings
+    }
+}
+
+/// Splits `TODO NEXT | DONE` into its not-done and done keywords.
+///
+/// Without a bar, Org treats the last keyword as the done state, so a bare
+/// `#+TODO: TODO DONE` still means what it looks like.
+fn parse_todo_sequence(value: &str) -> (Vec<String>, Vec<String>) {
+    let (active, done) = match value.split_once('|') {
+        Some((active, done)) => (strip_fast_keys(active), strip_fast_keys(done)),
+        None => {
+            let mut all = strip_fast_keys(value);
+            let last = all.pop();
+            (all, last.into_iter().collect())
+        }
+    };
+
+    (active, done)
+}
+
+/// Drops the `(t)` fast-access keys Org allows after a keyword or a tag.
+fn strip_fast_keys(value: &str) -> Vec<String> {
+    value
+        .split_whitespace()
+        .filter(|word| !matches!(*word, "{" | "}"))
+        .map(|word| word.split_once('(').map_or(word, |(name, _)| name))
+        .filter(|word| !word.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// `#+TAGS: @work(w) { laptop(l) pc(p) }` — the names, without keys or groups.
+fn parse_tag_declaration(value: &str) -> Vec<String> {
+    strip_fast_keys(value)
+        .into_iter()
+        .filter(|tag| tag != ":")
+        .collect()
+}
+
+/// `#+PRIORITIES: A C B` — highest, lowest, and the default in between.
+fn parse_priorities(value: &str) -> Option<Vec<char>> {
+    let mut letters = value.split_whitespace();
+    let highest = letters.next()?.chars().next()?;
+    let lowest = letters.next()?.chars().next()?;
+
+    (highest <= lowest).then(|| (highest..=lowest).collect())
 }
 
 /// Turns an Org-Roam id into a [`Uuid`], hashing ids that are not UUIDs.
@@ -83,6 +235,8 @@ struct Parser {
     file_tags: Vec<String>,
     file_aliases: Vec<String>,
     file_node: Option<usize>,
+    /// What the file says about how to read it, scanned before the main pass.
+    settings: FileSettings,
 }
 
 /// A headline (or the file preamble) whose property drawer is being read.
@@ -107,10 +261,15 @@ impl Parser {
             file_tags: Vec::new(),
             file_aliases: Vec::new(),
             file_node: None,
+            settings: FileSettings::default(),
         }
     }
 
     fn run(mut self, text: &str) -> ParsedFile {
+        // Read before anything else: these govern headlines that may precede
+        // the declaration itself.
+        self.settings = FileSettings::scan(text);
+
         // The preamble behaves like a level-0 headline: it can carry a
         // property drawer, and its node owns every link before the first
         // headline.
@@ -133,7 +292,7 @@ impl Parser {
                 }
             }
 
-            if let Some((level, title, tags)) = parse_headline(line) {
+            if let Some((level, title, tags)) = parse_headline(line, &self.settings) {
                 // A headline without an `:ID:` never became a node.
                 self.pending = None;
                 self.close_scopes(level);
@@ -158,6 +317,8 @@ impl Parser {
         // Tolerate a property drawer that was never closed with `:END:`.
         self.finish_pending();
         self.apply_file_keywords();
+
+        self.file.settings = self.settings;
         self.file
     }
 
@@ -290,8 +451,12 @@ impl PendingNode {
     }
 }
 
-/// Splits `* TODO Headline  :tag1:tag2:` into depth, title and tags.
-fn parse_headline(line: &str) -> Option<(usize, String, Vec<String>)> {
+/// Splits `* TODO [#A] Headline  :tag1:tag2:` into depth, title and tags.
+///
+/// The keyword and the priority are metadata rather than title, but only the
+/// file can say which words are keywords and which letters are priorities, so
+/// both come from its [`FileSettings`].
+fn parse_headline(line: &str, settings: &FileSettings) -> Option<(usize, String, Vec<String>)> {
     let stars = line.bytes().take_while(|&b| b == b'*').count();
     if stars == 0 {
         return None;
@@ -313,11 +478,28 @@ fn parse_headline(line: &str) -> Option<(usize, String, Vec<String>)> {
         title = title[..start].trim_end();
     }
 
-    // A priority cookie is metadata; TODO keywords are configurable in Org and
-    // are deliberately left in the title rather than guessed at.
+    // Org's order is keyword, then priority, then title.
+    if let Some((first, rest)) = title.split_once(char::is_whitespace) {
+        if settings.is_todo_keyword(first) {
+            title = rest.trim_start();
+        }
+    } else if settings.is_todo_keyword(title) {
+        // A headline that is only a keyword has no title at all.
+        title = "";
+    }
+
+    // A cookie whose letter the file does not declare is not a cookie; it is
+    // text that happens to look like one.
     if let Some(rest) = title.strip_prefix("[#") {
-        if let Some((_, after)) = rest.split_once(']') {
-            title = after.trim_start();
+        if let Some((letter, after)) = rest.split_once(']') {
+            let letter = letter.trim();
+            let declared = letter
+                .chars()
+                .next()
+                .is_some_and(|c| letter.chars().count() == 1 && settings.priorities.contains(&c));
+            if declared {
+                title = after.trim_start();
+            }
         }
     }
 
@@ -471,6 +653,131 @@ pub fn is_org_file(path: &Path) -> bool {
 mod tests {
     use super::*;
 
+    /// The bug this task exists for: a keyword ending up inside a title.
+    #[test]
+    fn a_todo_keyword_is_not_part_of_the_title() {
+        let file = parse_org(
+            "* TODO Write the thing\n:PROPERTIES:\n:ID: n1\n:END:\n",
+            "n.org",
+        );
+        assert_eq!(file.nodes[0].title, "Write the thing");
+    }
+
+    #[test]
+    fn a_files_own_keywords_decide_what_is_one() {
+        // `NEXT` is a keyword here and `TODO` is not, so `TODO` is title text.
+        let text = "#+TODO: NEXT WAITING | DONE\n* NEXT Real keyword\n:PROPERTIES:\n:ID: a\n:END:\n* TODO Not a keyword here\n:PROPERTIES:\n:ID: b\n:END:\n";
+        let file = parse_org(text, "n.org");
+
+        let titles: Vec<&str> = file.nodes.iter().map(|n| n.title.as_str()).collect();
+        assert!(titles.contains(&"Real keyword"), "{titles:?}");
+        assert!(titles.contains(&"TODO Not a keyword here"), "{titles:?}");
+    }
+
+    #[test]
+    fn a_declaration_is_read_even_when_it_follows_the_headline() {
+        // Org does not require the declaration to come first, so a purely
+        // sequential reader would get this wrong.
+        let text = "* NEXT Written before the declaration\n:PROPERTIES:\n:ID: a\n:END:\n#+TODO: NEXT | DONE\n";
+        let file = parse_org(text, "n.org");
+        assert_eq!(file.nodes[0].title, "Written before the declaration");
+    }
+
+    #[test]
+    fn without_a_bar_the_last_keyword_is_the_done_state() {
+        let settings = FileSettings::scan("#+TODO: TODO FEEDBACK VERIFY DONE\n");
+        assert_eq!(settings.todo_keywords, ["TODO", "FEEDBACK", "VERIFY"]);
+        assert_eq!(settings.done_keywords, ["DONE"]);
+    }
+
+    #[test]
+    fn fast_access_keys_are_not_part_of_the_keyword() {
+        let settings = FileSettings::scan("#+TODO: TODO(t) NEXT(n) | DONE(d!)\n");
+        assert_eq!(settings.todo_keywords, ["TODO", "NEXT"]);
+        assert_eq!(settings.done_keywords, ["DONE"]);
+    }
+
+    #[test]
+    fn several_declarations_add_sequences_rather_than_replacing() {
+        let settings = FileSettings::scan("#+TODO: TODO | DONE\n#+TODO: BUG | FIXED\n");
+        assert_eq!(settings.todo_keywords, ["TODO", "BUG"]);
+        assert_eq!(settings.done_keywords, ["DONE", "FIXED"]);
+    }
+
+    #[test]
+    fn a_file_declaring_nothing_gets_orgs_defaults() {
+        let settings = FileSettings::scan("* TODO nothing declared\n");
+        assert_eq!(settings.todo_keywords, ["TODO"]);
+        assert_eq!(settings.done_keywords, ["DONE"]);
+        assert_eq!(settings.priorities, ['A', 'B', 'C']);
+    }
+
+    #[test]
+    fn a_priority_cookie_outside_the_declared_range_is_title_text() {
+        // Default range is A to C, so `[#Z]` is not a cookie.
+        let file = parse_org(
+            "* TODO [#Z] Keep me\n:PROPERTIES:\n:ID: a\n:END:\n",
+            "n.org",
+        );
+        assert_eq!(file.nodes[0].title, "[#Z] Keep me");
+
+        // Declaring a wider range makes it one.
+        let file = parse_org(
+            "#+PRIORITIES: A Z M\n* TODO [#Z] Keep me\n:PROPERTIES:\n:ID: a\n:END:\n",
+            "n.org",
+        );
+        assert_eq!(file.nodes[0].title, "Keep me");
+    }
+
+    #[test]
+    fn a_keyword_a_priority_and_tags_come_off_together() {
+        let file = parse_org(
+            "* TODO [#A] The title  :work:urgent:\n:PROPERTIES:\n:ID: a\n:END:\n",
+            "n.org",
+        );
+        assert_eq!(file.nodes[0].title, "The title");
+        assert_eq!(file.nodes[0].tags, ["work", "urgent"]);
+    }
+
+    #[test]
+    fn a_headline_that_is_only_a_keyword_has_no_title() {
+        let file = parse_org("* TODO\n:PROPERTIES:\n:ID: a\n:END:\n", "n.org");
+        assert_eq!(file.nodes[0].title, "");
+    }
+
+    #[test]
+    fn a_word_merely_starting_with_a_keyword_is_not_one() {
+        let file = parse_org("* TODOs for later\n:PROPERTIES:\n:ID: a\n:END:\n", "n.org");
+        assert_eq!(file.nodes[0].title, "TODOs for later");
+    }
+
+    #[test]
+    fn the_remaining_settings_are_read() {
+        let settings = FileSettings::scan(
+            "#+CATEGORY: notes\n#+ARCHIVE: ::* Archived\n#+TAGS: @work(w) { laptop(l) pc(p) }\n#+DRAWERS: LOGBOOK CLOCK\n#+STARTUP: overview hidedrawers\n",
+        );
+        assert_eq!(settings.category.as_deref(), Some("notes"));
+        assert_eq!(settings.archive.as_deref(), Some("::* Archived"));
+        assert_eq!(settings.declared_tags, ["@work", "laptop", "pc"]);
+        assert_eq!(settings.drawers, ["LOGBOOK", "CLOCK"]);
+        assert_eq!(settings.startup, ["overview", "hidedrawers"]);
+    }
+
+    #[test]
+    fn keywords_are_matched_without_regard_to_case() {
+        // Org accepts `#+todo:` and `#+TODO:` alike.
+        let lower = FileSettings::scan("#+todo: NEXT | DONE\n");
+        let upper = FileSettings::scan("#+TODO: NEXT | DONE\n");
+        assert_eq!(lower, upper);
+        assert_eq!(lower.todo_keywords, ["NEXT"]);
+    }
+
+    #[test]
+    fn the_settings_reach_the_parsed_file() {
+        let file = parse_org("#+CATEGORY: notes\n", "n.org");
+        assert_eq!(file.settings.category.as_deref(), Some("notes"));
+    }
+
     const SAMPLE: &str = r#":PROPERTIES:
 :ID:       6ba7b810-9dad-11d1-80b4-00c04fd430c8
 :ROAM_ALIASES: "Rust Language" rustlang
@@ -595,20 +902,34 @@ Still part of Ownership, linking [[id:6ba7b811-9dad-11d1-80b4-00c04fd430c8][Heli
 
     #[test]
     fn bold_text_is_not_a_headline() {
-        assert!(parse_headline("**bold** at line start").is_none());
-        assert!(parse_headline("*italic*").is_none());
-        assert_eq!(parse_headline("* Real").unwrap().0, 1);
-        assert_eq!(parse_headline("*** Deep").unwrap().0, 3);
+        assert!(parse_headline("**bold** at line start", &FileSettings::default()).is_none());
+        assert!(parse_headline("*italic*", &FileSettings::default()).is_none());
+        assert_eq!(
+            parse_headline("* Real", &FileSettings::default())
+                .unwrap()
+                .0,
+            1
+        );
+        assert_eq!(
+            parse_headline("*** Deep", &FileSettings::default())
+                .unwrap()
+                .0,
+            3
+        );
     }
 
     #[test]
     fn headline_metadata_is_stripped_from_the_title() {
-        let (_, title, tags) = parse_headline("** [#A] Urgent thing   :work:urgent:").unwrap();
+        let (_, title, tags) = parse_headline(
+            "** [#A] Urgent thing   :work:urgent:",
+            &FileSettings::default(),
+        )
+        .unwrap();
         assert_eq!(title, "Urgent thing");
         assert_eq!(tags, ["work", "urgent"]);
 
         // A trailing colon that is not a tag run stays in the title.
-        let (_, title, tags) = parse_headline("* See also:").unwrap();
+        let (_, title, tags) = parse_headline("* See also:", &FileSettings::default()).unwrap();
         assert_eq!(title, "See also:");
         assert!(tags.is_empty());
     }

@@ -14,7 +14,7 @@ pub mod scanner;
 pub use graph::RoamGraph;
 pub use link::Link;
 pub use node::Node;
-pub use parser::{parse_org, ParsedFile};
+pub use parser::{parse_org, FileSettings, ParsedFile};
 pub use scanner::{reindex_file, scan_directory, IndexStats};
 
 #[cfg(test)]
