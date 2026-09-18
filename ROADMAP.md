@@ -710,6 +710,12 @@ describe Magit as letting them commit the way they think.
 
 ## Phase 3: Integrated Terminal (`crates/helix-pty`)
 
+*Tasks 3.3 to 3.7 were derived from the embedded emulator itself: the 71
+operations of `vte`'s handler trait, the 13 event variants
+`alacritty_terminal` reports, and the defaults of the `Config` the fork passes
+it — checked against what the integration does with each, rather than from a
+list of things terminals generally have.*
+
 ### Task 3.1: PTY Engine & VT100 Emulator
 - [ ] Create `crates/helix-pty` in the workspace.
 - [ ] Add `portable-pty` and `alacritty_terminal` dependencies.
@@ -722,6 +728,92 @@ describe Magit as letting them commit the way they think.
 - [ ] Implement full key pass-through from `crossterm` to the PTY writer.
 - [ ] Implement escape key sequence (e.g., `Ctrl-a Esc`) to toggle focus back to Helix normal mode.
 - [ ] Handle dynamic terminal resizing (`Pty::resize`).
+
+### Task 3.3: The Emulator Events the Integration Drops
+
+`alacritty_terminal` reports thirteen kinds of event. The integration handles
+three — the write-back that keeps a program from hanging on a query, the
+wakeup, and the bell, which only triggers a redraw — and discards the rest in a
+catch-all arm. Shell exit is covered separately, through the reader's
+end-of-file. The emulation itself is complete, because `Term` implements all 71
+operations of the handler; everything below is the embedder's half.
+
+- [ ] Title and reset-title: the shell and the programs in it say what they are
+      doing, and the view shows nothing. This is how a user tells one terminal
+      from another and is the cheapest item here.
+- [ ] `ClipboardStore` (OSC 52): a program asking for text to be put on the
+      system clipboard, which is how copying works over ssh.
+- [ ] `ClipboardLoad`: the same in reverse, and a decision rather than a task —
+      it lets a program *read* the user's clipboard. The crate has a policy
+      setting for this; the fork should choose deliberately rather than inherit
+      a default.
+- [ ] `ColorRequest`: programs that ask the terminal for its palette in order
+      to pick readable colours. Unanswered, they guess, which is why some
+      programs are unreadable on some themes.
+- [ ] `TextAreaSizeRequest`: reports the area in pixels. The view only knows
+      cells, so this needs the cell size in pixels from the frontend, or a
+      documented refusal.
+- [ ] `CursorBlinkingChange` and `MouseCursorDirty`, both presentation.
+- [ ] The bell currently only redraws. Decide what it should do — a visible
+      flash, a status message, nothing — and make it a choice rather than an
+      accident.
+
+### Task 3.4: Scrollback, Selection and Search
+
+`Term` is built with `Config::default()`, which keeps **10,000 lines** of
+scrollback. Nothing in the view can reach them: there is no display offset, no
+scroll command, no selection. That is both a missing feature and a memory cost
+per terminal that nobody chose.
+
+The crate already ships `selection.rs`, `search.rs` and `vi_mode.rs`. These are
+not to be written, only wired.
+
+- [ ] Scroll through the scrollback, and choose how much of it to keep.
+- [ ] Select text with the keyboard, and copy it into a Helix register so it
+      can be pasted into a document.
+- [ ] Search the scrollback, which is the crate's `search` module.
+- [ ] Vi-mode navigation of the grid, which the crate implements and which
+      would fit this fork's keymap better than it fits Alacritty's.
+
+### Task 3.5: Input Beyond xterm Keys
+
+`keys.rs` encodes keys the xterm way, including DECCKM. That is the floor, not
+the ceiling.
+
+- [ ] The Kitty keyboard protocol: the handler has push, pop, set and report
+      operations for it and the crate has a config flag. Without it a program
+      cannot tell `Ctrl-I` from `Tab`, or see a key release — which Helix
+      itself asks for when run inside a terminal.
+- [ ] Mouse reporting: forward clicks, drags and wheel to a program that asked
+      for them. Until then `htop`, `tmux` and an inner editor are keyboard-only.
+- [ ] Bracketed paste: paste a Helix register into the shell as a paste rather
+      than as typing, so a shell does not run half of it on the first newline.
+
+### Task 3.6: More Than One Terminal
+
+`Editor::terminal` is a single `Option`, so the fork has exactly one shell.
+Reopening `:terminal` returns to it, which was a deliberate improvement over
+killing it, but it is still one.
+
+- [ ] Several terminals, listed and switchable.
+- [ ] Name them, or show what each is running, which needs Task 3.3's title.
+- [ ] Close one explicitly, rather than only by exiting its shell.
+- [ ] Decide what a terminal's working directory follows: the document at the
+      time it was opened, as now, or the current one.
+
+### Task 3.7: Terminal Configuration
+
+`TerminalConfig` holds a command and its arguments. The emulator is built with
+`Config::default()`, so everything it can be told is currently left unsaid.
+
+- [ ] Scrollback size, cursor style, and the word characters used when
+      selecting by word.
+- [ ] The OSC 52 clipboard policy from Task 3.3, and whether the Kitty
+      keyboard protocol from Task 3.5 is offered.
+- [ ] Environment variables for the shell, and whether `TERM` should claim
+      something other than what the crate advertises.
+- [ ] These belong in Helix's own configuration idiom rather than as a copy of
+      Alacritty's, and the mapping is the work.
 
 ---
 
