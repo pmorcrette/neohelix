@@ -15,6 +15,10 @@ You are developing a custom fork of Helix in Rust. The goal is to integrate:
 - [ ] Add queries for highlights (`highlights.scm`) and folds (`folds.scm`).
 - [ ] Verify that `.org` files parse correctly and support section folding.
 
+  The folding half of this item cannot be finished here: Helix has no folding
+  at all, and nothing reads a `folds.scm`. The query is written and correct,
+  but inert until Task 1.4 gives the editor somewhere to use it.
+
 ### Task 1.2: Internal Crate `helix-roam` & Data Model
 - [ ] Create `crates/helix-roam` in the workspace.
 - [ ] Add `petgraph` and `uuid` to `crates/helix-roam/Cargo.toml`.
@@ -28,6 +32,103 @@ You are developing a custom fork of Helix in Rust. The goal is to integrate:
 - [ ] Extend `Picker` in `helix-term/src/ui/picker.rs` to create `:roam-node-find`.
 - [ ] Add a sidebar/popup widget to display backlinks for the active buffer.
 - [ ] Hook graph re-indexing to `Document::save` events.
+
+### Task 1.4: Section Folding
+
+Task 1.1 shipped `folds.scm`, but nothing reads it: Helix has no folding at
+all — no fold command, and no code anywhere consuming a folds query. The
+`.org` folds file is inert, so "support section folding" is not currently
+true, however correct the query is.
+
+Folding is an editor-wide feature, not an Org one, which is what makes this
+expensive: it touches the view, the rendering of line numbers and gutters,
+and every command that counts lines.
+
+- [ ] Decide whether to implement folding in the fork or wait for upstream.
+      Upstream Helix has wanted it for years; carrying our own is a permanent
+      merge cost on the same files as Phase 5.
+- [ ] A fold model on the document: which ranges are folded, surviving edits.
+- [ ] Rendering: collapsed ranges, a marker, and correct line numbers.
+- [ ] Commands and bindings, including Org's visibility cycling (`TAB` on a
+      headline, `S-TAB` for the whole buffer).
+- [ ] Feed it from `folds.scm`, so every language gets it and not just Org.
+
+### Task 1.5: Org Structure and Metadata Editing
+
+Nothing edits Org structure today: the fork parses `.org` files and indexes
+them, but a headline is only ever plain text to the editor. These are the
+commands that make Org feel like Org rather than like a text file with stars.
+
+- [ ] Structure: insert a headline at the same level, promote and demote a
+      headline, promote and demote a whole subtree, move a subtree up and down.
+- [ ] TODO state cycling, honouring `#+TODO:` keyword sequences rather than a
+      hardcoded TODO/DONE pair.
+- [ ] Priority cookies (`[#A]`): set, raise, lower, remove. The parser already
+      strips them from titles, so the reading half exists.
+- [ ] Tags: add and remove on a headline, with completion from tags already in
+      the graph.
+- [ ] `SCHEDULED:` and `DEADLINE:` timestamps: insert, edit, and a way to pick
+      a date that is not typing it by hand.
+- [ ] Refile a subtree to another file or headline, and archive one.
+
+### Task 1.6: Tables, Lists and Checkboxes
+
+- [ ] Plain lists: insert an item, renumber an ordered list, promote and demote
+      an item.
+- [ ] Checkboxes (`- [ ]`): toggle, and update the statistics cookie
+      (`[2/5]`, `[40%]`) on the parent.
+- [ ] Tables: re-align on edit, move between cells and rows, insert and delete
+      rows and columns.
+- [ ] Table formulas are a language of their own and are deliberately not in
+      this task; decide separately whether the fork wants them at all.
+
+### Task 1.7: The Agenda
+
+The single largest thing Org gives that the fork does not, and the reason many
+people use Org at all. It needs Task 1.5's timestamps to exist first.
+
+- [ ] Parse `SCHEDULED:`, `DEADLINE:`, plain and repeating timestamps into a
+      date model, including repeaters (`+1w`, `.+1m`) and ranges.
+- [ ] An agenda buffer: a day and a week view, built from the whole notes
+      directory rather than the open file.
+- [ ] A global TODO list, filtered by keyword, tag and priority.
+- [ ] Jump from an agenda line to its headline, and act on it in place
+      (change state, reschedule) without losing the agenda.
+- [ ] Decide where the agenda lives on screen — it is another pane, so it
+      shares Phase 5's blocker.
+
+### Task 1.8: Org-Roam Beyond the Graph
+
+The graph, the picker and the backlinks panel exist. What is missing is
+everything that *writes* to the graph: today a node can only be created by
+typing an `:ID:` drawer by hand.
+
+- [ ] `roam-node-insert`: pick a node and insert an `[[id:…]]` link to it,
+      creating the node if the title does not exist yet. This is the command
+      Org-Roam users press most.
+- [ ] Capture templates: create a node from a template into a configured file,
+      rather than one node per file with a fixed shape.
+- [ ] Daily notes: `roam-dailies` for today, a chosen date, and moving between
+      them.
+- [ ] `roam-ref-find`: the graph already indexes `:ROAM_REFS:` and can resolve
+      them, but nothing exposes a search over them.
+- [ ] Add and remove aliases and tags on the node at point, keeping the
+      property drawer and the graph in step.
+- [ ] Unlinked references: occurrences of a node's title or alias in other
+      files that are not yet links, and a way to turn one into a link.
+- [ ] Renaming a node's title, updating the link descriptions that named it.
+
+### Task 1.9: Export, Babel and Clocking
+
+The far horizon: large, self-contained, and none of it needed for the notes
+workflow the fork is built around. Listed so the gap is explicit rather than
+forgotten.
+
+- [ ] Export to HTML, Markdown and LaTeX.
+- [ ] Source block execution (Babel), which is an arbitrary-code-execution
+      surface and needs a trust decision before a single line is written.
+- [ ] Clocking: clock in and out, `:LOGBOOK:` drawers, and time reports.
+- [ ] Attachments and column view.
 
 ---
 
@@ -77,6 +178,90 @@ and async process handling, none of which the menu system itself covers.
       the working tree.
 - [ ] Guard destructive actions (`--force`, `branch -d`, `rebase --abort`)
       behind a confirmation that names what will be lost.
+
+### Task 2.5: The Rest of the Status Buffer
+
+The status buffer shows two sections, Unstaged and Staged. Magit shows the
+repository's whole situation, and the missing sections are the ones that tell
+you whether you need to push, pull or recover something. Untracked files are
+already handled — they appear as whole-file additions under Unstaged — but
+they have no section of their own.
+
+- [ ] A head section: the current branch, its upstream, and the message of
+      `HEAD`.
+- [ ] Unpushed and unpulled sections: commits the upstream does not have, and
+      commits it has that the working copy does not.
+- [ ] A stashes section, listing entries and letting one be shown.
+- [ ] A recent-commits section.
+- [ ] An untracked section of its own, separate from unstaged changes.
+- [ ] In-progress state: a merge, a rebase or a cherry-pick under way is what a
+      user most needs the status buffer to tell them, and it currently says
+      nothing.
+
+### Task 2.6: Discarding and Bulk Staging
+
+Three holes in the daily loop the fork otherwise covers end to end.
+
+- [ ] Discard (`x`): throw away a hunk, a line selection or a whole file's
+      changes. The patch machinery for this already exists — it is the same
+      reverse-apply staging uses — but discarding cannot be undone, so it needs
+      the confirmation Task 2.4 introduced.
+- [ ] Stage and unstage everything (`S`, `U`).
+- [ ] Visit the file at point (`RET`), landing on the line under the cursor
+      rather than at the top of the file.
+
+### Task 2.7: Interactive Rebase
+
+Deferred from Task 2.4 with the blocker already identified: every git
+subprocess runs with `GIT_SEQUENCE_EDITOR=true`, so that nothing can hang the
+editor waiting on a terminal that is not there. That setting accepts the
+todo-list unchanged, which means `rebase --interactive` currently runs but
+cannot be steered.
+
+- [ ] Decide how git reaches back into Helix for the todo-list: the integrated
+      terminal, a spawned instance, or an edit-server the fork runs. This gates
+      the rest, and the same mechanism would serve `commit --verbose` and any
+      other command wanting an editor.
+- [ ] A todo-list buffer: reorder commits, and set pick, reword, edit, squash,
+      fixup and drop.
+- [ ] Drive a rebase that stops: show why it stopped, and offer continue, skip
+      and abort from the status buffer.
+- [ ] `--autosquash`, so the `Fixup` action Task 2.4 already produces has
+      something that consumes it.
+
+### Task 2.8: The Log
+
+Magit's second buffer, and the one the fork has no equivalent of at all.
+
+- [ ] A log buffer: a commit list with the graph, refs and dates.
+- [ ] Show a commit: its message and its diff, reusing the `DiffView` rendering
+      rather than a second implementation.
+- [ ] Filter by file, author, range and free text.
+- [ ] Act on the commit at point: cherry-pick, revert, reset to it, start an
+      interactive rebase from it, all of which depend on Tasks 2.7 and 2.9.
+
+### Task 2.9: The Remaining Transients
+
+What is left of Magit's dispatch menu. Each is a transient the existing menu
+system can already express and a command line `resolve` can already build, so
+these are mostly breadth rather than new mechanism — with the exceptions noted.
+
+- [ ] Stash: save, pop, apply, drop, and stash only the index or only the
+      worktree.
+- [ ] Merge, with `--no-ff`, `--squash` and abort; conflict resolution is its
+      own problem and is not covered by this item.
+- [ ] Reset: soft, mixed and hard, with hard behind a confirmation.
+- [ ] Tag: create, delete and push tags.
+- [ ] Cherry-pick and revert, including their continue and abort states.
+- [ ] Remote: add, rename, remove, and set a branch's upstream. This also
+      supplies the remote picker Task 2.4 left missing, which is what
+      `PushElsewhere` is waiting on.
+- [ ] Bisect: start, good, bad, reset, and show where it is.
+- [ ] Worktrees and submodules.
+- [ ] Apply and format patches (`am`, `format-patch`).
+- [ ] A process buffer: every command the fork has run and what it printed.
+      Task 2.4 shows only the first useful line in the status line, so the rest
+      of git's output is currently discarded.
 
 ---
 
