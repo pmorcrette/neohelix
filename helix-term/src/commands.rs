@@ -409,6 +409,8 @@ impl MappableCommand {
         code_action, "Perform code action",
         buffer_picker, "Open buffer picker",
         jumplist_picker, "Open jumplist picker",
+        roam_node_find, "Find Org-Roam node",
+        roam_backlinks_toggle, "Toggle Org-Roam backlinks panel",
         symbol_picker, "Open symbol picker",
         syntax_symbol_picker, "Open symbol picker from syntax information",
         lsp_or_syntax_symbol_picker, "Open symbol picker from LSP or syntax information",
@@ -3389,6 +3391,117 @@ fn buffer_picker(cx: &mut Context) {
         Some((meta.id.into(), lines))
     });
     cx.push_layer(Box::new(overlaid(picker)));
+}
+
+/// Builds the Org-Roam node picker, or reports why there is nothing to pick.
+///
+/// Shared by the `roam_node_find` static command and the `:roam-node-find`
+/// typable command, which reach the compositor by different routes.
+pub fn roam_node_picker(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    struct RoamNodeMeta {
+        title: String,
+        tags: String,
+        aliases: String,
+        path: PathBuf,
+        line: usize,
+    }
+
+    // Snapshot the graph rather than holding its lock: the background indexer
+    // must stay free to re-index while the picker is open.
+    let nodes: Vec<RoamNodeMeta> = {
+        let graph = editor.roam.read();
+        graph
+            .nodes()
+            .map(|node| RoamNodeMeta {
+                title: node.title.clone(),
+                tags: node.tags.join(" "),
+                aliases: node.aliases.join(", "),
+                path: node.file_path.clone(),
+                line: node.line,
+            })
+            .collect()
+    };
+
+    if nodes.is_empty() {
+        editor.set_status("No Org-Roam nodes indexed. Check `editor.roam.directory`.");
+        return None;
+    }
+
+    let columns = [
+        ui::PickerColumn::new("title", |item: &RoamNodeMeta, _: &PathStyleConfig| {
+            item.title.as_str().into()
+        }),
+        ui::PickerColumn::new("tags", |item: &RoamNodeMeta, _: &PathStyleConfig| {
+            item.tags.as_str().into()
+        }),
+        ui::PickerColumn::new("aliases", |item: &RoamNodeMeta, _: &PathStyleConfig| {
+            item.aliases.as_str().into()
+        }),
+        ui::PickerColumn::new("path", |item: &RoamNodeMeta, config: &PathStyleConfig| {
+            config.stylize(Some(item.path.as_path()), Some(item.line))
+        }),
+    ];
+
+    let picker = Picker::new(
+        columns,
+        0, // title
+        nodes,
+        PathStyleConfig::new(&editor.theme),
+        |cx, meta, action| {
+            let doc = match cx.editor.open(&meta.path, action) {
+                Ok(id) => doc_mut!(cx.editor, &id),
+                Err(err) => {
+                    cx.editor.set_error(format!(
+                        "Failed to open '{}': {}",
+                        meta.path.display(),
+                        err
+                    ));
+                    return;
+                }
+            };
+
+            let text = doc.text();
+            // The file may have changed on disk since it was indexed.
+            if meta.line >= text.len_lines() {
+                cx.editor
+                    .set_error("The node's line no longer exists; re-index the directory.");
+                return;
+            }
+
+            let pos = text.line_to_char(meta.line);
+            let view = view_mut!(cx.editor);
+            doc.set_selection(view.id, Selection::point(pos));
+            if action.align_view(view, doc.id()) {
+                align_view(doc, view, Align::Center);
+            }
+        },
+    )
+    .with_preview(|_editor, meta| Some((meta.path.as_path().into(), Some((meta.line, meta.line)))));
+
+    Some(Box::new(overlaid(picker)))
+}
+
+fn roam_node_find(cx: &mut Context) {
+    if let Some(picker) = roam_node_picker(cx.editor) {
+        cx.push_layer(picker);
+    }
+}
+
+/// Shows or hides the backlinks panel, returning whether it is now shown.
+pub fn toggle_roam_backlinks(compositor: &mut crate::compositor::Compositor) -> bool {
+    if compositor.remove(ui::roam::RoamBacklinks::ID).is_none() {
+        compositor.push(Box::new(ui::roam::RoamBacklinks));
+        true
+    } else {
+        false
+    }
+}
+
+/// Shows or hides the backlinks panel for the focused document.
+fn roam_backlinks_toggle(cx: &mut Context) {
+    cx.callback.push(Box::new(|compositor, _cx| {
+        toggle_roam_backlinks(compositor);
+    }));
 }
 
 fn jumplist_picker(cx: &mut Context) {

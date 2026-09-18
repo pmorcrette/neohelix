@@ -55,6 +55,7 @@ use helix_core::{
 use helix_dap::{self as dap, registry::DebugAdapterId};
 use helix_lsp::lsp;
 use helix_stdx::path::canonicalize;
+use parking_lot::RwLock;
 
 use serde::{ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
 
@@ -427,6 +428,8 @@ pub struct Config {
     /// Whether to read settings from [EditorConfig](https://editorconfig.org) files. Defaults to
     /// `true`.
     pub editor_config: bool,
+    /// Org-Roam knowledge graph settings.
+    pub roam: RoamConfig,
     /// Whether to render rainbow colors for matching brackets. Defaults to `false`.
     pub rainbow_brackets: bool,
     /// Whether to enable Kitty Keyboard Protocol
@@ -510,6 +513,37 @@ impl Config {
                 .statusline
                 .right
                 .contains(&StatusLineElement::CodeActionHint)
+    }
+}
+
+/// Org-Roam knowledge graph configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct RoamConfig {
+    /// Whether to index Org files into the Org-Roam graph. Defaults to `true`.
+    pub enable: bool,
+    /// Directory to index. Defaults to the workspace root when unset.
+    pub directory: Option<PathBuf>,
+}
+
+impl Default for RoamConfig {
+    fn default() -> Self {
+        Self {
+            enable: true,
+            directory: None,
+        }
+    }
+}
+
+impl RoamConfig {
+    /// The directory to index, falling back to the workspace root.
+    ///
+    /// A leading `~` is expanded, so `directory = "~/org"` works as written.
+    pub fn directory(&self) -> PathBuf {
+        match &self.directory {
+            Some(directory) => helix_stdx::path::expand_tilde(directory.as_path()).into_owned(),
+            None => helix_loader::find_workspace().0,
+        }
     }
 }
 
@@ -1236,6 +1270,7 @@ impl Default for Config {
             end_of_line_diagnostics: DiagnosticFilter::Enable(Severity::Hint),
             clipboard_provider: ClipboardProvider::default(),
             editor_config: true,
+            roam: RoamConfig::default(),
             rainbow_brackets: false,
             kitty_keyboard_protocol: Default::default(),
             buffer_picker: BufferPickerConfig::default(),
@@ -1343,6 +1378,12 @@ pub struct Editor {
     pub mouse_down_range: Option<Range>,
     pub cursor_cache: CursorCache,
     pub workspace_trust: WorkspaceTrust,
+
+    /// The Org-Roam knowledge graph, shared with the background indexer.
+    ///
+    /// Indexing runs on a blocking thread and takes the write lock only to
+    /// install its result, so the editor never blocks on a scan.
+    pub roam: Arc<RwLock<helix_roam::RoamGraph>>,
 }
 
 pub type Motion = Box<dyn Fn(&mut Editor)>;
@@ -1468,6 +1509,7 @@ impl Editor {
             cursor_cache: CursorCache::default(),
             dir_stack: VecDeque::with_capacity(DIR_STACK_CAP),
             workspace_trust,
+            roam: Arc::default(),
         }
     }
 
@@ -2696,5 +2738,49 @@ impl CursorCache {
 
     pub fn reset(&self) {
         self.0.set(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roam_directory_expands_a_leading_tilde() {
+        let config = RoamConfig {
+            enable: true,
+            directory: Some(PathBuf::from("~/org")),
+        };
+
+        let directory = config.directory();
+        assert!(
+            !directory.starts_with("~"),
+            "a literal ~ would not exist on disk: {}",
+            directory.display()
+        );
+        assert!(directory.ends_with("org"));
+    }
+
+    #[test]
+    fn roam_directory_falls_back_to_the_workspace_root() {
+        let config = RoamConfig::default();
+        assert!(config.enable);
+        assert_eq!(config.directory(), helix_loader::find_workspace().0);
+    }
+
+    #[test]
+    fn roam_config_round_trips_through_toml() {
+        let toml = r#"
+            enable = false
+            directory = "/notes"
+        "#;
+        let config: RoamConfig = toml::from_str(toml).unwrap();
+
+        assert!(!config.enable);
+        assert_eq!(config.directory(), PathBuf::from("/notes"));
+
+        // An unset section keeps the defaults rather than disabling indexing.
+        let config: RoamConfig = toml::from_str("").unwrap();
+        assert_eq!(config, RoamConfig::default());
     }
 }

@@ -106,6 +106,8 @@
 | `code_action` | Perform code action | normal: `` <space>a ``, select: `` <space>a `` |
 | `buffer_picker` | Open buffer picker | normal: `` <space>b ``, select: `` <space>b `` |
 | `jumplist_picker` | Open jumplist picker | normal: `` <space>j ``, select: `` <space>j `` |
+| `roam_node_find` | Find Org-Roam node | normal: `` <space>rf ``, select: `` <space>rf `` |
+| `roam_backlinks_toggle` | Toggle Org-Roam backlinks panel | normal: `` <space>rb ``, select: `` <space>rb `` |
 | `symbol_picker` | Open symbol picker |  |
 | `syntax_symbol_picker` | Open symbol picker from syntax information |  |
 | `lsp_or_syntax_symbol_picker` | Open symbol picker from LSP or syntax information | normal: `` <space>s ``, select: `` <space>s `` |
@@ -301,7 +303,7 @@
 | `shell_append_output` | Append shell command output after selections | normal: `` <A-!> ``, select: `` <A-!> `` |
 | `shell_keep_pipe` | Filter selections with shell predicate | normal: `` $ ``, select: `` $ `` |
 | `suspend` | Suspend and return to shell | normal: `` <C-z> ``, select: `` <C-z> `` |
-| `rename_symbol` | Rename symbol | normal: `` <space>r ``, select: `` <space>r `` |
+| `rename_symbol` | Rename symbol | normal: `` <space>rr ``, select: `` <space>rr `` |
 | `increment` | Increment item under cursor | normal: `` <C-a> ``, select: `` <C-a> `` |
 | `decrement` | Decrement item under cursor | normal: `` <C-x> ``, select: `` <C-x> `` |
 | `record_macro` | Record macro | normal: `` Q ``, select: `` Q `` |

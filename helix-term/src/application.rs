@@ -244,6 +244,8 @@ impl Application {
         ])
         .context("build signal handler")?;
 
+        crate::roam::start_initial_index(&editor);
+
         let app = Self {
             compositor,
             terminal,
@@ -616,6 +618,12 @@ impl Application {
         );
 
         doc.set_last_saved_revision(doc_save_event.revision, doc_save_event.save_time);
+
+        crate::roam::reindex_saved_file(
+            &self.editor,
+            &doc_save_event.path,
+            doc_save_event.text.to_string(),
+        );
 
         let lines = doc_save_event.text.len_lines();
         let size = doc_save_event.text.len_bytes();

@@ -214,6 +214,13 @@ impl RoamGraph {
         self.graph.node_count() == 0
     }
 
+    /// Every node parsed out of `path`, in no particular order.
+    pub fn nodes_in_file<'a>(&'a self, path: &'a Path) -> impl Iterator<Item = &'a Node> + 'a {
+        self.graph
+            .node_weights()
+            .filter(move |node| node.file_path == path)
+    }
+
     /// Every node in the graph, in no particular order.
     pub fn nodes(&self) -> impl Iterator<Item = &Node> {
         self.graph.node_weights()

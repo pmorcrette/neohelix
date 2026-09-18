@@ -2178,6 +2178,66 @@ fn debug_remote(
     dap_start_impl(cx, name.as_deref(), address, Some(args))
 }
 
+fn roam_node_find(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let callback = async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            |editor: &mut Editor, compositor: &mut Compositor| {
+                if let Some(picker) = super::roam_node_picker(editor) {
+                    compositor.push(picker);
+                }
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
+fn roam_backlinks_toggle(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let callback = async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            |_editor: &mut Editor, compositor: &mut Compositor| {
+                super::toggle_roam_backlinks(compositor);
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
+fn roam_reindex(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let directory = cx.editor.config().roam.directory();
+    cx.editor
+        .set_status(format!("Re-indexing {}…", directory.display()));
+    crate::roam::start_initial_index(cx.editor);
+    Ok(())
+}
+
 fn tutor(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
@@ -3590,6 +3650,39 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &["char"],
         doc: "Get info about the character under the primary cursor.",
         fun: get_character_info,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-node-find",
+        aliases: &["rnf"],
+        doc: "Open the Org-Roam node picker.",
+        fun: roam_node_find,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-backlinks-toggle",
+        aliases: &["roam-backlinks"],
+        doc: "Show or hide the Org-Roam backlinks panel.",
+        fun: roam_backlinks_toggle,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-reindex",
+        aliases: &[],
+        doc: "Re-index the Org-Roam directory from scratch.",
+        fun: roam_reindex,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

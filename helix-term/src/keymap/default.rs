@@ -286,7 +286,11 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "R" => replace_selections_with_clipboard,
             "/" => global_search,
             "k" => hover,
-            "r" => rename_symbol,
+            "r" => { "Rename / Org-Roam"
+                "r" => rename_symbol,
+                "f" => roam_node_find,
+                "b" => roam_backlinks_toggle,
+            },
             "h" => select_references_to_symbol_under_cursor,
             "c" => toggle_comments,
             "C" => toggle_block_comments,

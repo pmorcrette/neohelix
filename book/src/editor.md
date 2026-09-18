@@ -266,6 +266,27 @@ Example
 start-position = "previous"
 ```
 
+### `[editor.roam]` Section
+
+Set options for the Org-Roam knowledge graph. Helix indexes the `.org` files in
+the configured directory at startup, and re-indexes a file when it is saved.
+
+| Key | Description | Default |
+|--|--|---------|
+|`enable` | Whether to index Org files into the graph | `true` |
+|`directory` | Directory to index | the workspace root |
+
+Example
+
+```toml
+[editor.roam]
+directory = "~/org"
+```
+
+The graph backs `:roam-node-find` (`<space>rf`) and the backlinks panel opened
+by `:roam-backlinks-toggle` (`<space>rb`). `:roam-reindex` rebuilds it from
+scratch, which is needed after Org files change outside the editor.
+
 ### `[editor.auto-pairs]` Section
 
 Enables automatic insertion of pairs to parentheses, brackets, etc. Can be a
