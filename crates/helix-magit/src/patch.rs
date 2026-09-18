@@ -166,14 +166,18 @@ pub fn apply_patch(content: &str, patch: &FileDiff, reverse: bool) -> Result<Str
     let mut last_no_newline = None;
 
     for hunk in &patch.hunks {
-        let start_line = if reverse {
-            hunk.header.new_start
+        let (start_line, count) = if reverse {
+            (hunk.header.new_start, hunk.header.new_count)
         } else {
-            hunk.header.old_start
+            (hunk.header.old_start, hunk.header.old_count)
         };
-        // A hunk covering no source lines (a pure insertion into an empty
-        // file) is anchored at 0 rather than 1.
-        let start = start_line.saturating_sub(1) as usize;
+        // A hunk covering no source lines is a pure insertion, and git anchors
+        // it at the position itself rather than 1-based.
+        let start = if count == 0 {
+            start_line as usize
+        } else {
+            start_line.saturating_sub(1) as usize
+        };
 
         if start < cursor {
             return Err(ApplyError::OverlappingHunks(start_line));
@@ -500,6 +504,37 @@ mod tests {
 
         assert_eq!(apply_patch(old, &file, false).unwrap(), new);
         assert_eq!(apply_patch(new, &file, true).unwrap(), old);
+    }
+
+    #[test]
+    fn a_change_deep_in_the_file_gets_the_right_hunk_start() {
+        // Every fixture above happens to change something within the first
+        // three lines, which hides an off-by-context_len in the hunk header.
+        let old = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n";
+        let new = "1\n2\n3\n4\n5\n6\nSEVEN\n8\n9\n10\n";
+        let file = diff(old, new);
+
+        let header = &file.hunks[0].header;
+        assert_eq!(header.old_start, 4, "three lines of context before line 7");
+        assert_eq!(header.new_start, 4);
+
+        // The first line of the hunk really is line 4 of the file.
+        assert_eq!(file.hunks[0].lines[0].content, "4");
+        assert_eq!(apply_patch(old, &file, false).unwrap(), new);
+        assert_eq!(apply_patch(new, &file, true).unwrap(), old);
+    }
+
+    #[test]
+    fn two_distant_changes_stay_separate_hunks() {
+        let old = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n";
+        let new = "1\n2\n3\nFOUR\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\nFIFTEEN\n16\n17\n18\n";
+        let file = diff(old, new);
+
+        assert_eq!(file.hunks.len(), 2);
+        assert_eq!(file.hunks[0].header.old_start, 1);
+        assert_eq!(file.hunks[1].header.old_start, 12);
+        assert_eq!(file.hunks[1].lines[0].content, "12");
+        assert_eq!(apply_patch(old, &file, false).unwrap(), new);
     }
 
     #[test]

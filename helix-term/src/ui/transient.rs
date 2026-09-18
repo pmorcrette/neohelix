@@ -3,6 +3,8 @@
 //! Renders a [`TransientMenu`] as labelled columns across the bottom of the
 //! screen and captures keys modally while it is open.
 
+use std::path::PathBuf;
+
 use helix_magit::transient::{MenuKind, TransientEvent, TransientGroup, TransientMenu};
 use helix_magit::MagitCommand;
 use helix_view::graphics::Rect;
@@ -22,15 +24,18 @@ pub struct TransientOverlay {
     menu: TransientMenu,
     /// What the title shows after the menu name, typically the branch.
     context: String,
+    /// The repository the menu acts on, so it can open the status buffer.
+    workdir: PathBuf,
 }
 
 impl TransientOverlay {
     pub const ID: &'static str = "magit-transient";
 
-    pub fn new(menu: TransientMenu, context: impl Into<String>) -> Self {
+    pub fn new(menu: TransientMenu, context: impl Into<String>, workdir: PathBuf) -> Self {
         Self {
             menu,
             context: context.into(),
+            workdir,
         }
     }
 
@@ -262,6 +267,17 @@ impl TransientOverlay {
                 EventResult::Consumed(None)
             }
             MagitCommand::Quit => EventResult::Consumed(Some(close)),
+            // The status buffer replaces the menu rather than stacking on it.
+            MagitCommand::Status | MagitCommand::Refresh => {
+                let workdir = self.workdir.clone();
+                EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                    compositor.remove(TransientOverlay::ID);
+                    match crate::ui::diff_view::DiffView::new(&workdir) {
+                        Ok(view) => compositor.push(Box::new(view)),
+                        Err(err) => cx.editor.set_error(err.to_string()),
+                    }
+                })))
+            }
             // Running git is the next sprint's work. Reporting the resolved
             // command line makes the menu verifiable now, and is honest about
             // not having touched the repository.
@@ -297,7 +313,10 @@ fn describe(command: MagitCommand) -> &'static str {
         MagitCommand::RebaseInteractive => "rebase --interactive",
         MagitCommand::RebaseAbort => "rebase --abort",
         MagitCommand::RebaseContinue => "rebase --continue",
-        MagitCommand::OpenMenu(_) | MagitCommand::Refresh | MagitCommand::Quit => "magit",
+        MagitCommand::OpenMenu(_)
+        | MagitCommand::Status
+        | MagitCommand::Refresh
+        | MagitCommand::Quit => "magit",
     }
 }
 
@@ -307,7 +326,7 @@ mod tests {
     use helix_magit::transient::{commit_menu, main_menu, pull_menu};
 
     fn overlay(menu: TransientMenu) -> TransientOverlay {
-        TransientOverlay::new(menu, "main")
+        TransientOverlay::new(menu, "main", PathBuf::from("/repo"))
     }
 
     #[test]

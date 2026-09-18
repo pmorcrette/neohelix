@@ -39,6 +39,8 @@ pub enum MagitCommand {
     RebaseAbort,
     RebaseContinue,
 
+    /// Open or refresh the status buffer.
+    Status,
     /// Refresh the status buffer.
     Refresh,
     /// Close the transient without running anything.
@@ -357,6 +359,7 @@ pub fn main_menu() -> TransientMenu {
             TransientAction::new('f', "Fetch", MagitCommand::Fetch),
         ]),
         TransientGroup::new("Essential").with_actions([
+            TransientAction::new('s', "Status", MagitCommand::Status),
             TransientAction::new('g', "Refresh", MagitCommand::Refresh),
             TransientAction::new('q', "Quit", MagitCommand::Quit),
         ]),

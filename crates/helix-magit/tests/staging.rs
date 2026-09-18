@@ -256,3 +256,58 @@ fn staging_a_stale_diff_is_refused_without_touching_the_index() {
         "a refused apply leaves the index alone"
     );
 }
+
+#[test]
+fn unstaged_changes_are_measured_against_the_index_not_head() {
+    // A file with something already staged: the unstaged diff must describe
+    // index-to-worktree, or the patch it produces will not apply to the index.
+    let dir = fixture_or_skip!("one\ntwo\nthree\n");
+    fs::write(dir.path().join("f.txt"), "ONE\ntwo\nthree\n").unwrap();
+    git(dir.path(), &["add", "f.txt"]).unwrap();
+    fs::write(dir.path().join("f.txt"), "ONE\ntwo\nTHREE\n").unwrap();
+
+    let repo = Repository::discover(dir.path()).unwrap();
+    let diffs = repo.worktree_diff().unwrap();
+    assert_eq!(diffs.len(), 1);
+
+    // Only the second edit is unstaged; the first is already in the index.
+    assert_eq!(diffs[0].stats(), (1, 1), "just the unstaged edit");
+    let contents: Vec<&str> = diffs[0].hunks[0]
+        .lines
+        .iter()
+        .map(|line| line.content.as_str())
+        .collect();
+    assert!(contents.contains(&"THREE"));
+    assert!(
+        !contents.contains(&"one"),
+        "the staged edit is not shown again"
+    );
+
+    // And the patch it produces applies cleanly to the index.
+    repo.stage(&diffs[0], &Selection::File).unwrap();
+    assert_eq!(index_content(dir.path(), "f.txt"), "ONE\ntwo\nTHREE\n");
+    assert_eq!(
+        git(dir.path(), &["diff", "--name-only"]).unwrap().trim(),
+        ""
+    );
+}
+
+#[test]
+fn staging_a_hunk_of_a_partly_staged_file_works() {
+    // The case the status view hits: one edit already staged, two more hunks
+    // pending, stage one of them.
+    let dir = fixture_or_skip!(FAR_APART_OLD);
+    fs::write(
+        dir.path().join("f.txt"),
+        "A\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\n",
+    )
+    .unwrap();
+    git(dir.path(), &["add", "f.txt"]).unwrap();
+    fs::write(dir.path().join("f.txt"), FAR_APART_NEW).unwrap();
+
+    let repo = Repository::discover(dir.path()).unwrap();
+    let diffs = repo.worktree_diff().unwrap();
+    repo.stage(&diffs[0], &Selection::Hunk(0)).unwrap();
+
+    assert_eq!(index_content(dir.path(), "f.txt"), FAR_APART_NEW);
+}

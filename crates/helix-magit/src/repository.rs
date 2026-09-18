@@ -5,11 +5,10 @@
 //! [`crate::parse_unified_diff`], so the model has a single source of truth
 //! and works the same whether a diff came from here or from `git diff`.
 
-use std::fmt;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use imara_diff::{Algorithm, InternedInput, UnifiedDiffConfig, UnifiedDiffPrinter};
-use imara_diff::{Interner, Token};
+use imara_diff::{Algorithm, InternedInput, Token};
 
 use crate::diff::{FileDiff, FileStatus};
 use crate::patch::Selection;
@@ -193,10 +192,14 @@ impl Repository {
     fn diff_entry(&self, entry: &StatusEntry) -> Result<Option<FileDiff>> {
         let absolute = self.workdir.join(&entry.path);
 
+        // The old side is the index, not HEAD: these are the *unstaged*
+        // changes, and `stage` applies the resulting patch to the index. Using
+        // HEAD here would produce a patch that does not match what it is
+        // applied to as soon as the file already has something staged.
         let old = if entry.untracked {
             Vec::new()
         } else {
-            self.blob_at_head(&entry.path).unwrap_or_default()
+            self.index_blob(&entry.path).unwrap_or_default()
         };
         let new = match std::fs::read(&absolute) {
             Ok(content) => content,
@@ -365,7 +368,8 @@ impl Repository {
         Some(self.inner.find_object(id).ok()?.detach().data)
     }
 
-    /// The contents of a path as of HEAD.
+    /// The contents of a path as of HEAD, which is the old side of the
+    /// *staged* diff.
     fn blob_at_head(&self, rela_path: &Path) -> Option<Vec<u8>> {
         let commit = self.inner.head_commit().ok()?;
         let tree = commit.tree().ok()?;
@@ -388,72 +392,102 @@ fn is_binary(content: &[u8]) -> bool {
 }
 
 /// Produces the hunks of a unified diff, without any file header.
+///
+/// The hunks are emitted here rather than through imara-diff's own
+/// `UnifiedDiff` printer, which mis-states the first hunk's `old_start`: it
+/// writes every line before the first change as context but reports a start
+/// `context_len` lines later, so any patch whose first change is more than
+/// three lines into the file is unusable. Emitting them directly also lets the
+/// `\ No newline at end of file` marker survive, which that printer drops.
 pub fn unified_diff(old: &str, new: &str) -> String {
+    const CONTEXT: u32 = 3;
+
     let input = InternedInput::new(old, new);
     let diff = imara_diff::Diff::compute(Algorithm::Histogram, &input);
-    diff.unified_diff(
-        &NewlinePreservingPrinter(&input.interner),
-        UnifiedDiffConfig::default(),
-        &input,
-    )
-    .to_string()
+    let (before, after) = (&input.before, &input.after);
+
+    let mut out = String::new();
+    let hunks: Vec<_> = diff.hunks().collect();
+    let mut index = 0;
+
+    while index < hunks.len() {
+        // Hunks closer than twice the context would print overlapping
+        // context, so git merges them into one; so do we.
+        let mut end = index + 1;
+        while end < hunks.len()
+            && hunks[end].before.start <= hunks[end - 1].before.end + 2 * CONTEXT
+        {
+            end += 1;
+        }
+        let group = &hunks[index..end];
+
+        let before_start = group[0].before.start.saturating_sub(CONTEXT);
+        let before_end = (group[group.len() - 1].before.end + CONTEXT).min(before.len() as u32);
+        let after_start = group[0].after.start.saturating_sub(CONTEXT);
+        let after_end = (group[group.len() - 1].after.end + CONTEXT).min(after.len() as u32);
+
+        let _ = writeln!(
+            out,
+            "@@ -{} +{} @@",
+            format_range(before_start, before_end - before_start),
+            format_range(after_start, after_end - after_start),
+        );
+
+        let mut pos = before_start;
+        for hunk in group {
+            emit_tokens(
+                &mut out,
+                &input,
+                ' ',
+                &before[pos as usize..hunk.before.start as usize],
+            );
+            emit_tokens(
+                &mut out,
+                &input,
+                '-',
+                &before[hunk.before.start as usize..hunk.before.end as usize],
+            );
+            emit_tokens(
+                &mut out,
+                &input,
+                '+',
+                &after[hunk.after.start as usize..hunk.after.end as usize],
+            );
+            pos = hunk.before.end;
+        }
+        emit_tokens(
+            &mut out,
+            &input,
+            ' ',
+            &before[pos as usize..before_end as usize],
+        );
+
+        index = end;
+    }
+
+    out
 }
 
-/// A unified-diff printer that marks a line lacking a trailing newline.
+/// Formats one side of a hunk header from a 0-based start and a count.
 ///
-/// imara-diff's own printer silently adds the newline back, which would be a
-/// correctness bug here: staging a file whose last line lost its newline would
-/// write the newline into the index. git's `\ No newline at end of file`
-/// marker carries that fact, and the parser reads it back.
-struct NewlinePreservingPrinter<'a>(&'a Interner<&'a str>);
-
-impl NewlinePreservingPrinter<'_> {
-    fn write_token(&self, mut f: impl fmt::Write, prefix: char, token: Token) -> fmt::Result {
-        let text = self.0[token];
-        write!(f, "{prefix}{text}")?;
-        if !text.ends_with('\n') {
-            writeln!(f)?;
-            writeln!(f, "\\ No newline at end of file")?;
-        }
-        Ok(())
+/// An empty range is anchored at the position itself, as git does for a pure
+/// insertion; anything else is 1-based.
+fn format_range(start: u32, count: u32) -> String {
+    if count == 0 {
+        format!("{start},0")
+    } else {
+        format!("{},{count}", start + 1)
     }
 }
 
-impl UnifiedDiffPrinter for NewlinePreservingPrinter<'_> {
-    fn display_header(
-        &self,
-        mut f: impl fmt::Write,
-        start_before: u32,
-        start_after: u32,
-        len_before: u32,
-        len_after: u32,
-    ) -> fmt::Result {
-        writeln!(
-            f,
-            "@@ -{},{} +{},{} @@",
-            start_before + 1,
-            len_before,
-            start_after + 1,
-            len_after
-        )
-    }
-
-    fn display_context_token(&self, f: impl fmt::Write, token: Token) -> fmt::Result {
-        self.write_token(f, ' ', token)
-    }
-
-    fn display_hunk(
-        &self,
-        mut f: impl fmt::Write,
-        before: &[Token],
-        after: &[Token],
-    ) -> fmt::Result {
-        for &token in before {
-            self.write_token(&mut f, '-', token)?;
+/// Writes each token with its prefix, marking a missing trailing newline.
+fn emit_tokens(out: &mut String, input: &InternedInput<&str>, prefix: char, tokens: &[Token]) {
+    for &token in tokens {
+        let text = input.interner[token];
+        let _ = write!(out, "{prefix}{text}");
+        if !text.ends_with('\n') {
+            let _ = writeln!(out);
+            let _ = writeln!(out, "\\ No newline at end of file");
         }
-        for &token in after {
-            self.write_token(&mut f, '+', token)?;
-        }
-        Ok(())
     }
 }

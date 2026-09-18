@@ -3412,6 +3412,7 @@ pub fn magit_overlay(editor: &mut Editor) -> Option<Box<dyn Component>> {
         Ok(repository) => Some(Box::new(ui::transient::TransientOverlay::new(
             helix_magit::transient::main_menu(),
             repository.head_description(),
+            repository.workdir().to_path_buf(),
         ))),
         Err(err) => {
             editor.set_error(err.to_string());
