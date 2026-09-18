@@ -1650,6 +1650,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "helix-magit"
+version = "25.7.1"
+dependencies = [
+ "gix",
+ "imara-diff",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "helix-parsec"
 version = "25.7.1"
 

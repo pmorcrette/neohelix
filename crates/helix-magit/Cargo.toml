@@ -1,0 +1,21 @@
+[package]
+name = "helix-magit"
+description = "Interactive Git client engine for Helix"
+include = ["src/**/*", "README.md"]
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+categories.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+# Pure-Rust git, already vendored for helix-vcs, so no libgit2/C toolchain.
+gix = { version = "0.85.0", features = ["status", "max-performance", "sha1"], default-features = false }
+imara-diff = "0.2.0"
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
