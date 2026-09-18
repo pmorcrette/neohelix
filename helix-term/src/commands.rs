@@ -422,6 +422,15 @@ impl MappableCommand {
         org_store_link, "Store a link to the cursor's location",
         org_insert_link, "Insert the stored Org link",
         org_create_id, "Give the entry at the cursor an :ID:",
+        roam_node_insert, "Insert a link to an Org-Roam node, creating it if needed",
+        roam_random_node, "Open a random Org-Roam node",
+        roam_ref_find, "Find an Org-Roam node by one of its refs",
+        roam_alias_add, "Add an alias to the node at the cursor",
+        roam_alias_remove, "Remove an alias from the node at the cursor",
+        roam_tag_add, "Add a tag to the node at the cursor",
+        roam_tag_remove, "Remove a tag from the node at the cursor",
+        roam_ref_add, "Add a ref to the node at the cursor",
+        roam_ref_remove, "Remove a ref from the node at the cursor",
         magit, "Open the Magit transient menu",
         terminal, "Open the integrated terminal",
         symbol_picker, "Open symbol picker",
@@ -3682,6 +3691,161 @@ fn org_insert_link(cx: &mut Context) {
 /// Gives the entry at the cursor an `:ID:`.
 fn org_create_id(cx: &mut Context) {
     crate::roam::create_id(cx.editor);
+}
+
+/// Picks a node by one of its `:ROAM_REFS:` keys and opens it.
+pub fn roam_ref_picker(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    struct RefMeta {
+        key: String,
+        title: String,
+        path: PathBuf,
+        line: usize,
+    }
+
+    let refs: Vec<RefMeta> = {
+        let graph = editor.roam.read();
+        let collected = graph
+            .refs()
+            .map(|(key, node)| RefMeta {
+                key: key.to_string(),
+                title: node.title.clone(),
+                path: node.file_path.clone(),
+                line: node.line,
+            })
+            .collect();
+        collected
+    };
+
+    if refs.is_empty() {
+        editor.set_status("No :ROAM_REFS: indexed.");
+        return None;
+    }
+
+    let columns = [
+        ui::PickerColumn::new("ref", |item: &RefMeta, _: &PathStyleConfig| {
+            item.key.as_str().into()
+        }),
+        ui::PickerColumn::new("title", |item: &RefMeta, _: &PathStyleConfig| {
+            item.title.as_str().into()
+        }),
+        ui::PickerColumn::new("path", |item: &RefMeta, config: &PathStyleConfig| {
+            config.stylize(Some(item.path.as_path()), Some(item.line))
+        }),
+    ];
+
+    let picker = Picker::new(
+        columns,
+        0, // ref
+        refs,
+        PathStyleConfig::new(&editor.theme),
+        |cx, meta, action| {
+            if let Err(err) = cx.editor.open(&meta.path, action) {
+                cx.editor
+                    .set_error(format!("Failed to open '{}': {}", meta.path.display(), err));
+                return;
+            }
+            let doc = doc!(cx.editor);
+            if meta.line < doc.text().len_lines() {
+                let pos = doc.text().line_to_char(meta.line);
+                let view_id = view!(cx.editor).id;
+                doc_mut!(cx.editor).set_selection(view_id, Selection::point(pos));
+            }
+        },
+    );
+
+    Some(Box::new(overlaid(picker)))
+}
+
+/// Opens the ref picker.
+fn roam_ref_find(cx: &mut Context) {
+    if let Some(picker) = roam_ref_picker(cx.editor) {
+        cx.push_layer(picker);
+    }
+}
+
+/// Asks for a node title, then inserts a link to it.
+///
+/// A prompt rather than a picker, because a title that matches nothing is not
+/// a failed search: it is a node to create, which is how notes get written.
+fn roam_node_insert(cx: &mut Context) {
+    let prompt = roam_node_insert_prompt(cx.editor);
+    cx.push_layer(prompt);
+}
+
+/// Builds the node prompt, so the static and typable commands share it.
+///
+/// A prompt rather than a picker, because a title that matches nothing is not
+/// a failed search: it is a node to create, which is how notes get written.
+pub fn roam_node_insert_prompt(editor: &Editor) -> Box<dyn Component> {
+    let titles = crate::roam::node_titles(editor);
+
+    Box::new(ui::Prompt::new(
+        "Node: ".into(),
+        None,
+        move |_editor, input| {
+            let input = input.to_lowercase();
+            titles
+                .iter()
+                .filter(|title| title.to_lowercase().contains(&input))
+                .take(50)
+                .map(|title| (0.., title.clone().into()))
+                .collect()
+        },
+        |cx, input, event| {
+            if event == PromptEvent::Validate {
+                crate::roam::insert_node_link(cx.editor, input);
+            }
+        },
+    ))
+}
+
+/// Opens a node chosen at random.
+fn roam_random_node(cx: &mut Context) {
+    crate::roam::random_node(cx.editor);
+}
+
+/// Asks for a value and edits the node-at-point's drawer with it.
+/// Builds a prompt that edits the node-at-point's drawer with what is typed.
+pub fn property_prompt(label: &'static str, apply: fn(&mut Editor, &str)) -> Box<dyn Component> {
+    Box::new(ui::Prompt::new(
+        label.into(),
+        None,
+        |_editor, _input| Vec::new(),
+        move |cx, input, event| {
+            if event == PromptEvent::Validate {
+                apply(cx.editor, input);
+            }
+        },
+    ))
+}
+
+fn prompt_for_property(cx: &mut Context, label: &'static str, apply: fn(&mut Editor, &str)) {
+    let prompt = property_prompt(label, apply);
+    cx.push_layer(prompt);
+}
+
+fn roam_alias_add(cx: &mut Context) {
+    prompt_for_property(cx, "Alias: ", crate::roam::alias_add);
+}
+
+fn roam_alias_remove(cx: &mut Context) {
+    prompt_for_property(cx, "Remove alias: ", crate::roam::alias_remove);
+}
+
+fn roam_tag_add(cx: &mut Context) {
+    prompt_for_property(cx, "Tag: ", crate::roam::tag_add);
+}
+
+fn roam_tag_remove(cx: &mut Context) {
+    prompt_for_property(cx, "Remove tag: ", crate::roam::tag_remove);
+}
+
+fn roam_ref_add(cx: &mut Context) {
+    prompt_for_property(cx, "Ref: ", crate::roam::ref_add);
+}
+
+fn roam_ref_remove(cx: &mut Context) {
+    prompt_for_property(cx, "Remove ref: ", crate::roam::ref_remove);
 }
 
 /// Shows or hides the backlinks panel for the focused document.

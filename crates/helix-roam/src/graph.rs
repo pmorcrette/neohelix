@@ -183,6 +183,15 @@ impl RoamGraph {
             .unwrap_or_default()
     }
 
+    /// Every `:ROAM_REFS:` key, with the node claiming it.
+    ///
+    /// The graph has always resolved refs; nothing exposed them for searching.
+    pub fn refs(&self) -> impl Iterator<Item = (&str, &Node)> {
+        self.refs
+            .iter()
+            .filter_map(|(key, id)| Some((key.as_str(), self.get_node(id)?)))
+    }
+
     /// Every bibliography key the graph has seen.
     pub fn citation_keys(&self) -> impl Iterator<Item = &str> {
         self.citations.keys().map(String::as_str)

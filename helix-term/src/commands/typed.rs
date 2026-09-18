@@ -2263,6 +2263,58 @@ roam_buffer_command!(org_store_link, crate::roam::store_link);
 roam_buffer_command!(org_insert_link, crate::roam::insert_stored_link);
 roam_buffer_command!(org_create_id, crate::roam::create_id);
 
+/// Pushes a component built from the editor, from a typable command.
+macro_rules! roam_component_command {
+    ($name:ident, $build:expr) => {
+        fn $name(
+            cx: &mut compositor::Context,
+            _args: Args,
+            event: PromptEvent,
+        ) -> anyhow::Result<()> {
+            if event != PromptEvent::Validate {
+                return Ok(());
+            }
+            let callback = async move {
+                let call: job::Callback = Callback::EditorCompositor(Box::new(
+                    move |editor: &mut Editor, compositor: &mut Compositor| {
+                        let build: fn(&mut Editor) -> Option<Box<dyn Component>> = $build;
+                        if let Some(component) = build(editor) {
+                            compositor.push(component);
+                        }
+                    },
+                ));
+                Ok(call)
+            };
+            cx.jobs.callback(callback);
+            Ok(())
+        }
+    };
+}
+
+roam_component_command!(roam_node_insert, |editor| Some(
+    crate::commands::roam_node_insert_prompt(editor)
+));
+roam_component_command!(roam_ref_find, crate::commands::roam_ref_picker);
+roam_component_command!(roam_alias_add, |_editor| Some(
+    crate::commands::property_prompt("Alias: ", crate::roam::alias_add)
+));
+roam_component_command!(roam_alias_remove, |_editor| Some(
+    crate::commands::property_prompt("Remove alias: ", crate::roam::alias_remove)
+));
+roam_component_command!(roam_tag_add, |_editor| Some(
+    crate::commands::property_prompt("Tag: ", crate::roam::tag_add)
+));
+roam_component_command!(roam_tag_remove, |_editor| Some(
+    crate::commands::property_prompt("Remove tag: ", crate::roam::tag_remove)
+));
+roam_component_command!(roam_ref_add, |_editor| Some(
+    crate::commands::property_prompt("Ref: ", crate::roam::ref_add)
+));
+roam_component_command!(roam_ref_remove, |_editor| Some(
+    crate::commands::property_prompt("Remove ref: ", crate::roam::ref_remove)
+));
+roam_buffer_command!(roam_random_node, crate::roam::random_node);
+
 fn roam_refile(
     cx: &mut compositor::Context,
     _args: Args,
@@ -3867,6 +3919,105 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &["org-id-get-create"],
         doc: "Give the entry at the cursor an :ID: so it can be linked to.",
         fun: org_create_id,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-node-insert",
+        aliases: &["roam-insert"],
+        doc: "Insert a link to an Org-Roam node, creating it if the title is new.",
+        fun: roam_node_insert,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-ref-find",
+        aliases: &[],
+        doc: "Find an Org-Roam node by one of its :ROAM_REFS: keys.",
+        fun: roam_ref_find,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-random-node",
+        aliases: &["roam-random"],
+        doc: "Open a random Org-Roam node.",
+        fun: roam_random_node,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-alias-add",
+        aliases: &[],
+        doc: "Add an alias to the node at the cursor.",
+        fun: roam_alias_add,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-alias-remove",
+        aliases: &[],
+        doc: "Remove an alias from the node at the cursor.",
+        fun: roam_alias_remove,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-tag-add",
+        aliases: &[],
+        doc: "Add a tag to the node at the cursor.",
+        fun: roam_tag_add,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-tag-remove",
+        aliases: &[],
+        doc: "Remove a tag from the node at the cursor.",
+        fun: roam_tag_remove,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-ref-add",
+        aliases: &[],
+        doc: "Add a ref to the node at the cursor.",
+        fun: roam_ref_add,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-ref-remove",
+        aliases: &[],
+        doc: "Remove a ref from the node at the cursor.",
+        fun: roam_ref_remove,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

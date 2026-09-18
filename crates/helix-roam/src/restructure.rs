@@ -26,6 +26,8 @@ pub enum Error {
     NoTitle,
     /// The chosen target node was not found in its file.
     NoTarget,
+    /// The entry has no property drawer to edit.
+    NoDrawer,
 }
 
 impl fmt::Display for Error {
@@ -36,6 +38,7 @@ impl fmt::Display for Error {
             Error::AlreadyTopLevel => write!(f, "already a top-level node"),
             Error::NoTitle => write!(f, "the file has no #+title: to demote"),
             Error::NoTarget => write!(f, "the target node was not found in its file"),
+            Error::NoDrawer => write!(f, "the entry has no property drawer; give it an :ID: first"),
         }
     }
 }
@@ -296,6 +299,220 @@ fn existing_id(subtree: &[String]) -> Option<Uuid> {
         }
     }
     None
+}
+
+/// Adds or removes a tag on the entry at `line`.
+///
+/// Tags are not a drawer property: a headline carries them as a trailing
+/// `:a:b:` run, and a file-level node carries them in `#+filetags:`. Both are
+/// handled here so the caller does not have to know which kind of entry it is
+/// looking at.
+pub fn edit_tag(text: &str, line: usize, tag: &str, add: bool) -> Result<Option<String>, Error> {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let at = line.min(lines.len().saturating_sub(1));
+    let headline = lines[..=at]
+        .iter()
+        .rposition(|l| headline_level(l).is_some());
+
+    let (mut tags, target) = match headline {
+        Some(at) => {
+            let (_, tags) = split_tags(headline_text(&lines[at]));
+            (tags, Some(at))
+        }
+        None => {
+            let at = lines
+                .iter()
+                .position(|l| keyword_value(l, "filetags").is_some());
+            let tags = at
+                .map(|at| {
+                    keyword_value(&lines[at], "filetags")
+                        .unwrap_or_default()
+                        .split(':')
+                        .filter(|tag| !tag.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            (tags, at)
+        }
+    };
+
+    let present = tags.iter().any(|t| t == tag);
+    if add == present {
+        return Ok(None);
+    }
+    if add {
+        tags.push(tag.to_string());
+    } else {
+        tags.retain(|t| t != tag);
+    }
+
+    match headline {
+        Some(at) => {
+            let stars = "*".repeat(headline_level(&lines[at]).unwrap_or(1));
+            let (title, _) = split_tags(headline_text(&lines[at]));
+            lines[at] = if tags.is_empty() {
+                format!("{stars} {title}")
+            } else {
+                format!("{stars} {title}  :{}:", tags.join(":"))
+            };
+        }
+        None => {
+            let rendered = format!("#+filetags: :{}:", tags.join(":"));
+            match (target, tags.is_empty()) {
+                (Some(at), true) => {
+                    lines.remove(at);
+                }
+                (Some(at), false) => lines[at] = rendered,
+                // No keyword yet: it goes after `#+title:` when there is one.
+                (None, _) => {
+                    let after = lines
+                        .iter()
+                        .position(|l| keyword_value(l, "title").is_some())
+                        .map_or(0, |at| at + 1);
+                    lines.insert(after, rendered);
+                }
+            }
+        }
+    }
+
+    Ok(Some(rejoin(&lines, text)))
+}
+
+/// Adds or removes a value in a multi-valued property of the entry at `line`.
+///
+/// `:ROAM_ALIASES:` and `:ROAM_REFS:` hold space-separated lists whose entries
+/// are quoted when they contain a space, so editing one means reading the list,
+/// changing it and writing it back rather than appending text.
+///
+/// Returns `None` when there was nothing to do — the value was already there,
+/// or was not there to remove — so the caller can say so instead of marking
+/// the buffer modified for nothing.
+pub fn edit_property(
+    text: &str,
+    line: usize,
+    property: &str,
+    value: &str,
+    add: bool,
+) -> Result<Option<String>, Error> {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let at = line.min(lines.len().saturating_sub(1));
+
+    let headline = lines[..=at]
+        .iter()
+        .rposition(|l| headline_level(l).is_some());
+    let search_from = headline.map_or(0, |at| at + 1);
+
+    let Some((drawer_start, drawer_end)) = drawer_range(&lines, search_from) else {
+        return Err(Error::NoDrawer);
+    };
+
+    // The property's current values, and where its line is.
+    let existing = lines[drawer_start..drawer_end]
+        .iter()
+        .position(|l| {
+            l.trim()
+                .strip_prefix(':')
+                .and_then(|rest| rest.split_once(':'))
+                .is_some_and(|(key, _)| key.eq_ignore_ascii_case(property))
+        })
+        .map(|offset| drawer_start + offset);
+
+    let mut values: Vec<String> = existing
+        .map(|at| {
+            let raw = lines[at]
+                .trim()
+                .strip_prefix(':')
+                .and_then(|rest| rest.split_once(':'))
+                .map(|(_, value)| value)
+                .unwrap_or_default();
+            parse_quoted_values(raw)
+        })
+        .unwrap_or_default();
+
+    let present = values.iter().any(|v| v == value);
+    if add == present {
+        return Ok(None);
+    }
+
+    if add {
+        values.push(value.to_string());
+    } else {
+        values.retain(|v| v != value);
+    }
+
+    let rendered = format!(":{property}: {}", render_quoted_values(&values));
+
+    match (existing, values.is_empty()) {
+        // Removing the last value removes the property line with it.
+        (Some(at), true) => {
+            lines.remove(at);
+        }
+        (Some(at), false) => lines[at] = rendered,
+        (None, _) => lines.insert(drawer_end, rendered),
+    }
+
+    Ok(Some(rejoin(&lines, text)))
+}
+
+/// Start and end (exclusive, not counting `:END:`) of the drawer opening at or
+/// just after `from`.
+fn drawer_range(lines: &[String], from: usize) -> Option<(usize, usize)> {
+    let start = lines[from..]
+        .iter()
+        .position(|l| l.trim().eq_ignore_ascii_case(":PROPERTIES:"))
+        .map(|offset| from + offset + 1)?;
+
+    // The drawer must follow the headline, not appear further down the file.
+    if lines[from..start - 1].iter().any(|l| !l.trim().is_empty()) {
+        return None;
+    }
+
+    let end = lines[start..]
+        .iter()
+        .position(|l| l.trim().eq_ignore_ascii_case(":END:"))
+        .map(|offset| start + offset)?;
+
+    Some((start, end))
+}
+
+/// Splits `"a b" c` into its values, honouring the quotes Org uses.
+fn parse_quoted_values(raw: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+
+    for c in raw.chars() {
+        match c {
+            '"' => quoted = !quoted,
+            c if c.is_whitespace() && !quoted => {
+                if !current.is_empty() {
+                    values.push(std::mem::take(&mut current));
+                }
+            }
+            c => current.push(c),
+        }
+    }
+    if !current.is_empty() {
+        values.push(current);
+    }
+
+    values
+}
+
+/// Renders values back, quoting the ones that need it.
+fn render_quoted_values(values: &[String]) -> String {
+    values
+        .iter()
+        .map(|value| {
+            if value.chars().any(char::is_whitespace) {
+                format!("\"{value}\"")
+            } else {
+                value.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The id and headline of the entry containing `line`, when it has one.

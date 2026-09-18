@@ -443,3 +443,131 @@ fn the_preamble_entry_is_found_when_the_file_node_has_an_id() {
     );
     assert_eq!(title, "A file node");
 }
+
+const WITH_DRAWER: &str = "\
+* A heading
+:PROPERTIES:
+:ID:       6ba7b810-9dad-11d1-80b4-00c04fd430c8
+:ROAM_ALIASES: short \"a longer one\"
+:END:
+Body.
+";
+
+#[test]
+fn adding_a_value_keeps_the_ones_already_there() {
+    use helix_roam::restructure::edit_property;
+
+    let out = edit_property(WITH_DRAWER, 5, "ROAM_ALIASES", "third", true)
+        .unwrap()
+        .unwrap();
+
+    // Quoting is preserved for the value that needs it, and not added to the
+    // ones that do not.
+    assert!(
+        out.contains(":ROAM_ALIASES: short \"a longer one\" third"),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_value_with_a_space_is_quoted_on_the_way_back_in() {
+    use helix_roam::restructure::edit_property;
+
+    let out = edit_property(WITH_DRAWER, 5, "ROAM_ALIASES", "two words", true)
+        .unwrap()
+        .unwrap();
+    assert!(out.contains("\"two words\""), "{out}");
+}
+
+#[test]
+fn a_property_that_is_not_there_yet_is_created() {
+    use helix_roam::restructure::edit_property;
+
+    let out = edit_property(WITH_DRAWER, 5, "ROAM_REFS", "https://example.org", true)
+        .unwrap()
+        .unwrap();
+
+    assert!(out.contains(":ROAM_REFS: https://example.org"), "{out}");
+    // And it lands inside the drawer, before its `:END:`.
+    let refs = out.find(":ROAM_REFS:").unwrap();
+    let end = out.find(":END:").unwrap();
+    assert!(refs < end, "{out}");
+}
+
+#[test]
+fn removing_the_last_value_removes_the_property_line() {
+    use helix_roam::restructure::edit_property;
+
+    let one = "* H\n:PROPERTIES:\n:ID:       a\n:ROAM_REFS: only\n:END:\n";
+    let out = edit_property(one, 3, "ROAM_REFS", "only", false)
+        .unwrap()
+        .unwrap();
+
+    assert!(!out.contains("ROAM_REFS"), "{out}");
+    // The rest of the drawer survives.
+    assert!(out.contains(":ID:       a"), "{out}");
+}
+
+#[test]
+fn nothing_to_do_reports_nothing_rather_than_touching_the_buffer() {
+    use helix_roam::restructure::edit_property;
+
+    // Already present.
+    assert_eq!(
+        edit_property(WITH_DRAWER, 5, "ROAM_ALIASES", "short", true).unwrap(),
+        None
+    );
+    // Not there to remove.
+    assert_eq!(
+        edit_property(WITH_DRAWER, 5, "ROAM_ALIASES", "absent", false).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn an_entry_without_a_drawer_says_so() {
+    use helix_roam::restructure::{edit_property, Error};
+
+    let bare = "* A heading with no drawer\nBody.\n";
+    assert_eq!(
+        edit_property(bare, 1, "ROAM_ALIASES", "x", true),
+        Err(Error::NoDrawer)
+    );
+}
+
+#[test]
+fn a_headlines_tags_live_on_its_own_line() {
+    use helix_roam::restructure::edit_tag;
+
+    let text = "* A heading  :one:\nBody.\n";
+    let out = edit_tag(text, 1, "two", true).unwrap().unwrap();
+    assert_eq!(out, "* A heading  :one:two:\nBody.\n");
+
+    // Removing the last tag leaves a clean headline rather than empty colons.
+    let one = "* A heading  :only:\n";
+    let out = edit_tag(one, 0, "only", false).unwrap().unwrap();
+    assert_eq!(out, "* A heading\n");
+}
+
+#[test]
+fn a_file_nodes_tags_live_in_filetags() {
+    use helix_roam::restructure::edit_tag;
+
+    // Above any headline the entry is the file, so the keyword is edited.
+    let text = "#+title: A note\nBody.\n";
+    let out = edit_tag(text, 1, "work", true).unwrap().unwrap();
+    assert_eq!(out, "#+title: A note\n#+filetags: :work:\nBody.\n");
+
+    // And an existing keyword is extended rather than duplicated.
+    let out = edit_tag(&out, 2, "urgent", true).unwrap().unwrap();
+    assert!(out.contains("#+filetags: :work:urgent:"), "{out}");
+}
+
+#[test]
+fn a_tag_that_changes_nothing_reports_nothing() {
+    use helix_roam::restructure::edit_tag;
+
+    let text = "* A heading  :one:\n";
+    assert_eq!(edit_tag(text, 0, "one", true).unwrap(), None);
+    assert_eq!(edit_tag(text, 0, "absent", false).unwrap(), None);
+}

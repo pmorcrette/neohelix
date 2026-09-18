@@ -608,3 +608,229 @@ pub fn create_id(editor: &mut Editor) {
         Err(err) => editor.set_error(err.to_string()),
     }
 }
+
+/// The directory new nodes are created in.
+fn notes_directory(editor: &Editor) -> PathBuf {
+    editor.config().roam.directory.clone().unwrap_or_else(|| {
+        // Same fallback the indexer uses, so a created node lands where
+        // the graph is looking.
+        helix_loader::find_workspace().0
+    })
+}
+
+/// Titles and aliases of every indexed node, for completion.
+pub fn node_titles(editor: &Editor) -> Vec<String> {
+    let mut titles: Vec<String> = {
+        let graph = editor.roam.read();
+        graph
+            .nodes()
+            .flat_map(|node| {
+                std::iter::once(node.title.clone()).chain(node.aliases.iter().cloned())
+            })
+            .filter(|title| !title.is_empty())
+            .collect()
+    };
+
+    titles.sort_unstable();
+    titles.dedup();
+    titles
+}
+
+/// Inserts a link to the node called `title`, creating it if there is none.
+///
+/// Creating on the spot is the point of the command: a note is written by
+/// naming what it links to, and the target catching up later.
+pub fn insert_node_link(editor: &mut Editor, title: &str) {
+    let title = title.trim();
+    if title.is_empty() {
+        return;
+    }
+
+    let existing = {
+        let graph = editor.roam.read();
+        // Bound to a local so the iterator is dropped before the guard is.
+        let found = graph
+            .nodes()
+            .find(|node| node.matches_title(title))
+            .map(|node| node.id);
+        found
+    };
+
+    let id = match existing {
+        Some(id) => id,
+        None => match create_node(editor, title) {
+            Some(id) => id,
+            None => return,
+        },
+    };
+
+    let link = helix_roam::hyperlink::format_link(&format!("id:{id}"), Some(title));
+    let (view, doc) = current!(editor);
+    let selection = doc.selection(view.id).clone();
+    let transaction =
+        helix_core::Transaction::change_by_selection(doc.text(), &selection, |range| {
+            (range.head, range.head, Some(link.as_str().into()))
+        });
+    doc.apply(&transaction, view.id);
+}
+
+/// Writes a new file-level node titled `title`, and indexes it.
+fn create_node(editor: &mut Editor, title: &str) -> Option<helix_roam::Uuid> {
+    let directory = notes_directory(editor);
+    let id = helix_roam::Uuid::new_v4();
+    let path = directory.join(format!("{}.org", slugify(title)));
+
+    if path.exists() {
+        editor.set_error(format!("{} already exists", path.display()));
+        return None;
+    }
+
+    let contents = format!(":PROPERTIES:\n:ID:       {id}\n:END:\n#+title: {title}\n\n");
+    if let Err(err) = std::fs::create_dir_all(&directory) {
+        editor.set_error(format!("could not create {}: {err}", directory.display()));
+        return None;
+    }
+    if let Err(err) = std::fs::write(&path, &contents) {
+        editor.set_error(format!("could not write {}: {err}", path.display()));
+        return None;
+    }
+
+    // Index it now rather than waiting for a save that may never come: the
+    // link about to be inserted has to resolve immediately.
+    helix_roam::reindex_file(&mut editor.roam.write(), &path, &contents);
+    editor.set_status(format!("Created {}", path.display()));
+    Some(id)
+}
+
+/// Adds or removes a value in the node-at-point's property drawer.
+fn edit_node_property(editor: &mut Editor, property: &'static str, value: &str, add: bool) {
+    let value = value.trim();
+    if value.is_empty() {
+        return;
+    }
+
+    let offset = cursor_offset(editor);
+    let text = doc!(editor).text().to_string();
+    let line = doc!(editor).text().byte_to_line(offset);
+
+    match helix_roam::restructure::edit_property(&text, line, property, value, add) {
+        Ok(Some(after)) => {
+            let before = doc!(editor).text().clone();
+            let after = helix_core::Rope::from(after.as_str());
+            let transaction = helix_core::diff::compare_ropes(&before, &after);
+            let view = view!(editor).id;
+            doc_mut!(editor).apply(&transaction, view);
+            editor.set_status(if add {
+                format!("Added {value}")
+            } else {
+                format!("Removed {value}")
+            });
+        }
+        Ok(None) => editor.set_status(if add {
+            format!("{value} is already there")
+        } else {
+            format!("{value} was not there")
+        }),
+        Err(err) => editor.set_error(err.to_string()),
+    }
+}
+
+/// Adds or removes a tag on the node at the cursor.
+fn edit_node_tag(editor: &mut Editor, tag: &str, add: bool) {
+    let tag = tag.trim();
+    if tag.is_empty() {
+        return;
+    }
+
+    let offset = cursor_offset(editor);
+    let text = doc!(editor).text().to_string();
+    let line = doc!(editor).text().byte_to_line(offset);
+
+    match helix_roam::restructure::edit_tag(&text, line, tag, add) {
+        Ok(Some(after)) => {
+            let before = doc!(editor).text().clone();
+            let after = helix_core::Rope::from(after.as_str());
+            let transaction = helix_core::diff::compare_ropes(&before, &after);
+            let view = view!(editor).id;
+            doc_mut!(editor).apply(&transaction, view);
+            editor.set_status(if add {
+                format!("Added :{tag}:")
+            } else {
+                format!("Removed :{tag}:")
+            });
+        }
+        Ok(None) => editor.set_status(if add {
+            format!(":{tag}: is already there")
+        } else {
+            format!(":{tag}: was not there")
+        }),
+        Err(err) => editor.set_error(err.to_string()),
+    }
+}
+
+/// Adds a tag to the node at the cursor.
+pub fn tag_add(editor: &mut Editor, tag: &str) {
+    edit_node_tag(editor, tag, true);
+}
+
+/// Removes a tag from the node at the cursor.
+pub fn tag_remove(editor: &mut Editor, tag: &str) {
+    edit_node_tag(editor, tag, false);
+}
+
+/// Adds an alias to the node at the cursor.
+pub fn alias_add(editor: &mut Editor, alias: &str) {
+    edit_node_property(editor, "ROAM_ALIASES", alias, true);
+}
+
+/// Removes an alias from the node at the cursor.
+pub fn alias_remove(editor: &mut Editor, alias: &str) {
+    edit_node_property(editor, "ROAM_ALIASES", alias, false);
+}
+
+/// Adds a ref to the node at the cursor.
+pub fn ref_add(editor: &mut Editor, reference: &str) {
+    edit_node_property(editor, "ROAM_REFS", reference, true);
+}
+
+/// Removes a ref from the node at the cursor.
+pub fn ref_remove(editor: &mut Editor, reference: &str) {
+    edit_node_property(editor, "ROAM_REFS", reference, false);
+}
+
+/// Opens a node chosen at random.
+///
+/// The way a large set of notes gets revisited rather than only added to.
+pub fn random_node(editor: &mut Editor) {
+    let candidates: Vec<(PathBuf, usize)> = {
+        let graph = editor.roam.read();
+        graph
+            .nodes()
+            .map(|node| (node.file_path.clone(), node.line))
+            .collect()
+    };
+
+    if candidates.is_empty() {
+        editor.set_status("No Org-Roam nodes indexed.");
+        return;
+    }
+
+    // Nanoseconds are enough randomness for picking a note to reread, and
+    // avoid a dependency for it.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.subsec_nanos() as usize)
+        .unwrap_or(0);
+    let (path, line) = &candidates[nanos % candidates.len()];
+
+    if let Err(err) = editor.open(path, helix_view::editor::Action::Replace) {
+        editor.set_error(format!("could not open {}: {err}", path.display()));
+        return;
+    }
+    let byte = {
+        let doc = doc!(editor);
+        doc.text()
+            .line_to_byte((*line).min(doc.text().len_lines() - 1))
+    };
+    jump_to_byte(editor, byte);
+}
