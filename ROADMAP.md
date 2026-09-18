@@ -50,6 +50,34 @@ You are developing a custom fork of Helix in Rust. The goal is to integrate:
 - [ ] Implement line-level patch generation algorithm for staging (`s`) and unstaging (`u`).
 - [ ] Render diff text using Helix's native Tree-sitter highlighter and active theme (`Theme`/`Style`).
 
+### Task 2.4: Executing the Transient Commands
+
+The transient menus resolve a git command line from their switches and options,
+but running it is deliberately not implemented: actions report the command they
+would run instead. Executing them needs a message editor, credentials, progress
+and async process handling, none of which the menu system itself covers.
+
+- [ ] Run a resolved command line asynchronously, on a job, so the editor never
+      blocks on git; stream stdout/stderr and surface failures in the status
+      buffer rather than discarding them.
+- [ ] `Commit`: open a scratch buffer seeded with the commit template and the
+      status comment block, and commit when it is written and closed — with a
+      way to abort that leaves the index untouched.
+- [ ] `Commit --amend` / `Extend` / `Fixup`: seed the buffer from HEAD's
+      message, and refuse to amend a pushed commit without confirmation.
+- [ ] `Push` / `Pull` / `Fetch`: decide between `gix`'s own transport and
+      invoking the `git` binary for network operations. `gix` keeps the fork
+      free of a `git` dependency, but the user's credential helpers, SSH agent
+      configuration and `~/.gitconfig` `url.*.insteadOf` rules come for free
+      only with the binary. This decision gates the whole group.
+- [ ] `Rebase`: `--interactive` needs `GIT_SEQUENCE_EDITOR` pointed back at
+      Helix, which means the integrated terminal or a spawned instance; decide
+      which before starting.
+- [ ] Refresh the `DiffView` after any command that changes the index, HEAD or
+      the working tree.
+- [ ] Guard destructive actions (`--force`, `branch -d`, `rebase --abort`)
+      behind a confirmation that names what will be lost.
+
 ---
 
 ## Phase 3: Integrated Terminal (`crates/helix-pty`)
@@ -90,3 +118,43 @@ You are developing a custom fork of Helix in Rust. The goal is to integrate:
   upstream purely additive, so future merges have nothing to conflict with.
   The fork's commands therefore sit on keys the default keymap leaves free —
   `n` for notes, `m` for Magit, `t` for the terminal.
+
+---
+
+## Phase 5: Docked Panes (`helix-view` layout)
+
+### Task 5.1: Non-document Panes in the `Tree`
+
+The Org-Roam backlinks panel, the Magit status buffer and the terminal are all
+rendered as compositor overlays: they sit on top of the editor rather than
+beside it, so they cover the document instead of making room next to it. Every
+one of them wants to be a real pane, and they are blocked by the same thing.
+
+`helix-view::tree::Content` has exactly two shapes, `View` and `Container`, and
+a `View` is hard-bound to a `DocumentId`. A pane that is not a document
+therefore cannot become a node of the tree at all. `EditorView::render`
+iterates `tree.views()` and draws each node as a document, which assumes the
+same thing.
+
+Doing this once serves all three components, and it is the last structural
+difference between the fork's UI and a native one.
+
+- [ ] Add a third `Content` variant for a non-document pane, keeping
+      `Tree::views()` returning only document views so the existing call sites
+      do not silently change meaning.
+- [ ] Teach the tree's traversal, focus and geometry about the new variant:
+      `jump_view_left/right/up/down`, `rotate_view`, `transpose_view`,
+      `swap_view_*`, `wclose` and `wonly`.
+- [ ] Give panes a minimum and a preferred size, and have `Tree::recalculate`
+      honour them rather than splitting a container's area evenly.
+- [ ] Dispatch rendering per node kind in `EditorView::render`.
+- [ ] Route keys to the focused pane instead of the document keymap, and define
+      what `Esc` and the window commands mean while a pane has focus.
+- [ ] Decide what closing the last document view means while a pane is open.
+- [ ] Port the three overlays onto panes: backlinks, Magit status, terminal.
+
+This is the one task in the roadmap that rewrites a file the fork currently
+takes from upstream untouched. `tree.rs` and `ui/editor.rs` are both actively
+maintained upstream, so this trades a native-feeling UI for a permanent merge
+cost — worth deciding explicitly before starting, and worth keeping the diff as
+narrow as the list above allows.
