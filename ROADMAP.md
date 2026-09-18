@@ -39,7 +39,9 @@ remains after them is Emacs integration rather than Org, and is named at the
 end of Task 1.16. Tasks 1.17 to 1.20 were derived the same way from Org-Roam's
 own sources: the interactive commands its modules define, its extensions, and
 the schema its database stores. Task 1.21 was derived from Org's
-`org-options-keywords` and `org-startup-options` declarations directly.*
+`org-options-keywords` and `org-startup-options` declarations directly. All of
+Phase 1 was then re-checked against local clones of the Org and Org-Roam
+sources, which added Task 1.22 and confirmed the rest.*
 
 ### Task 1.4: Section Folding
 
@@ -373,6 +375,23 @@ will re-decide in Helix's own configuration idiom. What is filed above is the
 subset that changes how a file parses, because those are the ones where being
 wrong is silent.*
 
+### Task 1.22: Index Maintenance and Inspection
+
+Upstream ships a set of commands for when the index and the files disagree.
+The fork has one, `roam-reindex`, and no way to look at what the index
+believes.
+
+- [ ] Rebuild the whole index from scratch, distinct from reindexing one file,
+      for when an incremental update has gone wrong.
+- [ ] Resolve `id:` links whose target lives outside the notes directory.
+      Upstream keeps a separate cache of id locations for exactly this; the
+      fork's graph only knows the files it scanned, so such a link silently
+      fails to resolve.
+- [ ] Browse the index: which nodes, links and refs it holds, as a way of
+      telling a parser bug from a malformed file.
+- [ ] Report the fork's own state — versions, notes directory, file and node
+      counts — so a bug report can carry it.
+
 ---
 
 ## Phase 2: Magit Client (`crates/helix-magit`)
@@ -427,7 +446,9 @@ and async process handling, none of which the menu system itself covers.
 it. Tasks 2.15 to 2.19 cover the long tail below that menu, derived the same
 way: from Magit's own module list and from the interactive commands its
 grab-bag module defines. What remains after them is Emacs integration rather
-than Git, and is named at the end of Task 2.19.*
+than Git, and is named at the end of Task 2.19. The whole phase was then
+re-checked against a local clone, enumerating all 51 of Magit's transients,
+which added Task 2.20 and four items to Task 2.9 and confirmed the rest.*
 
 ### Task 2.5: The Rest of the Status Buffer
 
@@ -523,6 +544,11 @@ these are mostly breadth rather than new mechanism — with the exceptions noted
       `.gitignore` or in the private exclude file.
 - [ ] Branch management the Task 2.4 menu left out: rename, reset, `spinoff`
       and `spinout`.
+- [ ] The configuration transients: a branch's own git config (upstream, rebase
+      behaviour, description) and a remote's, both of which upstream gives a
+      menu of their own rather than a single "set upstream" action.
+- [ ] Shortlog: who contributed what over a range.
+- [ ] Fetch submodules as an operation distinct from fetching the repository.
 
 ### Task 2.10: Conflict Resolution
 
@@ -662,6 +688,23 @@ used more often than most of the transients above.
 integration, `project.el` entry points, shift-selection variants of the
 cursor-motion commands, and wrappers that launch `gitk` and `git gui`. These
 have no meaning in Helix and are deliberately not listed as gaps.*
+
+### Task 2.20: Commit Construction and Attribution
+
+Three commit-building tools upstream offers that the fork has no equivalent of.
+The first is small and used constantly; the other two are the reason people
+describe Magit as letting them commit the way they think.
+
+- [ ] Trailers in the message buffer: insert `Signed-off-by`, `Co-authored-by`,
+      `Reported-by` and the rest, with completion over people already in the
+      history rather than retyping an address.
+- [ ] Absorb: take the staged changes and fold each hunk into whichever earlier
+      commit introduced the lines it touches, instead of one catch-all fixup.
+      This needs blame per hunk and then an autosquash, so it depends on
+      Tasks 2.11 and 2.7.
+- [ ] Autofixup: the same idea driven from the diff rather than from blame.
+- [ ] Both rewrite history, so they inherit Task 2.4's rule about not amending
+      what is already pushed, and need the same confirmation.
 
 ---
 
