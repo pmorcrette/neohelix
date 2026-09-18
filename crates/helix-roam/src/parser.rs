@@ -76,6 +76,12 @@ pub struct FileSettings {
     pub drawers: Vec<String>,
     /// `#+STARTUP:` options, in the order given.
     pub startup: Vec<String>,
+    /// `#+LINK:` abbreviations, as `(name, expansion)`.
+    ///
+    /// Per file, so `[[gh:owner/repo]]` can mean different things in two
+    /// files — which is why following a link has to consult these rather than
+    /// a global table.
+    pub link_abbreviations: Vec<(String, String)>,
 }
 
 impl Default for FileSettings {
@@ -90,6 +96,7 @@ impl Default for FileSettings {
             declared_tags: Vec::new(),
             drawers: Vec::new(),
             startup: Vec::new(),
+            link_abbreviations: Vec::new(),
         }
     }
 }
@@ -164,6 +171,14 @@ impl FileSettings {
                 "startup" => settings
                     .startup
                     .extend(value.split_whitespace().map(str::to_string)),
+                // `#+LINK: gh https://github.com/%s`
+                "link" => {
+                    if let Some((name, expansion)) = value.split_once(char::is_whitespace) {
+                        settings
+                            .link_abbreviations
+                            .push((name.trim().to_string(), expansion.trim().to_string()));
+                    }
+                }
                 _ => {}
             }
         }
@@ -825,7 +840,7 @@ fn find_link_targets(line: &str) -> Vec<LinkTarget> {
     targets
 }
 
-fn find_from(haystack: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
+pub(crate) fn find_from(haystack: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
     haystack
         .get(from..)?
         .windows(needle.len())
@@ -835,7 +850,7 @@ fn find_from(haystack: &[u8], from: usize, needle: &[u8]) -> Option<usize> {
 
 /// End of the target part of a link: the `]` that closes it, whether the link
 /// has a description (`][`) or not (`]]`).
-fn find_close(bytes: &[u8], start: usize) -> Option<usize> {
+pub(crate) fn find_close(bytes: &[u8], start: usize) -> Option<usize> {
     let mut i = start;
     while i < bytes.len() {
         if bytes[i] == b']' {

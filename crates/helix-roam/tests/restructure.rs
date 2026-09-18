@@ -345,3 +345,101 @@ fn refiling_twice_appends_rather_than_interleaving() {
         second.target
     );
 }
+
+#[test]
+fn an_entry_without_an_id_is_given_one() {
+    use helix_roam::restructure::{ensure_id, IdOutcome};
+
+    let text = "#+title: Notes\n* A heading\nBody.\n";
+    let IdOutcome::Created {
+        text: after,
+        id: created,
+    } = ensure_id(text, 1, id(5)).unwrap()
+    else {
+        panic!("expected a new id");
+    };
+
+    assert_eq!(created, id(5));
+    assert_eq!(
+        after,
+        format!(
+            "#+title: Notes\n* A heading\n:PROPERTIES:\n:ID:       {}\n:END:\nBody.\n",
+            id(5)
+        )
+    );
+}
+
+#[test]
+fn an_entry_that_already_has_an_id_is_left_alone() {
+    use helix_roam::restructure::{ensure_id, IdOutcome};
+
+    let text = "\
+* A heading
+:PROPERTIES:
+:ID:       6ba7b810-9dad-11d1-80b4-00c04fd430c8
+:END:
+Body.
+";
+    assert_eq!(
+        ensure_id(text, 4, id(5)).unwrap(),
+        IdOutcome::Existing(Uuid::parse_str("6ba7b810-9dad-11d1-80b4-00c04fd430c8").unwrap())
+    );
+}
+
+#[test]
+fn the_preamble_can_be_given_an_id_too() {
+    use helix_roam::restructure::{ensure_id, IdOutcome};
+
+    // Above any headline, the entry is the file itself.
+    let text = "#+title: Notes\nSome body.\n* A heading\n";
+    let IdOutcome::Created { text: after, .. } = ensure_id(text, 0, id(6)).unwrap() else {
+        panic!("expected a new id");
+    };
+
+    assert!(after.starts_with(":PROPERTIES:\n"), "{after}");
+    assert!(after.contains("#+title: Notes"));
+}
+
+#[test]
+fn the_entry_at_a_line_is_found_from_its_headline_not_its_id_line() {
+    use helix_roam::restructure::entry_at;
+
+    let text = "\
+#+title: Fresh
+* A heading with an id
+:PROPERTIES:
+:ID:       6ba7b810-9dad-11d1-80b4-00c04fd430c8
+:END:
+Body.
+";
+    let expected = Uuid::parse_str("6ba7b810-9dad-11d1-80b4-00c04fd430c8").unwrap();
+
+    // Line 1 is the headline itself. A search keyed on the indexed node's line
+    // would miss it, because that line points at the `:ID:` on line 3 — which
+    // is *after* the cursor.
+    assert_eq!(
+        entry_at(text, 1),
+        Some((expected, "A heading with an id".to_string()))
+    );
+    // And from anywhere else inside the entry.
+    for line in 2..=5 {
+        assert_eq!(entry_at(text, line).map(|(id, _)| id), Some(expected));
+    }
+
+    // Above the headline the entry is the preamble, which has no id here.
+    assert_eq!(entry_at(text, 0), None);
+}
+
+#[test]
+fn the_preamble_entry_is_found_when_the_file_node_has_an_id() {
+    use helix_roam::restructure::entry_at;
+
+    let text = ":PROPERTIES:\n:ID:       6ba7b899-9dad-11d1-80b4-00c04fd430c8\n:END:\n#+title: A file node\nBody.\n";
+    let (id, title) = entry_at(text, 4).unwrap();
+
+    assert_eq!(
+        id,
+        Uuid::parse_str("6ba7b899-9dad-11d1-80b4-00c04fd430c8").unwrap()
+    );
+    assert_eq!(title, "A file node");
+}

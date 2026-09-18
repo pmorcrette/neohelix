@@ -6,6 +6,7 @@
 //! at it.
 
 mod graph;
+pub mod hyperlink;
 mod link;
 mod node;
 pub mod parser;
@@ -14,6 +15,7 @@ pub mod restructure;
 pub mod scanner;
 
 pub use graph::RoamGraph;
+pub use hyperlink::{find_links, link_at, LinkKind, OrgLink};
 pub use link::Link;
 pub use node::{Node, Timestamp, TodoState};
 pub use parser::{parse_org, FileSettings, ParsedFile};

@@ -298,6 +298,93 @@ fn existing_id(subtree: &[String]) -> Option<Uuid> {
     None
 }
 
+/// The id and headline of the entry containing `line`, when it has one.
+///
+/// "Entry" is the headline at or above the line, or the preamble when there is
+/// none. This is not the same question as finding the node whose indexed line
+/// is nearest: [`crate::Node::line`] points at the `:ID:` property rather than
+/// at the headline, so a cursor sitting on the headline itself is *before* its
+/// own node by that measure.
+pub fn entry_at(text: &str, line: usize) -> Option<(Uuid, String)> {
+    let lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let at = line.min(lines.len().saturating_sub(1));
+
+    let headline = lines[..=at]
+        .iter()
+        .rposition(|l| headline_level(l).is_some());
+
+    let (scope, title) = match headline {
+        Some(start) => {
+            let (title, _) = split_tags(headline_text(&lines[start]));
+            (lines[start..].to_vec(), title.to_string())
+        }
+        None => {
+            // The preamble node, whose drawer sits at the top of the file.
+            let mut scope = vec![String::new()];
+            scope.extend(lines.iter().cloned());
+            let title = lines
+                .iter()
+                .find_map(|l| keyword_value(l, "title"))
+                .unwrap_or_default()
+                .to_string();
+            (scope, title)
+        }
+    };
+
+    existing_id(&scope).map(|id| (id, title))
+}
+
+/// What giving an entry an id did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdOutcome {
+    /// The entry already had one; nothing was changed.
+    Existing(Uuid),
+    /// A drawer was added, and here is the file that results.
+    Created { text: String, id: Uuid },
+}
+
+/// Ensures the entry containing `line` has an `:ID:`.
+///
+/// The entry is the headline at or above the line, or the file's preamble when
+/// there is none — Org-Roam treats both as nodes, so both can be linked to.
+pub fn ensure_id(text: &str, line: usize, new_id: Uuid) -> Result<IdOutcome, Error> {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+
+    let headline = lines[..=line.min(lines.len().saturating_sub(1))]
+        .iter()
+        .rposition(|l| headline_level(l).is_some());
+
+    // The drawer goes directly under the headline, or at the very top for the
+    // preamble node.
+    let insert_at = headline.map_or(0, |at| at + 1);
+    let scope: Vec<String> = match headline {
+        Some(at) => lines[at..].to_vec(),
+        None => {
+            let mut scope = vec![String::new()];
+            scope.extend(lines.iter().cloned());
+            scope
+        }
+    };
+
+    if let Some(id) = existing_id(&scope) {
+        return Ok(IdOutcome::Existing(id));
+    }
+
+    lines.splice(
+        insert_at..insert_at,
+        [
+            ":PROPERTIES:".to_string(),
+            format!(":ID:       {new_id}"),
+            ":END:".to_string(),
+        ],
+    );
+
+    Ok(IdOutcome::Created {
+        text: rejoin(&lines, text),
+        id: new_id,
+    })
+}
+
 /// A subtree moved from one file to another.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refiling {

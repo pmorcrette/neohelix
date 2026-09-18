@@ -2258,6 +2258,10 @@ roam_buffer_command!(roam_promote_buffer, crate::roam::promote_buffer);
 roam_buffer_command!(roam_demote_buffer, crate::roam::demote_buffer);
 roam_buffer_command!(roam_extract_subtree, crate::roam::extract_subtree);
 roam_buffer_command!(roam_replace_links, crate::roam::replace_roam_links);
+roam_buffer_command!(org_follow_link, crate::roam::follow_link);
+roam_buffer_command!(org_store_link, crate::roam::store_link);
+roam_buffer_command!(org_insert_link, crate::roam::insert_stored_link);
+roam_buffer_command!(org_create_id, crate::roam::create_id);
 
 fn roam_refile(
     cx: &mut compositor::Context,
@@ -3819,6 +3823,50 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Rewrite this buffer's legacy roam: links as id: links.",
         fun: roam_replace_links,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-follow-link",
+        aliases: &["org-open"],
+        doc: "Follow the Org link under the cursor.",
+        fun: org_follow_link,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-store-link",
+        aliases: &[],
+        doc: "Store a link to the cursor's location, for inserting elsewhere.",
+        fun: org_store_link,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-insert-link",
+        aliases: &[],
+        doc: "Insert the stored Org link at the cursor.",
+        fun: org_insert_link,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-create-id",
+        aliases: &["org-id-get-create"],
+        doc: "Give the entry at the cursor an :ID: so it can be linked to.",
+        fun: org_create_id,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

@@ -416,6 +416,12 @@ impl MappableCommand {
         roam_extract_subtree, "Extract the subtree at the cursor into its own node",
         roam_replace_links, "Replace legacy roam: links with id: links",
         roam_refile, "Refile the subtree at the cursor into another Org-Roam node",
+        org_follow_link, "Follow the Org link under the cursor",
+        org_goto_next_link, "Move to the next Org link",
+        org_goto_previous_link, "Move to the previous Org link",
+        org_store_link, "Store a link to the cursor's location",
+        org_insert_link, "Insert the stored Org link",
+        org_create_id, "Give the entry at the cursor an :ID:",
         magit, "Open the Magit transient menu",
         terminal, "Open the integrated terminal",
         symbol_picker, "Open symbol picker",
@@ -3646,6 +3652,36 @@ fn roam_refile(cx: &mut Context) {
     if let Some(picker) = roam_refile_picker(cx.editor) {
         cx.push_layer(picker);
     }
+}
+
+/// Follows the Org link under the cursor.
+fn org_follow_link(cx: &mut Context) {
+    crate::roam::follow_link(cx.editor);
+}
+
+/// Moves to the next Org link in the buffer.
+fn org_goto_next_link(cx: &mut Context) {
+    crate::roam::goto_next_link(cx.editor);
+}
+
+/// Moves to the previous Org link in the buffer.
+fn org_goto_previous_link(cx: &mut Context) {
+    crate::roam::goto_previous_link(cx.editor);
+}
+
+/// Stores a link to the cursor's location.
+fn org_store_link(cx: &mut Context) {
+    crate::roam::store_link(cx.editor);
+}
+
+/// Inserts the stored link at the cursor.
+fn org_insert_link(cx: &mut Context) {
+    crate::roam::insert_stored_link(cx.editor);
+}
+
+/// Gives the entry at the cursor an `:ID:`.
+fn org_create_id(cx: &mut Context) {
+    crate::roam::create_id(cx.editor);
 }
 
 /// Shows or hides the backlinks panel for the focused document.

@@ -166,7 +166,10 @@ and internal targets exist.
 - [ ] `org-id` proper: create an ID on demand for the entry at point, rather
       than requiring the user to type a drawer by hand. Task 1.8's
       `roam-node-insert` needs this underneath it.
-- [ ] Inline preview of images and of link descriptions.
+- [ ] Inline preview of images and of link descriptions. Blocked for the same
+      reason as Task 1.14's LaTeX preview: this wants overlays or images that
+      Helix does not have, and the capability has to exist before the feature
+      can.
 
 ### Task 1.11: Properties, Drawers and Logging
 
