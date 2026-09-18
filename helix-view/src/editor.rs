@@ -537,6 +537,10 @@ pub struct RoamConfig {
     pub enable: bool,
     /// Directory to index. Defaults to the workspace root when unset.
     pub directory: Option<PathBuf>,
+    /// Where daily notes live, relative to `directory` unless absolute.
+    ///
+    /// Defaults to `daily`, which is what Org-Roam uses.
+    pub dailies_directory: PathBuf,
 }
 
 impl Default for RoamConfig {
@@ -544,6 +548,7 @@ impl Default for RoamConfig {
         Self {
             enable: true,
             directory: None,
+            dailies_directory: PathBuf::from("daily"),
         }
     }
 }
@@ -556,6 +561,22 @@ impl RoamConfig {
         match &self.directory {
             Some(directory) => helix_stdx::path::expand_tilde(directory.as_path()).into_owned(),
             None => helix_loader::find_workspace().0,
+        }
+    }
+
+    /// Where daily notes live.
+    ///
+    /// Relative paths are taken from the notes directory, so the default
+    /// `daily` means a subdirectory of it rather than of the working
+    /// directory.
+    pub fn dailies_directory(&self) -> PathBuf {
+        let configured =
+            helix_stdx::path::expand_tilde(self.dailies_directory.as_path()).into_owned();
+
+        if configured.is_absolute() {
+            configured
+        } else {
+            self.directory().join(configured)
         }
     }
 }
@@ -2773,10 +2794,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn dailies_live_under_the_notes_directory_unless_absolute() {
+        let config = RoamConfig {
+            directory: Some(PathBuf::from("/notes")),
+            ..RoamConfig::default()
+        };
+        // The default is relative, so it is a subdirectory of the notes.
+        assert_eq!(config.dailies_directory(), PathBuf::from("/notes/daily"));
+
+        let absolute = RoamConfig {
+            directory: Some(PathBuf::from("/notes")),
+            dailies_directory: PathBuf::from("/elsewhere/journal"),
+            ..RoamConfig::default()
+        };
+        assert_eq!(
+            absolute.dailies_directory(),
+            PathBuf::from("/elsewhere/journal")
+        );
+    }
+
+    #[test]
     fn roam_directory_expands_a_leading_tilde() {
         let config = RoamConfig {
-            enable: true,
             directory: Some(PathBuf::from("~/org")),
+            ..RoamConfig::default()
         };
 
         let directory = config.directory();

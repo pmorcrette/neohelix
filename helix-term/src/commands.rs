@@ -427,6 +427,11 @@ impl MappableCommand {
         roam_ref_find, "Find an Org-Roam node by one of its refs",
         roam_alias_add, "Add an alias to the node at the cursor",
         roam_alias_remove, "Remove an alias from the node at the cursor",
+        roam_rename_node, "Rename the node at the cursor and the links naming it",
+        roam_dailies_today, "Open today's daily note",
+        roam_dailies_date, "Open the daily note for a date",
+        roam_dailies_next, "Open the next daily note",
+        roam_dailies_previous, "Open the previous daily note",
         roam_tag_add, "Add a tag to the node at the cursor",
         roam_tag_remove, "Remove a tag from the node at the cursor",
         roam_ref_add, "Add a ref to the node at the cursor",
@@ -3830,6 +3835,33 @@ fn roam_alias_add(cx: &mut Context) {
 
 fn roam_alias_remove(cx: &mut Context) {
     prompt_for_property(cx, "Remove alias: ", crate::roam::alias_remove);
+}
+
+/// Asks for a new title and renames the node at the cursor.
+fn roam_rename_node(cx: &mut Context) {
+    let prompt = property_prompt("New title: ", crate::roam::rename_node);
+    cx.push_layer(prompt);
+}
+
+/// Opens today's daily note.
+fn roam_dailies_today(cx: &mut Context) {
+    crate::roam::daily_today(cx.editor);
+}
+
+/// Opens the next daily note that exists.
+fn roam_dailies_next(cx: &mut Context) {
+    crate::roam::daily_step(cx.editor, true);
+}
+
+/// Opens the previous daily note that exists.
+fn roam_dailies_previous(cx: &mut Context) {
+    crate::roam::daily_step(cx.editor, false);
+}
+
+/// Asks for a date and opens that daily note.
+fn roam_dailies_date(cx: &mut Context) {
+    let prompt = property_prompt("Date (YYYY-MM-DD): ", crate::roam::daily_on);
+    cx.push_layer(prompt);
 }
 
 fn roam_tag_add(cx: &mut Context) {

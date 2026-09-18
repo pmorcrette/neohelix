@@ -5,6 +5,7 @@
 //! while browsing a note: what does this node point at, and what points back
 //! at it.
 
+pub mod date;
 mod graph;
 pub mod hyperlink;
 mod link;
@@ -14,6 +15,7 @@ pub mod query;
 pub mod restructure;
 pub mod scanner;
 
+pub use date::Date;
 pub use graph::RoamGraph;
 pub use hyperlink::{find_links, link_at, LinkKind, OrgLink};
 pub use link::Link;

@@ -2314,6 +2314,35 @@ roam_component_command!(roam_ref_remove, |_editor| Some(
     crate::commands::property_prompt("Remove ref: ", crate::roam::ref_remove)
 ));
 roam_buffer_command!(roam_random_node, crate::roam::random_node);
+roam_buffer_command!(roam_dailies_today, crate::roam::daily_today);
+roam_component_command!(roam_rename_node, |_editor| Some(
+    crate::commands::property_prompt("New title: ", crate::roam::rename_node)
+));
+roam_component_command!(roam_dailies_date, |_editor| Some(
+    crate::commands::property_prompt("Date (YYYY-MM-DD): ", crate::roam::daily_on)
+));
+
+fn roam_dailies_next(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        crate::roam::daily_step(cx.editor, true);
+    }
+    Ok(())
+}
+
+fn roam_dailies_previous(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        crate::roam::daily_step(cx.editor, false);
+    }
+    Ok(())
+}
 
 fn roam_refile(
     cx: &mut compositor::Context,
@@ -3974,6 +4003,61 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Remove an alias from the node at the cursor.",
         fun: roam_alias_remove,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-rename-node",
+        aliases: &["roam-rename"],
+        doc: "Rename the node at the cursor, and the link descriptions naming it.",
+        fun: roam_rename_node,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-dailies-today",
+        aliases: &["roam-today"],
+        doc: "Open today's daily note, creating it if needed.",
+        fun: roam_dailies_today,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-dailies-date",
+        aliases: &[],
+        doc: "Open the daily note for a date, creating it if needed.",
+        fun: roam_dailies_date,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-dailies-next",
+        aliases: &[],
+        doc: "Open the next daily note that exists.",
+        fun: roam_dailies_next,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-dailies-previous",
+        aliases: &[],
+        doc: "Open the previous daily note that exists.",
+        fun: roam_dailies_previous,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

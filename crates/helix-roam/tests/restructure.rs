@@ -571,3 +571,46 @@ fn a_tag_that_changes_nothing_reports_nothing() {
     assert_eq!(edit_tag(text, 0, "one", true).unwrap(), None);
     assert_eq!(edit_tag(text, 0, "absent", false).unwrap(), None);
 }
+
+#[test]
+fn renaming_changes_the_title_and_keeps_the_tags() {
+    use helix_roam::restructure::rename_entry;
+
+    let text = "* Old name  :work:\n:PROPERTIES:\n:ID:       a\n:END:\n";
+    let out = rename_entry(text, 0, "New name").unwrap();
+    assert!(out.starts_with("* New name  :work:\n"), "{out}");
+    // The drawer is untouched, so links into the node still resolve.
+    assert!(out.contains(":ID:       a"));
+
+    // A file node's title lives in its keyword instead.
+    let file_node = "#+title: Old name\nBody.\n";
+    assert_eq!(
+        rename_entry(file_node, 1, "New name").unwrap(),
+        "#+title: New name\nBody.\n"
+    );
+}
+
+#[test]
+fn retitling_updates_the_descriptions_that_repeated_the_old_title() {
+    use helix_roam::restructure::retitle_links;
+
+    let id = Uuid::from_bytes([1; 16]);
+    let text = format!("See [[id:{id}][Old name]] and [[id:{id}][a phrase of my own]].\n");
+
+    let out = retitle_links(&text, id, "Old name", "New name").unwrap();
+
+    assert!(out.contains(&format!("[[id:{id}][New name]]")), "{out}");
+    // A description someone wrote is not prose to rewrite.
+    assert!(
+        out.contains(&format!("[[id:{id}][a phrase of my own]]")),
+        "{out}"
+    );
+}
+
+#[test]
+fn retitling_a_file_with_nothing_to_change_reports_nothing() {
+    use helix_roam::restructure::retitle_links;
+
+    let id = Uuid::from_bytes([1; 16]);
+    assert_eq!(retitle_links("No links here.\n", id, "Old", "New"), None);
+}

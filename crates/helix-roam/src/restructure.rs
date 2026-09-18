@@ -301,6 +301,55 @@ fn existing_id(subtree: &[String]) -> Option<Uuid> {
     None
 }
 
+/// Renames the entry at `line`.
+///
+/// A headline's title is its own line; a file node's is `#+title:`. Only the
+/// title changes here — the links pointing at the node keep working because
+/// they carry its id, not its name.
+pub fn rename_entry(text: &str, line: usize, new_title: &str) -> Result<String, Error> {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let at = line.min(lines.len().saturating_sub(1));
+    let headline = lines[..=at]
+        .iter()
+        .rposition(|l| headline_level(l).is_some());
+
+    match headline {
+        Some(at) => {
+            let stars = "*".repeat(headline_level(&lines[at]).unwrap_or(1));
+            let (_, tags) = split_tags(headline_text(&lines[at]));
+            lines[at] = if tags.is_empty() {
+                format!("{stars} {new_title}")
+            } else {
+                format!("{stars} {new_title}  :{}:", tags.join(":"))
+            };
+        }
+        None => {
+            let at = lines
+                .iter()
+                .position(|l| keyword_value(l, "title").is_some())
+                .ok_or(Error::NoTitle)?;
+            lines[at] = format!("#+title: {new_title}");
+        }
+    }
+
+    Ok(rejoin(&lines, text))
+}
+
+/// Retitles the `[[id:…][…]]` links in `text` that still describe `id` by its
+/// old name.
+///
+/// A description someone wrote by hand is left alone: only the ones that
+/// repeated the title are updated, so renaming does not silently rewrite
+/// prose.
+pub fn retitle_links(text: &str, id: Uuid, old_title: &str, new_title: &str) -> Option<String> {
+    let needle = format!("[[id:{id}][{old_title}]]");
+    if !text.contains(&needle) {
+        return None;
+    }
+
+    Some(text.replace(&needle, &format!("[[id:{id}][{new_title}]]")))
+}
+
 /// Adds or removes a tag on the entry at `line`.
 ///
 /// Tags are not a drawer property: a headline carries them as a trailing

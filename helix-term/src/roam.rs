@@ -611,11 +611,9 @@ pub fn create_id(editor: &mut Editor) {
 
 /// The directory new nodes are created in.
 fn notes_directory(editor: &Editor) -> PathBuf {
-    editor.config().roam.directory.clone().unwrap_or_else(|| {
-        // Same fallback the indexer uses, so a created node lands where
-        // the graph is looking.
-        helix_loader::find_workspace().0
-    })
+    // The config's own resolver, which also expands a leading `~` — repeating
+    // the fallback here would have quietly dropped that.
+    editor.config().roam.directory()
 }
 
 /// Titles and aliases of every indexed node, for completion.
@@ -833,4 +831,171 @@ pub fn random_node(editor: &mut Editor) {
             .line_to_byte((*line).min(doc.text().len_lines() - 1))
     };
     jump_to_byte(editor, byte);
+}
+
+/// Opens the daily note for `date`, creating it if there is none.
+pub fn open_daily(editor: &mut Editor, date: helix_roam::Date) {
+    let directory = editor.config().roam.dailies_directory();
+    let path = directory.join(format!("{}.org", date.to_iso()));
+
+    if !path.exists() {
+        let id = helix_roam::Uuid::new_v4();
+        let contents = format!(
+            ":PROPERTIES:\n:ID:       {id}\n:END:\n#+title: {}\n\n",
+            date.to_iso()
+        );
+
+        if let Err(err) = std::fs::create_dir_all(&directory) {
+            editor.set_error(format!("could not create {}: {err}", directory.display()));
+            return;
+        }
+        if let Err(err) = std::fs::write(&path, &contents) {
+            editor.set_error(format!("could not write {}: {err}", path.display()));
+            return;
+        }
+        // Indexed at once, so a link to today resolves before any save.
+        helix_roam::reindex_file(&mut editor.roam.write(), &path, &contents);
+    }
+
+    if let Err(err) = editor.open(&path, helix_view::editor::Action::Replace) {
+        editor.set_error(format!("could not open {}: {err}", path.display()));
+    }
+}
+
+/// Today's daily note.
+pub fn daily_today(editor: &mut Editor) {
+    open_daily(editor, helix_roam::Date::today());
+}
+
+/// The daily note for a typed date.
+pub fn daily_on(editor: &mut Editor, text: &str) {
+    match helix_roam::Date::parse_iso(text) {
+        Some(date) => open_daily(editor, date),
+        None => editor.set_error(format!("{text:?} is not a date like 2026-09-18")),
+    }
+}
+
+/// The daily note nearest the current one, in `direction`.
+///
+/// Moves between notes that *exist* rather than stepping one day at a time,
+/// since most days have no note and stepping would land on empty ones.
+pub fn daily_step(editor: &mut Editor, forward: bool) {
+    let directory = editor.config().roam.dailies_directory();
+
+    let mut dates: Vec<helix_roam::Date> = match std::fs::read_dir(&directory) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let name = entry.file_name();
+                let name = name.to_str()?.strip_suffix(".org")?;
+                helix_roam::Date::parse_iso(name)
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+
+    if dates.is_empty() {
+        editor.set_status("No daily notes yet");
+        return;
+    }
+    dates.sort_unstable();
+
+    // Where we are now: the open note's date, or today when elsewhere.
+    let current = doc!(editor)
+        .path()
+        .and_then(|path| path.file_stem()?.to_str().map(str::to_string))
+        .and_then(|stem| helix_roam::Date::parse_iso(&stem))
+        .unwrap_or_else(helix_roam::Date::today);
+
+    let found = if forward {
+        dates.into_iter().find(|date| *date > current)
+    } else {
+        dates.into_iter().filter(|date| *date < current).next_back()
+    };
+
+    match found {
+        Some(date) => open_daily(editor, date),
+        None => editor.set_status(if forward {
+            "No later daily note"
+        } else {
+            "No earlier daily note"
+        }),
+    }
+}
+
+/// Opens the dailies directory itself, for browsing.
+pub fn daily_directory(editor: &mut Editor) -> PathBuf {
+    editor.config().roam.dailies_directory()
+}
+
+/// Renames the node at the cursor, and the links that named it.
+///
+/// Links keep resolving regardless — they carry the id — but a description
+/// repeating the old title would become a lie, so those are updated too.
+pub fn rename_node(editor: &mut Editor, new_title: &str) {
+    let new_title = new_title.trim();
+    if new_title.is_empty() {
+        return;
+    }
+
+    let offset = cursor_offset(editor);
+    let text = doc!(editor).text().to_string();
+    let line = doc!(editor).text().byte_to_line(offset);
+
+    let Some((id, old_title)) = helix_roam::restructure::entry_at(&text, line) else {
+        editor.set_error("No node at the cursor; give it an :ID: first");
+        return;
+    };
+
+    let renamed = match helix_roam::restructure::rename_entry(&text, line, new_title) {
+        Ok(renamed) => renamed,
+        Err(err) => {
+            editor.set_error(err.to_string());
+            return;
+        }
+    };
+
+    let before = doc!(editor).text().clone();
+    let after = helix_core::Rope::from(renamed.as_str());
+    let transaction = helix_core::diff::compare_ropes(&before, &after);
+    let view = view!(editor).id;
+    doc_mut!(editor).apply(&transaction, view);
+
+    let updated = retitle_backlinks(editor, id, &old_title, new_title);
+    editor.set_status(match updated {
+        0 => format!("Renamed to \"{new_title}\""),
+        1 => format!("Renamed to \"{new_title}\", and 1 link"),
+        n => format!("Renamed to \"{new_title}\", and {n} links"),
+    });
+}
+
+/// Rewrites the descriptions of links into `id` across the notes directory.
+///
+/// The graph's backlinks would be the cheaper source, but they only record
+/// links whose *containing* file is itself a node: a file with no `:ID:` links
+/// out without being an edge, and its descriptions would have been left
+/// stale. Renaming is rare enough to afford one pass over the notes.
+fn retitle_backlinks(editor: &mut Editor, id: helix_roam::Uuid, old: &str, new: &str) -> usize {
+    let open_path = doc!(editor).path().map(Path::to_path_buf);
+    let (sources, _) = helix_roam::scanner::collect_org_files(&notes_directory(editor));
+
+    let mut updated = 0;
+    for path in sources {
+        // The open buffer is not written behind the editor's back.
+        if open_path.as_deref() == Some(path.as_path()) {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Some(rewritten) = helix_roam::restructure::retitle_links(&text, id, old, new) else {
+            continue;
+        };
+        if std::fs::write(&path, &rewritten).is_ok() {
+            helix_roam::reindex_file(&mut editor.roam.write(), &path, &rewritten);
+            updated += 1;
+        }
+    }
+
+    updated
 }
