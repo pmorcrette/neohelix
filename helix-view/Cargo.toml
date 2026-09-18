@@ -58,6 +58,7 @@ log = "~0.4"
 
 parking_lot.workspace = true
 helix-roam = { path = "../crates/helix-roam" }
+helix-pty = { path = "../crates/helix-pty" }
 thiserror.workspace = true
 
 kstring = "2.0"

@@ -109,6 +109,7 @@
 | `roam_node_find` | Find Org-Roam node | normal: `` <space>nf ``, select: `` <space>nf `` |
 | `roam_backlinks_toggle` | Toggle Org-Roam backlinks panel | normal: `` <space>nb ``, select: `` <space>nb `` |
 | `magit` | Open the Magit transient menu | normal: `` <space>m ``, select: `` <space>m `` |
+| `terminal` | Open the integrated terminal | normal: `` <space>t ``, select: `` <space>t `` |
 | `symbol_picker` | Open symbol picker |  |
 | `syntax_symbol_picker` | Open symbol picker from syntax information |  |
 | `lsp_or_syntax_symbol_picker` | Open symbol picker from LSP or syntax information | normal: `` <space>s ``, select: `` <space>s `` |

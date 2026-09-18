@@ -1802,6 +1802,7 @@ dependencies = [
 name = "helix-term"
 version = "25.7.1"
 dependencies = [
+ "alacritty_terminal",
  "anyhow",
  "arc-swap",
  "crossterm",
@@ -1816,6 +1817,7 @@ dependencies = [
  "helix-loader",
  "helix-lsp",
  "helix-magit",
+ "helix-pty",
  "helix-roam",
  "helix-stdx",
  "helix-tui",
@@ -1897,6 +1899,7 @@ dependencies = [
  "helix-event",
  "helix-loader",
  "helix-lsp",
+ "helix-pty",
  "helix-roam",
  "helix-stdx",
  "helix-tui",

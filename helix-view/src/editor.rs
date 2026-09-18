@@ -1379,6 +1379,12 @@ pub struct Editor {
     pub cursor_cache: CursorCache,
     pub workspace_trust: WorkspaceTrust,
 
+    /// The integrated terminal, kept here so that hiding its view does not
+    /// kill the shell running in it.
+    ///
+    /// `None` until `:terminal` starts one, and cleared when the shell exits.
+    pub terminal: Option<helix_pty::PtyTerminal>,
+
     /// The Org-Roam knowledge graph, shared with the background indexer.
     ///
     /// Indexing runs on a blocking thread and takes the write lock only to
@@ -1510,6 +1516,7 @@ impl Editor {
             dir_stack: VecDeque::with_capacity(DIR_STACK_CAP),
             workspace_trust,
             roam: Arc::default(),
+            terminal: None,
         }
     }
 

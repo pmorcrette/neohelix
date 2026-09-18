@@ -14,6 +14,7 @@ pub mod roam;
 mod select;
 mod spinner;
 mod statusline;
+pub mod terminal;
 mod text;
 mod text_decorations;
 pub mod transient;

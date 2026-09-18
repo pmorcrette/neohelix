@@ -192,3 +192,53 @@ fn dropping_the_terminal_stops_the_shell() {
     // Closing the view must not leave a shell running with nothing attached.
     drop(terminal);
 }
+
+#[test]
+fn a_flood_of_output_does_not_starve_the_renderer() {
+    // The reader takes the grid lock on every chunk. With an unfair lock a
+    // shell producing output flat out could hold off the drawing thread
+    // indefinitely; this asserts the renderer keeps getting in.
+    let (terminal, _) = spawn(80, 24);
+    assert!(terminal.write(&b"seq 1 200000\n"[..]));
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut locks = 0;
+    let mut slowest = Duration::ZERO;
+
+    while Instant::now() < deadline && locks < 200 {
+        let before = Instant::now();
+        {
+            let term = terminal.term().lock();
+            let _ = term.grid().columns();
+        }
+        slowest = slowest.max(before.elapsed());
+        locks += 1;
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    assert_eq!(locks, 200, "the renderer could not take the lock 200 times");
+    assert!(
+        slowest < Duration::from_secs(2),
+        "a single lock took {slowest:?}, which means the reader is starving the renderer"
+    );
+}
+
+#[test]
+fn writing_does_not_block_when_the_shell_stops_reading() {
+    // `cat > /dev/null` keeps reading, but a full pipe must not wedge the
+    // caller: writes are queued, and the queue refuses rather than blocking.
+    let (terminal, _) = spawn(80, 24);
+
+    let before = Instant::now();
+    for _ in 0..5_000 {
+        // Ignore the return: past the queue's bound this starts refusing,
+        // which is the behaviour under test.
+        terminal.write(vec![b'x'; 256]);
+    }
+
+    assert!(
+        before.elapsed() < Duration::from_secs(5),
+        "writing took {:?}, so it is blocking on the PTY",
+        before.elapsed()
+    );
+}

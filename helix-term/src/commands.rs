@@ -412,6 +412,7 @@ impl MappableCommand {
         roam_node_find, "Find Org-Roam node",
         roam_backlinks_toggle, "Toggle Org-Roam backlinks panel",
         magit, "Open the Magit transient menu",
+        terminal, "Open the integrated terminal",
         symbol_picker, "Open symbol picker",
         syntax_symbol_picker, "Open symbol picker from syntax information",
         lsp_or_syntax_symbol_picker, "Open symbol picker from LSP or syntax information",
@@ -3392,6 +3393,56 @@ fn buffer_picker(cx: &mut Context) {
         Some((meta.id.into(), lines))
     });
     cx.push_layer(Box::new(overlaid(picker)));
+}
+
+/// Opens the integrated terminal, starting a shell if none is running.
+///
+/// The shell lives in the editor rather than in the view, so closing the view
+/// with `Ctrl-\ Ctrl-n` and reopening comes back to the same session.
+pub fn terminal_view(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    if editor
+        .terminal
+        .as_mut()
+        .is_some_and(|terminal| terminal.has_exited())
+    {
+        editor.terminal = None;
+    }
+
+    if editor.terminal.is_none() {
+        // Start in the focused document's directory, which is where a shell
+        // opened from an editor is expected to land.
+        let directory = doc!(editor)
+            .path()
+            .and_then(|path| path.parent())
+            .map(Path::to_path_buf)
+            .or_else(|| Some(helix_stdx::env::current_working_dir()));
+
+        // The reader thread calls this whenever output arrives; Helix's event
+        // loop wakes and redraws.
+        let redraw = std::sync::Arc::new(helix_event::request_redraw);
+
+        let (columns, rows) = {
+            let area = editor.tree.area();
+            (area.width, area.height.saturating_sub(1))
+        };
+
+        match helix_pty::PtyTerminal::spawn(columns, rows, directory, redraw) {
+            Ok(terminal) => editor.terminal = Some(terminal),
+            Err(err) => {
+                editor.set_error(err.to_string());
+                return None;
+            }
+        }
+    }
+
+    editor.set_status("Terminal: Ctrl-\\ Ctrl-n returns to the editor");
+    Some(Box::new(ui::terminal::TerminalView::new()))
+}
+
+fn terminal(cx: &mut Context) {
+    if let Some(view) = terminal_view(cx.editor) {
+        cx.push_layer(view);
+    }
 }
 
 /// Builds the Magit transient overlay, or reports why the repository could
