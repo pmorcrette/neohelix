@@ -179,6 +179,11 @@ and async process handling, none of which the menu system itself covers.
 - [ ] Guard destructive actions (`--force`, `branch -d`, `rebase --abort`)
       behind a confirmation that names what will be lost.
 
+*Tasks 2.5 to 2.14 were derived from the actual definition of Magit's
+`magit-dispatch` transient, entry by entry, rather than from recollection of
+it. What remains uncovered after them is mostly Emacs-specific (its help and
+Info integration) or the long tail below the dispatch menu.*
+
 ### Task 2.5: The Rest of the Status Buffer
 
 The status buffer shows two sections, Unstaged and Staged. Magit shows the
@@ -209,6 +214,8 @@ Three holes in the daily loop the fork otherwise covers end to end.
 - [ ] Stage and unstage everything (`S`, `U`).
 - [ ] Visit the file at point (`RET`), landing on the line under the cursor
       rather than at the top of the file.
+- [ ] Apply (`a`) and reverse (`v`) the hunk or selection at point, the two
+      operations that share discard's reverse-apply machinery.
 
 ### Task 2.7: Interactive Rebase
 
@@ -262,6 +269,82 @@ these are mostly breadth rather than new mechanism — with the exceptions noted
 - [ ] A process buffer: every command the fork has run and what it printed.
       Task 2.4 shows only the first useful line in the status line, so the rest
       of git's output is currently discarded.
+- [ ] Subtree (`O`), which is separate from the submodule and worktree work
+      above.
+- [ ] Notes (`T`): add, edit and remove git notes.
+- [ ] Show refs (`y`): every branch and tag with its relationship to `HEAD`.
+- [ ] Cherries (`Y`): the commits one branch has that another does not.
+- [ ] Gitignore helpers (`i`): ignore the file at point, in the repository's
+      `.gitignore` or in the private exclude file.
+- [ ] Branch management the Task 2.4 menu left out: rename, reset, `spinoff`
+      and `spinout`.
+
+### Task 2.10: Conflict Resolution
+
+Task 2.9 lists merge but explicitly excludes resolving the conflicts it
+produces, because that is a buffer and a workflow rather than a command line.
+Magit reaches for Ediff here (`e`, `E`); the fork has no equivalent and needs
+its own answer.
+
+- [ ] A conflicts section in the status buffer, listing unmerged paths and
+      their stage.
+- [ ] Open a conflicted file with the three sides available — ours, theirs and
+      the base — and a way to take either side for a region.
+- [ ] Mark a path resolved, and drive the surrounding operation to its end
+      (`merge --continue`, `rebase --continue`, `cherry-pick --continue`).
+- [ ] This applies to every operation that can stop on a conflict, not just
+      merge, so it belongs with none of them in particular.
+
+### Task 2.11: File-Scoped Commands and Blame
+
+Magit has a second dispatch for the file you are editing, reachable without
+opening the status buffer at all. The fork has nothing equivalent: every Git
+operation currently starts from `<space>m`.
+
+- [ ] A file dispatch: stage, unstage, diff, log and blame for the current
+      buffer's file.
+- [ ] Blame: annotate each line with its commit, author and date, and move
+      between revisions of the same line.
+- [ ] Log and diff restricted to the current file, which Task 2.8 should build
+      on rather than duplicate.
+
+### Task 2.12: Diff Presentation Controls
+
+The `DiffView` renders with fixed settings. Magit puts these on a transient
+(`d`, `D`) because the right answer changes with the diff you are reading.
+
+- [ ] Context lines, adjustable while reading.
+- [ ] Whitespace handling (`-w`, `--ignore-space-change`), which is the
+      difference between a readable diff and an unreadable one after a
+      reindent.
+- [ ] Diff algorithm (`--histogram`, `--patience`).
+- [ ] Word-level diff, and `--stat` as a summary view.
+- [ ] Diff against an arbitrary revision or between two, rather than only
+      worktree-against-index and index-against-`HEAD`.
+
+### Task 2.13: Repository Entry Points and Arbitrary Commands
+
+Small dispatch entries with nowhere else to sit; each is short on its own.
+
+- [ ] Clone (`C`) and init (`I`).
+- [ ] Jump to a section of the status buffer (`j`), and switch between the
+      fork's Git buffers (`J`).
+- [ ] Run an arbitrary git command in the repository (`Q`) and a shell command
+      (`!`), both reporting into Task 2.9's process buffer.
+
+### Task 2.14: The Transient Arguments Left Out
+
+Task 2.4 shipped 19 arguments across five menus. These are the ones Magit
+offers that it did not.
+
+- [ ] Commit: `--gpg-sign=`, `--date=`, `--reset-author`.
+- [ ] Push: tags and explicit refspecs.
+- [ ] Rebase: `--onto` an arbitrary revision, rather than only the upstream.
+- [ ] The commit menu offers `--verbose`, which asks git to put the diff in the
+      message buffer. Task 2.4 supplies the message with `-F`, so no editor
+      runs and the switch currently does nothing. Either the fork seeds the
+      diff into the buffer itself, or the switch should go; leaving a flag that
+      silently does nothing is the worst of the three.
 
 ---
 
