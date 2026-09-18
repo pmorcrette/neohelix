@@ -13,6 +13,8 @@ use std::fmt;
 
 use uuid::Uuid;
 
+use crate::parser::{find_ignore_case, starts_with_ignore_case, FileSettings};
+
 /// Why a restructuring could not be done.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
@@ -28,6 +30,10 @@ pub enum Error {
     NoTarget,
     /// The entry has no property drawer to edit.
     NoDrawer,
+    /// There is no sibling to swap with in that direction.
+    NoSibling,
+    /// The file does not declare that priority letter.
+    UndeclaredPriority(char),
 }
 
 impl fmt::Display for Error {
@@ -38,6 +44,10 @@ impl fmt::Display for Error {
             Error::AlreadyTopLevel => write!(f, "already a top-level node"),
             Error::NoTitle => write!(f, "the file has no #+title: to demote"),
             Error::NoTarget => write!(f, "the target node was not found in its file"),
+            Error::NoSibling => write!(f, "there is no sibling that way"),
+            Error::UndeclaredPriority(letter) => {
+                write!(f, "this file does not declare priority [#{letter}]")
+            }
             Error::NoDrawer => write!(f, "the entry has no property drawer; give it an :ID: first"),
         }
     }
@@ -299,6 +309,413 @@ fn existing_id(subtree: &[String]) -> Option<Uuid> {
         }
     }
     None
+}
+
+/// A subtree taken out of a file and sent to an archive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Archived {
+    /// The source file with the subtree removed.
+    pub remaining: String,
+    /// The subtree, with a note recording where it came from.
+    pub archived: String,
+    /// Where it should go, from `#+ARCHIVE:` or the default.
+    pub target: String,
+}
+
+/// Cuts the subtree at `line` and prepares it for the archive.
+///
+/// `origin` names the file it came from, which goes into the archived copy:
+/// a subtree that has lost its context is hard to place again.
+pub fn archive_subtree(
+    text: &str,
+    line: usize,
+    settings: &FileSettings,
+    origin: &str,
+) -> Result<Archived, Error> {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let (start, end, _) = subtree_range(&lines, line).ok_or(Error::NoSubtree)?;
+
+    let mut archived: Vec<String> = lines[start..end].to_vec();
+    // The note goes under the headline, where Org puts it.
+    archived.insert(1, format!(":ARCHIVE_FILE: {origin}"));
+
+    lines.drain(start..end);
+
+    // `#+ARCHIVE:` may carry a `::headline` part, which naming a file does not
+    // need; only the file half is used here.
+    let target = settings
+        .archive
+        .as_deref()
+        .map(|archive| {
+            archive
+                .split("::")
+                .next()
+                .unwrap_or(archive)
+                .trim()
+                .to_string()
+        })
+        .filter(|target| !target.is_empty())
+        .unwrap_or_else(|| format!("{origin}_archive"));
+
+    Ok(Archived {
+        remaining: rejoin(&lines, text),
+        archived: format!("{}\n", archived.join("\n")),
+        target,
+    })
+}
+
+/// Moves the headline at `line` to the next TODO state the file declares.
+///
+/// The sequence is the file's own, followed by "no state at all", so cycling
+/// past the last keyword clears it the way Org does. Which words are keywords
+/// comes from [`FileSettings`], never from a guess.
+pub fn cycle_todo(
+    text: &str,
+    line: usize,
+    settings: &FileSettings,
+    forward: bool,
+) -> Result<String, Error> {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let (start, _, level) = subtree_range(&lines, line).ok_or(Error::NoSubtree)?;
+
+    // The cycle: every keyword, then nothing.
+    let mut states: Vec<Option<&str>> = settings
+        .todo_keywords
+        .iter()
+        .chain(&settings.done_keywords)
+        .map(|keyword| Some(keyword.as_str()))
+        .collect();
+    states.push(None);
+
+    let rest = headline_text(&lines[start]);
+    let current = rest
+        .split_once(char::is_whitespace)
+        .map(|(first, _)| first)
+        .unwrap_or(rest);
+    let current = settings.is_todo_keyword(current).then_some(current);
+
+    let at = states
+        .iter()
+        .position(|state| *state == current)
+        .unwrap_or(states.len() - 1);
+    let next = if forward {
+        states[(at + 1) % states.len()]
+    } else {
+        states[(at + states.len() - 1) % states.len()]
+    };
+
+    // Rebuild the headline: stars, new state, then what was already there.
+    let without_state = match current {
+        Some(keyword) => rest[keyword.len()..].trim_start(),
+        None => rest,
+    };
+    let stars = "*".repeat(level);
+    lines[start] = match next {
+        Some(state) => format!("{stars} {state} {without_state}")
+            .trim_end()
+            .to_string(),
+        None => format!("{stars} {without_state}").trim_end().to_string(),
+    };
+
+    Ok(rejoin(&lines, text))
+}
+
+/// Sets or clears the priority cookie on the headline at `line`.
+pub fn set_priority(
+    text: &str,
+    line: usize,
+    settings: &FileSettings,
+    priority: Option<char>,
+) -> Result<String, Error> {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let (start, _, level) = subtree_range(&lines, line).ok_or(Error::NoSubtree)?;
+
+    if let Some(letter) = priority {
+        if !settings.priorities.contains(&letter) {
+            return Err(Error::UndeclaredPriority(letter));
+        }
+    }
+
+    let rest = headline_text(&lines[start]);
+    // Keyword, then cookie, then title: only the cookie changes.
+    let (keyword, after_keyword) = match rest.split_once(char::is_whitespace) {
+        Some((first, tail)) if settings.is_todo_keyword(first) => (Some(first), tail.trim_start()),
+        _ => (None, rest),
+    };
+    let after_cookie = after_keyword
+        .strip_prefix("[#")
+        .and_then(|tail| tail.split_once(']'))
+        .filter(|(letter, _)| {
+            letter.chars().count() == 1
+                && letter
+                    .chars()
+                    .next()
+                    .is_some_and(|c| settings.priorities.contains(&c))
+        })
+        .map_or(after_keyword, |(_, tail)| tail.trim_start());
+
+    let mut headline = "*".repeat(level);
+    if let Some(keyword) = keyword {
+        headline.push(' ');
+        headline.push_str(keyword);
+    }
+    if let Some(letter) = priority {
+        headline.push_str(&format!(" [#{letter}]"));
+    }
+    if !after_cookie.is_empty() {
+        headline.push(' ');
+        headline.push_str(after_cookie);
+    }
+    lines[start] = headline;
+
+    Ok(rejoin(&lines, text))
+}
+
+/// Moves the priority up or down the file's declared range.
+///
+/// `raise` means towards `A`, which is how Org names it even though the letter
+/// goes down.
+pub fn change_priority(
+    text: &str,
+    line: usize,
+    settings: &FileSettings,
+    raise: bool,
+) -> Result<String, Error> {
+    let lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let (start, _, _) = subtree_range(&lines, line).ok_or(Error::NoSubtree)?;
+
+    let rest = headline_text(&lines[start]);
+    let after_keyword = match rest.split_once(char::is_whitespace) {
+        Some((first, tail)) if settings.is_todo_keyword(first) => tail.trim_start(),
+        _ => rest,
+    };
+    let current = after_keyword
+        .strip_prefix("[#")
+        .and_then(|tail| tail.split_once(']'))
+        .and_then(|(letter, _)| letter.chars().next())
+        .filter(|c| settings.priorities.contains(c));
+
+    let next = match current {
+        None => settings.priorities.first().copied(),
+        Some(letter) => {
+            let at = settings.priorities.iter().position(|c| *c == letter);
+            at.and_then(|at| {
+                if raise {
+                    at.checked_sub(1).and_then(|at| settings.priorities.get(at))
+                } else {
+                    settings.priorities.get(at + 1)
+                }
+                .copied()
+            })
+            // Off either end, the cookie goes away rather than sticking.
+            .or(None)
+        }
+    };
+
+    set_priority(text, line, settings, next)
+}
+
+/// Which planning timestamp to write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Planning {
+    Scheduled,
+    Deadline,
+}
+
+impl Planning {
+    fn label(self) -> &'static str {
+        match self {
+            Planning::Scheduled => "SCHEDULED:",
+            Planning::Deadline => "DEADLINE:",
+        }
+    }
+}
+
+/// Sets or clears a planning timestamp on the entry at `line`.
+///
+/// `stamp` is the whole `<…>`, so the caller decides whether it carries a time
+/// or a repeater; `None` removes the entry.
+pub fn set_planning(
+    text: &str,
+    line: usize,
+    which: Planning,
+    stamp: Option<&str>,
+) -> Result<String, Error> {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let (start, end, _) = subtree_range(&lines, line).ok_or(Error::NoSubtree)?;
+
+    // The planning line is the one directly under the headline, if any.
+    let planning_at = (start + 1 < end)
+        .then(|| start + 1)
+        .filter(|at| is_planning_line(&lines[*at]));
+
+    let mut parts: Vec<(Planning, String)> = Vec::new();
+    if let Some(at) = planning_at {
+        for other in [Planning::Scheduled, Planning::Deadline] {
+            if other != which {
+                if let Some(existing) = planning_part(&lines[at], other) {
+                    parts.push((other, existing));
+                }
+            }
+        }
+    }
+    if let Some(stamp) = stamp {
+        parts.push((which, stamp.to_string()));
+    }
+    // Org writes DEADLINE before SCHEDULED.
+    parts.sort_by_key(|(which, _)| match which {
+        Planning::Deadline => 0,
+        Planning::Scheduled => 1,
+    });
+
+    let rendered = parts
+        .iter()
+        .map(|(which, stamp)| format!("{} {stamp}", which.label()))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    match (planning_at, rendered.is_empty()) {
+        (Some(at), true) => {
+            lines.remove(at);
+        }
+        (Some(at), false) => lines[at] = rendered,
+        (None, false) => lines.insert(start + 1, rendered),
+        (None, true) => {}
+    }
+
+    Ok(rejoin(&lines, text))
+}
+
+/// Whether a line is a planning line rather than body text.
+fn is_planning_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    ["SCHEDULED:", "DEADLINE:", "CLOSED:"]
+        .iter()
+        .any(|label| starts_with_ignore_case(trimmed, label))
+}
+
+/// The `<…>` stamp a planning line carries for `which`, if any.
+fn planning_part(line: &str, which: Planning) -> Option<String> {
+    let at = find_ignore_case(line, which.label())?;
+    let rest = line[at + which.label().len()..].trim_start();
+
+    let open = rest.chars().next()?;
+    let close = match open {
+        '<' => '>',
+        '[' => ']',
+        _ => return None,
+    };
+    let end = rest.find(close)?;
+
+    Some(rest[..=end].to_string())
+}
+
+/// The lines of the subtree containing `line`, and its level.
+///
+/// Extracting, refiling and the structure commands all ask this same
+/// question, so it is answered in one place.
+fn subtree_range(lines: &[String], line: usize) -> Option<(usize, usize, usize)> {
+    let at = line.min(lines.len().saturating_sub(1));
+    let start = lines[..=at]
+        .iter()
+        .rposition(|l| headline_level(l).is_some())?;
+    let level = headline_level(&lines[start])?;
+
+    let end = lines[start + 1..]
+        .iter()
+        .position(|l| headline_level(l).is_some_and(|other| other <= level))
+        .map_or(lines.len(), |offset| start + 1 + offset);
+
+    Some((start, end, level))
+}
+
+/// Inserts a sibling headline after the subtree containing `line`.
+///
+/// Returns the new text and the line the new headline is on, so the caller can
+/// put the cursor there.
+pub fn insert_heading(text: &str, line: usize) -> (String, usize) {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+
+    let (at, level) = match subtree_range(&lines, line) {
+        Some((_, end, level)) => (end, level),
+        // Above any headline, a new one starts at the top level, after the
+        // preamble rather than inside it.
+        None => (lines.len(), 1),
+    };
+
+    lines.insert(at, format!("{} ", "*".repeat(level)));
+    (rejoin(&lines, text), at)
+}
+
+/// Moves one headline a level in or out, leaving its children where they are.
+pub fn shift_heading(text: &str, line: usize, deeper: bool) -> Result<String, Error> {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let (start, _, level) = subtree_range(&lines, line).ok_or(Error::NoSubtree)?;
+
+    if !deeper && level <= 1 {
+        return Err(Error::AlreadyTopLevel);
+    }
+    shift_levels(&mut lines[start..=start], deeper);
+
+    Ok(rejoin(&lines, text))
+}
+
+/// Moves a headline and everything under it a level in or out.
+pub fn shift_subtree(text: &str, line: usize, deeper: bool) -> Result<String, Error> {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let (start, end, level) = subtree_range(&lines, line).ok_or(Error::NoSubtree)?;
+
+    if !deeper && level <= 1 {
+        return Err(Error::AlreadyTopLevel);
+    }
+    shift_levels(&mut lines[start..end], deeper);
+
+    Ok(rejoin(&lines, text))
+}
+
+/// Swaps the subtree containing `line` with its previous or next sibling.
+///
+/// Returns the new text and the line the moved subtree now starts on.
+pub fn move_subtree(text: &str, line: usize, up: bool) -> Result<(String, usize), Error> {
+    let lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let (start, end, level) = subtree_range(&lines, line).ok_or(Error::NoSubtree)?;
+
+    let sibling = if up {
+        // The nearest headline above at the same level, and not past a
+        // shallower one, which would be leaving the parent.
+        lines[..start]
+            .iter()
+            .rposition(|l| headline_level(l).is_some_and(|other| other <= level))
+            .filter(|at| headline_level(&lines[*at]) == Some(level))
+            .map(|sibling_start| (sibling_start, start))
+    } else {
+        (end < lines.len() && headline_level(&lines[end]) == Some(level)).then(|| {
+            let (_, sibling_end, _) = subtree_range(&lines, end).unwrap();
+            (end, sibling_end)
+        })
+    };
+
+    let Some((other_start, other_end)) = sibling else {
+        return Err(Error::NoSibling);
+    };
+
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let moved_to;
+    if up {
+        out.extend_from_slice(&lines[..other_start]);
+        moved_to = out.len();
+        out.extend_from_slice(&lines[start..end]);
+        out.extend_from_slice(&lines[other_start..other_end]);
+        out.extend_from_slice(&lines[end..]);
+    } else {
+        out.extend_from_slice(&lines[..start]);
+        out.extend_from_slice(&lines[other_start..other_end]);
+        moved_to = out.len();
+        out.extend_from_slice(&lines[start..end]);
+        out.extend_from_slice(&lines[other_end..]);
+    }
+
+    Ok((rejoin(&out, text), moved_to))
 }
 
 /// Sets a single-valued property on the entry at `line`.

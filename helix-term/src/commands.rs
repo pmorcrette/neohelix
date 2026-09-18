@@ -430,6 +430,21 @@ impl MappableCommand {
         roam_rename_node, "Rename the node at the cursor and the links naming it",
         roam_unlinked_references, "List where this node is named without a link",
         roam_capture, "Create an Org-Roam node from a template",
+        org_insert_heading, "Insert a heading after the current subtree",
+        org_promote, "Promote the headline at the cursor",
+        org_demote, "Demote the headline at the cursor",
+        org_promote_subtree, "Promote the subtree at the cursor",
+        org_demote_subtree, "Demote the subtree at the cursor",
+        org_move_subtree_up, "Move the subtree above its sibling",
+        org_move_subtree_down, "Move the subtree below its sibling",
+        org_todo, "Cycle the TODO state forward",
+        org_todo_previous, "Cycle the TODO state backward",
+        org_priority_up, "Raise the priority towards [#A]",
+        org_priority_down, "Lower the priority",
+        org_archive_subtree, "Move the subtree at the cursor to the file's archive",
+        org_set_priority, "Set the priority on the headline at the cursor",
+        org_schedule, "Set SCHEDULED: on the entry at the cursor",
+        org_deadline, "Set DEADLINE: on the entry at the cursor",
         org_set_property, "Set a property on the entry at the cursor",
         org_remove_property, "Remove a property from the entry at the cursor",
         org_set_effort, "Set the effort estimate on the entry at the cursor",
@@ -3846,6 +3861,105 @@ fn roam_alias_remove(cx: &mut Context) {
     prompt_for_property(cx, "Remove alias: ", crate::roam::alias_remove);
 }
 
+fn org_insert_heading(cx: &mut Context) {
+    crate::roam::insert_heading(cx.editor);
+}
+
+fn org_promote(cx: &mut Context) {
+    crate::roam::promote_heading(cx.editor);
+}
+
+fn org_demote(cx: &mut Context) {
+    crate::roam::demote_heading(cx.editor);
+}
+
+fn org_promote_subtree(cx: &mut Context) {
+    crate::roam::promote_subtree(cx.editor);
+}
+
+fn org_demote_subtree(cx: &mut Context) {
+    crate::roam::demote_subtree(cx.editor);
+}
+
+fn org_move_subtree_up(cx: &mut Context) {
+    crate::roam::move_subtree_up(cx.editor);
+}
+
+fn org_move_subtree_down(cx: &mut Context) {
+    crate::roam::move_subtree_down(cx.editor);
+}
+
+fn org_todo(cx: &mut Context) {
+    crate::roam::todo_next(cx.editor);
+}
+
+fn org_todo_previous(cx: &mut Context) {
+    crate::roam::todo_previous(cx.editor);
+}
+
+fn org_priority_up(cx: &mut Context) {
+    crate::roam::priority_up(cx.editor);
+}
+
+fn org_priority_down(cx: &mut Context) {
+    crate::roam::priority_down(cx.editor);
+}
+
+/// Asks for a tag, completing over the ones the graph already knows.
+pub fn org_tag_prompt(editor: &Editor, add: bool) -> Box<dyn Component> {
+    let tags = crate::roam::known_tags(editor);
+    let label = if add { "Tag: " } else { "Remove tag: " };
+
+    Box::new(ui::Prompt::new(
+        label.into(),
+        None,
+        move |_editor, input| {
+            let input = input.to_lowercase();
+            tags.iter()
+                .filter(|tag| tag.to_lowercase().starts_with(&input))
+                .map(|tag| (0.., tag.clone().into()))
+                .collect()
+        },
+        move |cx, input, event| {
+            if event == PromptEvent::Validate {
+                if add {
+                    crate::roam::tag_add(cx.editor, input);
+                } else {
+                    crate::roam::tag_remove(cx.editor, input);
+                }
+            }
+        },
+    ))
+}
+
+fn org_archive_subtree(cx: &mut Context) {
+    crate::roam::archive_subtree(cx.editor);
+}
+
+fn org_set_priority(cx: &mut Context) {
+    prompt_for_property(
+        cx,
+        "Priority (A-C, empty clears): ",
+        crate::roam::set_priority,
+    );
+}
+
+fn org_schedule(cx: &mut Context) {
+    prompt_for_property(
+        cx,
+        "Scheduled (today, +3, 2026-09-18): ",
+        crate::roam::schedule,
+    );
+}
+
+fn org_deadline(cx: &mut Context) {
+    prompt_for_property(
+        cx,
+        "Deadline (today, +3, 2026-09-18): ",
+        crate::roam::deadline,
+    );
+}
+
 /// Asks for `KEY VALUE`, completing over the keys the file already uses.
 pub fn org_set_property_prompt(editor: &Editor) -> Box<dyn Component> {
     let keys = crate::roam::property_keys(editor);
@@ -4048,11 +4162,13 @@ fn roam_dailies_date(cx: &mut Context) {
 }
 
 fn roam_tag_add(cx: &mut Context) {
-    prompt_for_property(cx, "Tag: ", crate::roam::tag_add);
+    let prompt = org_tag_prompt(cx.editor, true);
+    cx.push_layer(prompt);
 }
 
 fn roam_tag_remove(cx: &mut Context) {
-    prompt_for_property(cx, "Remove tag: ", crate::roam::tag_remove);
+    let prompt = org_tag_prompt(cx.editor, false);
+    cx.push_layer(prompt);
 }
 
 fn roam_ref_add(cx: &mut Context) {

@@ -2300,6 +2300,27 @@ roam_component_command!(
     crate::commands::roam_unlinked_picker
 );
 roam_component_command!(roam_capture, crate::commands::roam_capture_picker);
+roam_buffer_command!(org_insert_heading, crate::roam::insert_heading);
+roam_buffer_command!(org_promote, crate::roam::promote_heading);
+roam_buffer_command!(org_demote, crate::roam::demote_heading);
+roam_buffer_command!(org_promote_subtree, crate::roam::promote_subtree);
+roam_buffer_command!(org_demote_subtree, crate::roam::demote_subtree);
+roam_buffer_command!(org_move_subtree_up, crate::roam::move_subtree_up);
+roam_buffer_command!(org_move_subtree_down, crate::roam::move_subtree_down);
+roam_buffer_command!(org_todo, crate::roam::todo_next);
+roam_buffer_command!(org_todo_previous, crate::roam::todo_previous);
+roam_buffer_command!(org_priority_up, crate::roam::priority_up);
+roam_buffer_command!(org_priority_down, crate::roam::priority_down);
+roam_buffer_command!(org_archive_subtree, crate::roam::archive_subtree);
+roam_component_command!(org_set_priority, |_editor| Some(
+    crate::commands::property_prompt("Priority (A-C, empty clears): ", crate::roam::set_priority)
+));
+roam_component_command!(org_schedule, |_editor| Some(
+    crate::commands::property_prompt("Scheduled (today, +3, 2026-09-18): ", crate::roam::schedule)
+));
+roam_component_command!(org_deadline, |_editor| Some(
+    crate::commands::property_prompt("Deadline (today, +3, 2026-09-18): ", crate::roam::deadline)
+));
 roam_component_command!(org_set_property, |editor| Some(
     crate::commands::org_set_property_prompt(editor)
 ));
@@ -2325,11 +2346,11 @@ roam_component_command!(roam_alias_add, |_editor| Some(
 roam_component_command!(roam_alias_remove, |_editor| Some(
     crate::commands::property_prompt("Remove alias: ", crate::roam::alias_remove)
 ));
-roam_component_command!(roam_tag_add, |_editor| Some(
-    crate::commands::property_prompt("Tag: ", crate::roam::tag_add)
+roam_component_command!(roam_tag_add, |editor| Some(
+    crate::commands::org_tag_prompt(editor, true)
 ));
-roam_component_command!(roam_tag_remove, |_editor| Some(
-    crate::commands::property_prompt("Remove tag: ", crate::roam::tag_remove)
+roam_component_command!(roam_tag_remove, |editor| Some(
+    crate::commands::org_tag_prompt(editor, false)
 ));
 roam_component_command!(roam_ref_add, |_editor| Some(
     crate::commands::property_prompt("Ref: ", crate::roam::ref_add)
@@ -4027,6 +4048,171 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Remove an alias from the node at the cursor.",
         fun: roam_alias_remove,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-insert-heading",
+        aliases: &[],
+        doc: "Insert a heading after the current subtree.",
+        fun: org_insert_heading,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-promote",
+        aliases: &[],
+        doc: "Promote the headline at the cursor.",
+        fun: org_promote,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-demote",
+        aliases: &[],
+        doc: "Demote the headline at the cursor.",
+        fun: org_demote,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-promote-subtree",
+        aliases: &[],
+        doc: "Promote the subtree at the cursor.",
+        fun: org_promote_subtree,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-demote-subtree",
+        aliases: &[],
+        doc: "Demote the subtree at the cursor.",
+        fun: org_demote_subtree,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-move-subtree-up",
+        aliases: &[],
+        doc: "Move the subtree above its sibling.",
+        fun: org_move_subtree_up,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-move-subtree-down",
+        aliases: &[],
+        doc: "Move the subtree below its sibling.",
+        fun: org_move_subtree_down,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-todo",
+        aliases: &[],
+        doc: "Cycle the TODO state forward, using the file's keywords.",
+        fun: org_todo,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-todo-previous",
+        aliases: &[],
+        doc: "Cycle the TODO state backward.",
+        fun: org_todo_previous,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-priority-up",
+        aliases: &[],
+        doc: "Raise the priority towards [#A].",
+        fun: org_priority_up,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-priority-down",
+        aliases: &[],
+        doc: "Lower the priority.",
+        fun: org_priority_down,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-archive-subtree",
+        aliases: &["org-archive"],
+        doc: "Move the subtree at the cursor to the file's archive.",
+        fun: org_archive_subtree,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-set-priority",
+        aliases: &[],
+        doc: "Set the priority on the headline at the cursor.",
+        fun: org_set_priority,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-schedule",
+        aliases: &[],
+        doc: "Set SCHEDULED: on the entry at the cursor.",
+        fun: org_schedule,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-deadline",
+        aliases: &[],
+        doc: "Set DEADLINE: on the entry at the cursor.",
+        fun: org_deadline,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

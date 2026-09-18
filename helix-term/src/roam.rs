@@ -1300,3 +1300,275 @@ pub fn log_state_change(editor: &mut Editor, input: &str) {
     let after = helix_roam::restructure::log_entry(&text, line, &entry);
     apply_to_buffer(editor, format!("Logged {to}"), after);
 }
+
+/// The file's own settings, which decide what a keyword or a cookie is.
+fn file_settings(editor: &Editor) -> helix_roam::FileSettings {
+    helix_roam::FileSettings::scan(&doc!(editor).text().to_string())
+}
+
+/// Applies a transformation and moves the cursor to `line`.
+fn apply_and_go(editor: &mut Editor, done: String, after: String, line: usize) {
+    let before = doc!(editor).text().clone();
+    let after = helix_core::Rope::from(after.as_str());
+    let transaction = helix_core::diff::compare_ropes(&before, &after);
+    let view = view!(editor).id;
+    doc_mut!(editor).apply(&transaction, view);
+
+    let doc = doc_mut!(editor);
+    let line = line.min(doc.text().len_lines().saturating_sub(1));
+    let at = doc.text().line_to_char(line);
+    doc.set_selection(view, helix_core::Selection::point(at));
+    editor.set_status(done);
+}
+
+/// Runs a structure transformation that can fail.
+fn structure(
+    editor: &mut Editor,
+    done: &'static str,
+    transform: impl FnOnce(&str, usize) -> Result<String, helix_roam::restructure::Error>,
+) {
+    let (text, line) = text_and_line(editor);
+    match transform(&text, line) {
+        Ok(after) => apply_to_buffer(editor, done.to_string(), after),
+        Err(err) => editor.set_error(err.to_string()),
+    }
+}
+
+/// Inserts a sibling headline after the current subtree.
+pub fn insert_heading(editor: &mut Editor) {
+    let (text, line) = text_and_line(editor);
+    let (after, at) = helix_roam::restructure::insert_heading(&text, line);
+    apply_and_go(editor, "Inserted a heading".to_string(), after, at);
+}
+
+/// Moves one headline out a level, leaving its children.
+pub fn promote_heading(editor: &mut Editor) {
+    structure(editor, "Promoted", |text, line| {
+        helix_roam::restructure::shift_heading(text, line, false)
+    });
+}
+
+/// Moves one headline in a level, leaving its children.
+pub fn demote_heading(editor: &mut Editor) {
+    structure(editor, "Demoted", |text, line| {
+        helix_roam::restructure::shift_heading(text, line, true)
+    });
+}
+
+/// Moves a headline and its children out a level.
+pub fn promote_subtree(editor: &mut Editor) {
+    structure(editor, "Promoted the subtree", |text, line| {
+        helix_roam::restructure::shift_subtree(text, line, false)
+    });
+}
+
+/// Moves a headline and its children in a level.
+pub fn demote_subtree(editor: &mut Editor) {
+    structure(editor, "Demoted the subtree", |text, line| {
+        helix_roam::restructure::shift_subtree(text, line, true)
+    });
+}
+
+/// Swaps the subtree with the sibling above or below it.
+fn move_subtree(editor: &mut Editor, up: bool) {
+    let (text, line) = text_and_line(editor);
+    match helix_roam::restructure::move_subtree(&text, line, up) {
+        Ok((after, at)) => apply_and_go(editor, "Moved the subtree".to_string(), after, at),
+        Err(err) => editor.set_error(err.to_string()),
+    }
+}
+
+pub fn move_subtree_up(editor: &mut Editor) {
+    move_subtree(editor, true);
+}
+
+pub fn move_subtree_down(editor: &mut Editor) {
+    move_subtree(editor, false);
+}
+
+/// Moves the headline to the next state its file declares.
+fn cycle_todo(editor: &mut Editor, forward: bool) {
+    let settings = file_settings(editor);
+    let (text, line) = text_and_line(editor);
+
+    match helix_roam::restructure::cycle_todo(&text, line, &settings, forward) {
+        Ok(after) => apply_to_buffer(editor, "Cycled the state".to_string(), after),
+        Err(err) => editor.set_error(err.to_string()),
+    }
+}
+
+pub fn todo_next(editor: &mut Editor) {
+    cycle_todo(editor, true);
+}
+
+pub fn todo_previous(editor: &mut Editor) {
+    cycle_todo(editor, false);
+}
+
+/// Moves the priority towards `A`, or away from it.
+fn change_priority(editor: &mut Editor, raise: bool) {
+    let settings = file_settings(editor);
+    let (text, line) = text_and_line(editor);
+
+    match helix_roam::restructure::change_priority(&text, line, &settings, raise) {
+        Ok(after) => apply_to_buffer(editor, "Changed the priority".to_string(), after),
+        Err(err) => editor.set_error(err.to_string()),
+    }
+}
+
+pub fn priority_up(editor: &mut Editor) {
+    change_priority(editor, true);
+}
+
+pub fn priority_down(editor: &mut Editor) {
+    change_priority(editor, false);
+}
+
+/// Sets the priority from a typed letter, or clears it when nothing is typed.
+pub fn set_priority(editor: &mut Editor, input: &str) {
+    let settings = file_settings(editor);
+    let letter = input.trim().chars().next().map(|c| c.to_ascii_uppercase());
+    let (text, line) = text_and_line(editor);
+
+    match helix_roam::restructure::set_priority(&text, line, &settings, letter) {
+        Ok(after) => apply_to_buffer(
+            editor,
+            match letter {
+                Some(letter) => format!("Priority [#{letter}]"),
+                None => "Cleared the priority".to_string(),
+            },
+            after,
+        ),
+        Err(err) => editor.set_error(err.to_string()),
+    }
+}
+
+/// Writes a planning timestamp, reading `today`, `+3` or an ISO date.
+fn set_planning(editor: &mut Editor, which: helix_roam::restructure::Planning, input: &str) {
+    let input = input.trim();
+    let stamp = if input.is_empty() {
+        None
+    } else {
+        match parse_date_input(input) {
+            Some(date) => Some(format!("<{} {}>", date.to_iso(), date.weekday())),
+            None => {
+                editor.set_error(format!(
+                    "{input:?} is not a date; try `today`, `+3`, or `2026-09-18`"
+                ));
+                return;
+            }
+        }
+    };
+
+    let (text, line) = text_and_line(editor);
+    match helix_roam::restructure::set_planning(&text, line, which, stamp.as_deref()) {
+        Ok(after) => apply_to_buffer(
+            editor,
+            match &stamp {
+                Some(stamp) => format!("Set {stamp}"),
+                None => "Cleared it".to_string(),
+            },
+            after,
+        ),
+        Err(err) => editor.set_error(err.to_string()),
+    }
+}
+
+/// Reads the shorthands a date prompt accepts.
+///
+/// Typing a full ISO date every time is the thing the roadmap asked to avoid;
+/// `today`, `tomorrow` and `+n` cover most of what a planning line gets.
+fn parse_date_input(input: &str) -> Option<helix_roam::Date> {
+    let today = helix_roam::Date::today();
+
+    match input.to_lowercase().as_str() {
+        "today" | "." => return Some(today),
+        "tomorrow" | "+1" => return Some(today.offset_by(1)),
+        "yesterday" | "-1" => return Some(today.offset_by(-1)),
+        _ => {}
+    }
+
+    if let Some(days) = input.strip_prefix('+').and_then(|n| n.parse::<i64>().ok()) {
+        return Some(today.offset_by(days));
+    }
+    if let Some(days) = input.strip_prefix('-').and_then(|n| n.parse::<i64>().ok()) {
+        return Some(today.offset_by(-days));
+    }
+
+    helix_roam::Date::parse_iso(input)
+}
+
+pub fn schedule(editor: &mut Editor, input: &str) {
+    set_planning(editor, helix_roam::restructure::Planning::Scheduled, input);
+}
+
+pub fn deadline(editor: &mut Editor, input: &str) {
+    set_planning(editor, helix_roam::restructure::Planning::Deadline, input);
+}
+
+/// Tags used anywhere in the graph, for completing a tag prompt.
+pub fn known_tags(editor: &Editor) -> Vec<String> {
+    let mut tags: Vec<String> = {
+        let graph = editor.roam.read();
+        let collected = graph
+            .nodes()
+            .flat_map(|node| node.tags.iter().cloned())
+            .collect();
+        collected
+    };
+
+    tags.sort_unstable();
+    tags.dedup();
+    tags
+}
+
+/// Moves the subtree at the cursor into the file's archive.
+///
+/// The archive is appended to, never overwritten, and the source buffer is
+/// only changed once the archive has been written — so a failure loses
+/// nothing.
+pub fn archive_subtree(editor: &mut Editor) {
+    let Some(source) = doc!(editor).path().map(Path::to_path_buf) else {
+        editor.set_error("the buffer has no path to archive from");
+        return;
+    };
+    let settings = file_settings(editor);
+    let (text, line) = text_and_line(editor);
+    let origin = source
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    let archived = match helix_roam::restructure::archive_subtree(&text, line, &settings, &origin) {
+        Ok(archived) => archived,
+        Err(err) => {
+            editor.set_error(err.to_string());
+            return;
+        }
+    };
+
+    let target = source
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(&archived.target);
+
+    let appended = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&target)
+        .and_then(|mut file| {
+            use std::io::Write;
+            file.write_all(archived.archived.as_bytes())
+        });
+
+    if let Err(err) = appended {
+        editor.set_error(format!("could not write {}: {err}", target.display()));
+        return;
+    }
+
+    apply_to_buffer(
+        editor,
+        format!("Archived to {}", target.display()),
+        archived.remaining,
+    );
+}

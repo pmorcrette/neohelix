@@ -308,12 +308,12 @@ fn parse_planning(trimmed: &str) -> Option<(Option<Timestamp>, Option<Timestamp>
 }
 
 /// `haystack` begins with `needle`, comparing ASCII case-insensitively.
-fn starts_with_ignore_case(haystack: &str, needle: &str) -> bool {
+pub(crate) fn starts_with_ignore_case(haystack: &str, needle: &str) -> bool {
     haystack.len() >= needle.len() && haystack[..needle.len()].eq_ignore_ascii_case(needle)
 }
 
 /// Byte offset of `needle` in `haystack`, comparing ASCII case-insensitively.
-fn find_ignore_case(haystack: &str, needle: &str) -> Option<usize> {
+pub(crate) fn find_ignore_case(haystack: &str, needle: &str) -> Option<usize> {
     (0..=haystack.len().checked_sub(needle.len())?).find(|&at| {
         haystack.is_char_boundary(at) && starts_with_ignore_case(&haystack[at..], needle)
     })
