@@ -999,3 +999,62 @@ fn retitle_backlinks(editor: &mut Editor, id: helix_roam::Uuid, old: &str, new: 
 
     updated
 }
+
+/// One place a node is named without being linked.
+pub struct Unlinked {
+    pub text: String,
+    pub path: PathBuf,
+    pub line: usize,
+}
+
+/// Every unlinked reference to the node at the cursor.
+///
+/// Reads the notes from disk rather than the graph: the graph holds nodes and
+/// edges, and this question is about the prose between them.
+pub fn unlinked_references(editor: &mut Editor) -> Vec<Unlinked> {
+    let offset = cursor_offset(editor);
+    let text = doc!(editor).text().to_string();
+    let line = doc!(editor).text().byte_to_line(offset);
+
+    let Some((id, title)) = helix_roam::restructure::entry_at(&text, line) else {
+        editor.set_error("No node at the cursor; give it an :ID: first");
+        return Vec::new();
+    };
+
+    // The node's own names: its title and any aliases it declares.
+    let mut names = vec![title];
+    {
+        let graph = editor.roam.read();
+        if let Some(node) = graph.get_node(&id) {
+            names.extend(node.aliases.iter().cloned());
+        }
+    }
+
+    let (files, _) = helix_roam::scanner::collect_org_files(&notes_directory(editor));
+    let own_file = doc!(editor).path().map(Path::to_path_buf);
+
+    let mut found = Vec::new();
+    for path in files {
+        // A node naming itself is not a reference worth making.
+        if own_file.as_deref() == Some(path.as_path()) {
+            continue;
+        }
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        found.extend(
+            helix_roam::unlinked::find_in_text(&contents, &path, &names)
+                .into_iter()
+                .map(|reference| Unlinked {
+                    text: reference.text.trim().to_string(),
+                    path: reference.path,
+                    line: reference.line,
+                }),
+        );
+    }
+
+    if found.is_empty() {
+        editor.set_status("No unlinked references");
+    }
+    found
+}

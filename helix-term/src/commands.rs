@@ -428,6 +428,7 @@ impl MappableCommand {
         roam_alias_add, "Add an alias to the node at the cursor",
         roam_alias_remove, "Remove an alias from the node at the cursor",
         roam_rename_node, "Rename the node at the cursor and the links naming it",
+        roam_unlinked_references, "List where this node is named without a link",
         roam_dailies_today, "Open today's daily note",
         roam_dailies_date, "Open the daily note for a date",
         roam_dailies_next, "Open the next daily note",
@@ -3835,6 +3836,56 @@ fn roam_alias_add(cx: &mut Context) {
 
 fn roam_alias_remove(cx: &mut Context) {
     prompt_for_property(cx, "Remove alias: ", crate::roam::alias_remove);
+}
+
+/// Lists the places the node at the cursor is named without being linked.
+pub fn roam_unlinked_picker(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    let found = crate::roam::unlinked_references(editor);
+    if found.is_empty() {
+        return None;
+    }
+
+    let columns = [
+        ui::PickerColumn::new(
+            "text",
+            |item: &crate::roam::Unlinked, _: &PathStyleConfig| item.text.as_str().into(),
+        ),
+        ui::PickerColumn::new(
+            "path",
+            |item: &crate::roam::Unlinked, config: &PathStyleConfig| {
+                config.stylize(Some(item.path.as_path()), Some(item.line))
+            },
+        ),
+    ];
+
+    let picker = Picker::new(
+        columns,
+        0, // text
+        found,
+        PathStyleConfig::new(&editor.theme),
+        |cx, item, action| {
+            if let Err(err) = cx.editor.open(&item.path, action) {
+                cx.editor
+                    .set_error(format!("Failed to open '{}': {}", item.path.display(), err));
+                return;
+            }
+            let doc = doc!(cx.editor);
+            if item.line < doc.text().len_lines() {
+                let pos = doc.text().line_to_char(item.line);
+                let view_id = view!(cx.editor).id;
+                doc_mut!(cx.editor).set_selection(view_id, Selection::point(pos));
+            }
+        },
+    );
+
+    Some(Box::new(overlaid(picker)))
+}
+
+/// Opens the unlinked-references picker.
+fn roam_unlinked_references(cx: &mut Context) {
+    if let Some(picker) = roam_unlinked_picker(cx.editor) {
+        cx.push_layer(picker);
+    }
 }
 
 /// Asks for a new title and renames the node at the cursor.

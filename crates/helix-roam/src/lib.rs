@@ -14,6 +14,7 @@ pub mod parser;
 pub mod query;
 pub mod restructure;
 pub mod scanner;
+pub mod unlinked;
 
 pub use date::Date;
 pub use graph::RoamGraph;
