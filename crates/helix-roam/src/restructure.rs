@@ -301,6 +301,176 @@ fn existing_id(subtree: &[String]) -> Option<Uuid> {
     None
 }
 
+/// Sets a single-valued property on the entry at `line`.
+///
+/// Unlike [`edit_property`], which manages a list, this replaces the value
+/// outright — which is what `:EFFORT:` and a user's own keys want.
+pub fn set_property(text: &str, line: usize, property: &str, value: &str) -> Result<String, Error> {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let (start, end) = locate_drawer(&lines, line)?;
+
+    let rendered = format!(":{property}: {value}");
+    match find_property(&lines, start, end, property) {
+        Some(at) => lines[at] = rendered,
+        None => lines.insert(end, rendered),
+    }
+
+    Ok(rejoin(&lines, text))
+}
+
+/// Removes a property from the entry at `line`.
+///
+/// Returns `None` when it was not there, so the caller can say so rather than
+/// marking the buffer modified for nothing.
+pub fn remove_property(text: &str, line: usize, property: &str) -> Result<Option<String>, Error> {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let (start, end) = locate_drawer(&lines, line)?;
+
+    let Some(at) = find_property(&lines, start, end, property) else {
+        return Ok(None);
+    };
+    lines.remove(at);
+
+    Ok(Some(rejoin(&lines, text)))
+}
+
+/// The value of a property on the entry at `line`.
+pub fn property_value(text: &str, line: usize, property: &str) -> Option<String> {
+    let lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let (start, end) = locate_drawer(&lines, line).ok()?;
+    let at = find_property(&lines, start, end, property)?;
+
+    lines[at]
+        .trim()
+        .strip_prefix(':')
+        .and_then(|rest| rest.split_once(':'))
+        .map(|(_, value)| value.trim().to_string())
+}
+
+/// Every property key used anywhere in `text`, for completion.
+pub fn property_keys(text: &str) -> Vec<String> {
+    let mut keys: Vec<String> = Vec::new();
+    let mut in_drawer = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.eq_ignore_ascii_case(":PROPERTIES:") {
+            in_drawer = true;
+            continue;
+        }
+        if trimmed.eq_ignore_ascii_case(":END:") {
+            in_drawer = false;
+            continue;
+        }
+        if !in_drawer {
+            continue;
+        }
+        if let Some((key, _)) = trimmed.strip_prefix(':').and_then(|r| r.split_once(':')) {
+            let key = key.to_uppercase();
+            if !key.is_empty() && !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+    }
+
+    keys.sort_unstable();
+    keys
+}
+
+/// The drawer of the entry containing `line`.
+fn locate_drawer(lines: &[String], line: usize) -> Result<(usize, usize), Error> {
+    let at = line.min(lines.len().saturating_sub(1));
+    let headline = lines[..=at]
+        .iter()
+        .rposition(|l| headline_level(l).is_some());
+    drawer_range(lines, headline.map_or(0, |at| at + 1)).ok_or(Error::NoDrawer)
+}
+
+/// Line holding `property` within a drawer, if any.
+fn find_property(lines: &[String], start: usize, end: usize, property: &str) -> Option<usize> {
+    lines[start..end]
+        .iter()
+        .position(|l| {
+            l.trim()
+                .strip_prefix(':')
+                .and_then(|rest| rest.split_once(':'))
+                .is_some_and(|(key, _)| key.eq_ignore_ascii_case(property))
+        })
+        .map(|offset| start + offset)
+}
+
+/// Inserts an empty drawer under the entry at `line`.
+pub fn insert_drawer(text: &str, line: usize, name: &str) -> String {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let at = line.min(lines.len().saturating_sub(1));
+
+    // After the headline and its property drawer, if it has one.
+    let headline = lines[..=at]
+        .iter()
+        .rposition(|l| headline_level(l).is_some());
+    let after = match headline {
+        Some(headline_at) => match drawer_range(&lines, headline_at + 1) {
+            Some((_, end)) => end + 1,
+            None => headline_at + 1,
+        },
+        None => 0,
+    };
+
+    let name = name.trim().trim_matches(':').to_uppercase();
+    lines.splice(
+        after..after,
+        [format!(":{name}:"), String::new(), ":END:".to_string()],
+    );
+
+    rejoin(&lines, text)
+}
+
+/// Appends an entry to the `:LOGBOOK:` drawer of the entry at `line`.
+///
+/// The drawer is created when there is none. Entries go at the top, newest
+/// first, which is how Org writes them.
+pub fn log_entry(text: &str, line: usize, entry: &str) -> String {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let at = line.min(lines.len().saturating_sub(1));
+    let headline = lines[..=at]
+        .iter()
+        .rposition(|l| headline_level(l).is_some());
+
+    // The logbook sits after the headline's property drawer, if it has one.
+    let search_from = headline.map_or(0, |at| at + 1);
+    let after_properties = match drawer_range(&lines, search_from) {
+        Some((_, end)) => end + 1,
+        None => search_from,
+    };
+
+    let existing = lines[after_properties..]
+        .iter()
+        .position(|l| l.trim().eq_ignore_ascii_case(":LOGBOOK:"))
+        .map(|offset| after_properties + offset)
+        // Only a logbook directly under the entry belongs to it.
+        .filter(|at| {
+            lines[after_properties..*at]
+                .iter()
+                .all(|l| l.trim().is_empty())
+        });
+
+    match existing {
+        Some(at) => lines.insert(at + 1, entry.to_string()),
+        None => {
+            lines.splice(
+                after_properties..after_properties,
+                [
+                    ":LOGBOOK:".to_string(),
+                    entry.to_string(),
+                    ":END:".to_string(),
+                ],
+            );
+        }
+    }
+
+    rejoin(&lines, text)
+}
+
 /// Renames the entry at `line`.
 ///
 /// A headline's title is its own line; a file node's is `#+title:`. Only the

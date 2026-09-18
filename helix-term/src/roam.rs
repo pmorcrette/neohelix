@@ -1135,3 +1135,168 @@ pub fn capture_node(editor: &mut Editor, template: &helix_roam::capture::Templat
 
     editor.set_status(format!("Captured {}", path.display()));
 }
+
+/// Applies a text transformation to the focused buffer, reporting the outcome.
+fn apply_to_buffer(editor: &mut Editor, done: String, after: String) {
+    let before = doc!(editor).text().clone();
+    let after = helix_core::Rope::from(after.as_str());
+    if after == before {
+        editor.set_status("Nothing to change");
+        return;
+    }
+
+    let transaction = helix_core::diff::compare_ropes(&before, &after);
+    let view = view!(editor).id;
+    doc_mut!(editor).apply(&transaction, view);
+    editor.set_status(done);
+}
+
+/// The buffer's text and the cursor's line, which every command here needs.
+fn text_and_line(editor: &Editor) -> (String, usize) {
+    let offset = cursor_offset(editor);
+    let doc = doc!(editor);
+    (doc.text().to_string(), doc.text().byte_to_line(offset))
+}
+
+/// Property keys the file already uses, for completion.
+pub fn property_keys(editor: &Editor) -> Vec<String> {
+    helix_roam::restructure::property_keys(&doc!(editor).text().to_string())
+}
+
+/// Sets a property on the entry at the cursor, from `KEY VALUE`.
+pub fn set_property(editor: &mut Editor, input: &str) {
+    let Some((key, value)) = input.trim().split_once(char::is_whitespace) else {
+        editor.set_error("Give a key and a value, e.g. `CATEGORY work`");
+        return;
+    };
+
+    let (text, line) = text_and_line(editor);
+    match helix_roam::restructure::set_property(&text, line, key.trim(), value.trim()) {
+        Ok(after) => apply_to_buffer(editor, format!("Set :{}:", key.trim()), after),
+        Err(err) => editor.set_error(err.to_string()),
+    }
+}
+
+/// Removes a property from the entry at the cursor.
+pub fn remove_property(editor: &mut Editor, key: &str) {
+    let key = key.trim();
+    let (text, line) = text_and_line(editor);
+
+    match helix_roam::restructure::remove_property(&text, line, key) {
+        Ok(Some(after)) => apply_to_buffer(editor, format!("Removed :{key}:"), after),
+        Ok(None) => editor.set_status(format!(":{key}: was not there")),
+        Err(err) => editor.set_error(err.to_string()),
+    }
+}
+
+/// Sets the effort estimate on the entry at the cursor.
+pub fn set_effort(editor: &mut Editor, value: &str) {
+    let (text, line) = text_and_line(editor);
+    match helix_roam::restructure::set_property(&text, line, "EFFORT", value.trim()) {
+        Ok(after) => apply_to_buffer(editor, format!("Effort {}", value.trim()), after),
+        Err(err) => editor.set_error(err.to_string()),
+    }
+}
+
+/// The effort values `roam-inc-effort` steps through.
+///
+/// Org takes these from `Effort_ALL`, so a file that declares one is honoured
+/// and the list below is only the fallback.
+const DEFAULT_EFFORTS: [&str; 9] = [
+    "0:10", "0:20", "0:30", "1:00", "2:00", "3:00", "4:00", "6:00", "8:00",
+];
+
+/// Moves the effort estimate to the next value in the file's list.
+pub fn increment_effort(editor: &mut Editor) {
+    let (text, line) = text_and_line(editor);
+
+    let settings = helix_roam::FileSettings::scan(&text);
+    let declared: Vec<String> = settings
+        .properties
+        .iter()
+        .find(|(key, _)| key == "effort_all")
+        .map(|(_, value)| value.split_whitespace().map(str::to_string).collect())
+        .unwrap_or_default();
+    let values: Vec<&str> = if declared.is_empty() {
+        DEFAULT_EFFORTS.to_vec()
+    } else {
+        declared.iter().map(String::as_str).collect()
+    };
+
+    let current = helix_roam::restructure::property_value(&text, line, "EFFORT");
+    let next = match current
+        .as_deref()
+        .and_then(|c| values.iter().position(|v| *v == c))
+    {
+        // Past the end, wrap round rather than sticking at the largest.
+        Some(at) => values[(at + 1) % values.len()],
+        None => values[0],
+    };
+
+    match helix_roam::restructure::set_property(&text, line, "EFFORT", next) {
+        Ok(after) => apply_to_buffer(editor, format!("Effort {next}"), after),
+        Err(err) => editor.set_error(err.to_string()),
+    }
+}
+
+/// Inserts an empty drawer under the entry at the cursor.
+pub fn insert_drawer(editor: &mut Editor, name: &str) {
+    let name = name.trim();
+    if name.is_empty() {
+        return;
+    }
+
+    let (text, line) = text_and_line(editor);
+    let after = helix_roam::restructure::insert_drawer(&text, line, name);
+    apply_to_buffer(
+        editor,
+        format!("Inserted :{}: drawer", name.to_uppercase()),
+        after,
+    );
+}
+
+/// Records a dated note in the entry's `:LOGBOOK:`.
+pub fn add_note(editor: &mut Editor, note: &str) {
+    let note = note.trim();
+    if note.is_empty() {
+        return;
+    }
+
+    let stamp =
+        helix_roam::date::log_stamp(helix_roam::Date::today(), helix_roam::date::Time::now());
+    let (text, line) = text_and_line(editor);
+    let after = helix_roam::restructure::log_entry(
+        &text,
+        line,
+        &format!("- Note taken on {stamp} \\\\\n  {note}"),
+    );
+
+    apply_to_buffer(editor, "Noted".to_string(), after);
+}
+
+/// Records a TODO state change in the entry's `:LOGBOOK:`.
+///
+/// The state itself is not changed here: that is Task 1.5's business, and this
+/// records what happened rather than causing it.
+pub fn log_state_change(editor: &mut Editor, input: &str) {
+    let (from, to) = match input.trim().split_once("->") {
+        Some((from, to)) => (from.trim(), to.trim()),
+        None => ("", input.trim()),
+    };
+    if to.is_empty() {
+        editor.set_error("Give the new state, e.g. `TODO -> DONE`");
+        return;
+    }
+
+    let stamp =
+        helix_roam::date::log_stamp(helix_roam::Date::today(), helix_roam::date::Time::now());
+    let entry = if from.is_empty() {
+        format!("- State \"{to}\" from {stamp}")
+    } else {
+        format!("- State \"{to}\" from \"{from}\" {stamp}")
+    };
+
+    let (text, line) = text_and_line(editor);
+    let after = helix_roam::restructure::log_entry(&text, line, &entry);
+    apply_to_buffer(editor, format!("Logged {to}"), after);
+}

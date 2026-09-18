@@ -139,12 +139,21 @@ fn a_query_filters_on_the_new_fields() {
     .with_tag("deep");
     assert_eq!(graph.query(&query).len(), 1);
 
-    // A property from the drawer.
+    // A property from the drawer. Two nodes match, not one: the nested node
+    // inherits `:EFFORT:` from the entry above it, which is what property
+    // inheritance means.
     let query = NodeQuery {
         property: Some(("EFFORT".into(), "2h".into())),
         ..NodeQuery::default()
     };
-    assert_eq!(graph.query(&query).len(), 1);
+    assert_eq!(graph.query(&query).len(), 2);
+
+    // Asking only what an entry declares itself still distinguishes them.
+    let declared = graph
+        .nodes()
+        .filter(|node| node.properties.iter().any(|(key, _)| key == "effort"))
+        .count();
+    assert_eq!(declared, 1);
 }
 
 #[test]

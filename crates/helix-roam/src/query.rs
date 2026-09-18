@@ -96,9 +96,10 @@ impl NodeQuery {
         };
         let key = key.to_lowercase();
 
-        node.properties
-            .iter()
-            .any(|(k, v)| *k == key && v.trim() == value.trim())
+        // Inherited values count: a query that ignored a file-wide
+        // `#+PROPERTY:` would miss what the file plainly says.
+        node.property(&key)
+            .is_some_and(|found| found.trim() == value.trim())
     }
 
     /// Unfinished nodes, the query a task list is built from.

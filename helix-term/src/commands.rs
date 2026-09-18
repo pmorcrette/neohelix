@@ -430,6 +430,13 @@ impl MappableCommand {
         roam_rename_node, "Rename the node at the cursor and the links naming it",
         roam_unlinked_references, "List where this node is named without a link",
         roam_capture, "Create an Org-Roam node from a template",
+        org_set_property, "Set a property on the entry at the cursor",
+        org_remove_property, "Remove a property from the entry at the cursor",
+        org_set_effort, "Set the effort estimate on the entry at the cursor",
+        org_increment_effort, "Step the effort estimate to the next value",
+        org_insert_drawer, "Insert a drawer under the entry at the cursor",
+        org_add_note, "Record a dated note in the entry's logbook",
+        org_log_state, "Record a TODO state change in the entry's logbook",
         roam_dailies_today, "Open today's daily note",
         roam_dailies_date, "Open the daily note for a date",
         roam_dailies_next, "Open the next daily note",
@@ -3837,6 +3844,61 @@ fn roam_alias_add(cx: &mut Context) {
 
 fn roam_alias_remove(cx: &mut Context) {
     prompt_for_property(cx, "Remove alias: ", crate::roam::alias_remove);
+}
+
+/// Asks for `KEY VALUE`, completing over the keys the file already uses.
+pub fn org_set_property_prompt(editor: &Editor) -> Box<dyn Component> {
+    let keys = crate::roam::property_keys(editor);
+
+    Box::new(ui::Prompt::new(
+        "Property (KEY VALUE): ".into(),
+        None,
+        move |_editor, input| {
+            // Complete the key only, and only while it is still being typed.
+            if input.contains(char::is_whitespace) {
+                return Vec::new();
+            }
+            let input = input.to_uppercase();
+            keys.iter()
+                .filter(|key| key.starts_with(&input))
+                .map(|key| (0.., format!("{key} ").into()))
+                .collect()
+        },
+        |cx, input, event| {
+            if event == PromptEvent::Validate {
+                crate::roam::set_property(cx.editor, input);
+            }
+        },
+    ))
+}
+
+fn org_set_property(cx: &mut Context) {
+    let prompt = org_set_property_prompt(cx.editor);
+    cx.push_layer(prompt);
+}
+
+fn org_remove_property(cx: &mut Context) {
+    prompt_for_property(cx, "Remove property: ", crate::roam::remove_property);
+}
+
+fn org_set_effort(cx: &mut Context) {
+    prompt_for_property(cx, "Effort: ", crate::roam::set_effort);
+}
+
+fn org_increment_effort(cx: &mut Context) {
+    crate::roam::increment_effort(cx.editor);
+}
+
+fn org_insert_drawer(cx: &mut Context) {
+    prompt_for_property(cx, "Drawer: ", crate::roam::insert_drawer);
+}
+
+fn org_add_note(cx: &mut Context) {
+    prompt_for_property(cx, "Note: ", crate::roam::add_note);
+}
+
+fn org_log_state(cx: &mut Context) {
+    prompt_for_property(cx, "State (OLD -> NEW): ", crate::roam::log_state_change);
 }
 
 /// Creates a node from a template.

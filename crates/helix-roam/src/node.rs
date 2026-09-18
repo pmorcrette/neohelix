@@ -77,6 +77,13 @@ pub struct Node {
     /// Excludes the ones with fields of their own — `:ID:`,
     /// `:ROAM_ALIASES:` and `:ROAM_REFS:` — so nothing is stored twice.
     pub properties: Vec<(String, String)>,
+    /// Properties this node takes from an enclosing entry, or from the file's
+    /// `#+PROPERTY:` defaults.
+    ///
+    /// Kept apart from [`Node::properties`] rather than merged: a query that
+    /// wants either can look at both, and one that wants only what the entry
+    /// itself declares still can.
+    pub inherited_properties: Vec<(String, String)>,
     /// Zero-based line of the node's `:ID:` property within `file_path`.
     ///
     /// This is what the node picker jumps to, so it points at the `:ID:`
@@ -100,6 +107,7 @@ impl Node {
             deadline: None,
             outline_path: Vec::new(),
             properties: Vec::new(),
+            inherited_properties: Vec::new(),
             line: 0,
         }
     }
@@ -131,6 +139,16 @@ impl Node {
     ///
     /// Org-Roam resolves `[[roam:...]]` descriptions against both, so lookups
     /// by name have to consider aliases as well.
+    /// The value of `key`, from this node or from what it inherits.
+    pub fn property(&self, key: &str) -> Option<&str> {
+        let key = key.to_lowercase();
+        self.properties
+            .iter()
+            .chain(&self.inherited_properties)
+            .find(|(found, _)| *found == key)
+            .map(|(_, value)| value.as_str())
+    }
+
     pub fn matches_title(&self, title: &str) -> bool {
         self.title == title || self.aliases.iter().any(|alias| alias == title)
     }

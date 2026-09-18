@@ -182,7 +182,9 @@ happened to an entry.
 - [ ] Effort estimates, and incrementing one.
 - [ ] Property inheritance, which changes what a query over the graph returns
       and so belongs with the indexer rather than only the UI.
-- [ ] Insert a drawer, and fold drawers by default the way Org does.
+- [ ] Insert a drawer, and fold drawers by default the way Org does. The
+      folding half is blocked on Task 1.4 for the same reason section folding
+      is: Helix has none.
 - [ ] Logging: record state changes and timestamps into `:LOGBOOK:`, and add a
       dated note to an entry.
 

@@ -53,6 +53,13 @@ impl Date {
         (Self::from_days(date.to_days()) == date).then_some(date)
     }
 
+    /// The three-letter day name Org writes inside a timestamp.
+    pub fn weekday(self) -> &'static str {
+        // 1970-01-01 was a Thursday, which anchors the cycle.
+        const NAMES: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
+        NAMES[self.to_days().rem_euclid(7) as usize]
+    }
+
     /// Days since the Unix epoch. Howard Hinnant's `days_from_civil`.
     pub fn to_days(self) -> i64 {
         let year = self.year as i64 - i64::from(self.month <= 2);
@@ -88,6 +95,43 @@ impl Date {
             day,
         }
     }
+}
+
+/// A time of day, to the minute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Time {
+    pub hour: u32,
+    pub minute: u32,
+}
+
+impl Time {
+    /// The current time, in UTC for the same reason [`Date::today`] is.
+    pub fn now() -> Self {
+        let seconds = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_secs())
+            .unwrap_or(0);
+
+        let minutes_today = (seconds % 86_400) / 60;
+        Self {
+            hour: (minutes_today / 60) as u32,
+            minute: (minutes_today % 60) as u32,
+        }
+    }
+}
+
+/// An Org inactive timestamp, `[2026-09-18 Fri 14:32]`.
+///
+/// Inactive rather than active because these record what happened; an active
+/// one would put every logged note into the agenda.
+pub fn log_stamp(date: Date, time: Time) -> String {
+    format!(
+        "[{} {} {:02}:{:02}]",
+        date.to_iso(),
+        date.weekday(),
+        time.hour,
+        time.minute
+    )
 }
 
 #[cfg(test)]
@@ -200,6 +244,69 @@ mod tests {
         assert_eq!(Date::parse_iso("2026-13-01"), None);
         assert_eq!(Date::parse_iso("not a date"), None);
         assert_eq!(Date::parse_iso("2026-09-18-01"), None);
+    }
+
+    #[test]
+    fn weekdays_follow_the_calendar() {
+        // 1970-01-01 was a Thursday, and the anchor is worth pinning.
+        assert_eq!(
+            Date {
+                year: 1970,
+                month: 1,
+                day: 1
+            }
+            .weekday(),
+            "Thu"
+        );
+        // 2026-09-18 is a Friday.
+        assert_eq!(
+            Date {
+                year: 2026,
+                month: 9,
+                day: 18
+            }
+            .weekday(),
+            "Fri"
+        );
+        // And the day before it is a Thursday.
+        assert_eq!(
+            Date {
+                year: 2026,
+                month: 9,
+                day: 18
+            }
+            .offset_by(-1)
+            .weekday(),
+            "Thu"
+        );
+        // Dates before the epoch still work, which `rem_euclid` is there for.
+        assert_eq!(
+            Date {
+                year: 1969,
+                month: 12,
+                day: 31
+            }
+            .weekday(),
+            "Wed"
+        );
+    }
+
+    #[test]
+    fn a_log_stamp_reads_the_way_org_writes_one() {
+        let date = Date {
+            year: 2026,
+            month: 9,
+            day: 18,
+        };
+        let time = Time { hour: 9, minute: 5 };
+        assert_eq!(log_stamp(date, time), "[2026-09-18 Fri 09:05]");
+    }
+
+    #[test]
+    fn the_current_time_is_a_real_time_of_day() {
+        let now = Time::now();
+        assert!(now.hour < 24);
+        assert!(now.minute < 60);
     }
 
     #[test]

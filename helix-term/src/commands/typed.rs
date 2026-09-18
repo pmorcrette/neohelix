@@ -2300,6 +2300,25 @@ roam_component_command!(
     crate::commands::roam_unlinked_picker
 );
 roam_component_command!(roam_capture, crate::commands::roam_capture_picker);
+roam_component_command!(org_set_property, |editor| Some(
+    crate::commands::org_set_property_prompt(editor)
+));
+roam_component_command!(org_remove_property, |_editor| Some(
+    crate::commands::property_prompt("Remove property: ", crate::roam::remove_property)
+));
+roam_component_command!(org_set_effort, |_editor| Some(
+    crate::commands::property_prompt("Effort: ", crate::roam::set_effort)
+));
+roam_component_command!(org_insert_drawer, |_editor| Some(
+    crate::commands::property_prompt("Drawer: ", crate::roam::insert_drawer)
+));
+roam_component_command!(org_add_note, |_editor| Some(
+    crate::commands::property_prompt("Note: ", crate::roam::add_note)
+));
+roam_component_command!(org_log_state, |_editor| Some(
+    crate::commands::property_prompt("State (OLD -> NEW): ", crate::roam::log_state_change)
+));
+roam_buffer_command!(org_increment_effort, crate::roam::increment_effort);
 roam_component_command!(roam_alias_add, |_editor| Some(
     crate::commands::property_prompt("Alias: ", crate::roam::alias_add)
 ));
@@ -4008,6 +4027,83 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Remove an alias from the node at the cursor.",
         fun: roam_alias_remove,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-set-property",
+        aliases: &[],
+        doc: "Set a property on the entry at the cursor.",
+        fun: org_set_property,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-remove-property",
+        aliases: &[],
+        doc: "Remove a property from the entry at the cursor.",
+        fun: org_remove_property,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-set-effort",
+        aliases: &[],
+        doc: "Set the effort estimate on the entry at the cursor.",
+        fun: org_set_effort,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-increment-effort",
+        aliases: &["org-inc-effort"],
+        doc: "Step the effort estimate to the next value in the file's list.",
+        fun: org_increment_effort,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-insert-drawer",
+        aliases: &[],
+        doc: "Insert an empty drawer under the entry at the cursor.",
+        fun: org_insert_drawer,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-add-note",
+        aliases: &[],
+        doc: "Record a dated note in the entry's :LOGBOOK:.",
+        fun: org_add_note,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-log-state",
+        aliases: &[],
+        doc: "Record a TODO state change in the entry's :LOGBOOK:.",
+        fun: org_log_state,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

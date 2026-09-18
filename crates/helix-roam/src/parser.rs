@@ -76,6 +76,8 @@ pub struct FileSettings {
     pub drawers: Vec<String>,
     /// `#+STARTUP:` options, in the order given.
     pub startup: Vec<String>,
+    /// `#+PROPERTY:` defaults, which every entry in the file inherits.
+    pub properties: Vec<(String, String)>,
     /// `#+LINK:` abbreviations, as `(name, expansion)`.
     ///
     /// Per file, so `[[gh:owner/repo]]` can mean different things in two
@@ -96,6 +98,7 @@ impl Default for FileSettings {
             declared_tags: Vec::new(),
             drawers: Vec::new(),
             startup: Vec::new(),
+            properties: Vec::new(),
             link_abbreviations: Vec::new(),
         }
     }
@@ -171,6 +174,14 @@ impl FileSettings {
                 "startup" => settings
                     .startup
                     .extend(value.split_whitespace().map(str::to_string)),
+                // `#+PROPERTY: Effort_ALL 0 1:00 2:00`
+                "property" => {
+                    if let Some((key, value)) = value.split_once(char::is_whitespace) {
+                        settings
+                            .properties
+                            .push((key.trim().to_lowercase(), value.trim().to_string()));
+                    }
+                }
                 // `#+LINK: gh https://github.com/%s`
                 "link" => {
                     if let Some((name, expansion)) = value.split_once(char::is_whitespace) {
@@ -362,9 +373,12 @@ pub fn parse_org(text: &str, path: impl Into<PathBuf>) -> ParsedFile {
 
 /// The node a link belongs to: the innermost headline with an `:ID:`, falling
 /// back to the file-level node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Scope {
     id: Uuid,
+    /// This node's properties plus the ones it inherited, which is what its
+    /// own descendants inherit in turn.
+    effective: Vec<(String, String)>,
     /// Headline depth that opened this scope; 0 for the file-level node.
     level: usize,
 }
@@ -514,6 +528,23 @@ impl Parser {
             self.file_node = Some(self.file.nodes.len());
         }
 
+        // What this node inherits: the enclosing node's effective properties,
+        // falling back to the file's `#+PROPERTY:` defaults at the top.
+        let from_ancestors = self
+            .scopes
+            .last()
+            .map(|scope| scope.effective.clone())
+            .unwrap_or_else(|| self.settings.properties.clone());
+        let inherited: Vec<(String, String)> = from_ancestors
+            .iter()
+            .filter(|(key, _)| !pending.properties.iter().any(|(own, _)| own == key))
+            .cloned()
+            .collect();
+
+        // What this node's own descendants will inherit in turn.
+        let mut effective = pending.properties.clone();
+        effective.extend(inherited.iter().cloned());
+
         self.file.nodes.push(Node {
             id,
             title: pending.title,
@@ -534,6 +565,7 @@ impl Parser {
                 .map(|(_, title)| title.clone())
                 .collect(),
             properties: pending.properties,
+            inherited_properties: inherited,
             line,
         });
         self.file
@@ -541,6 +573,7 @@ impl Parser {
             .extend(pending.refs.into_iter().map(|key| (key, id)));
         self.scopes.push(Scope {
             id,
+            effective,
             level: pending.level,
         });
     }
