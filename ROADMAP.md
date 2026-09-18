@@ -36,7 +36,9 @@ You are developing a custom fork of Helix in Rust. The goal is to integrate:
 *Tasks 1.4 to 1.16 were derived from Org's own default keymap and its
 `org-modules` list, command by command, rather than from recollection. What
 remains after them is Emacs integration rather than Org, and is named at the
-end of Task 1.16.*
+end of Task 1.16. Tasks 1.17 to 1.20 were derived the same way from Org-Roam's
+own sources: the interactive commands its modules define, its extensions, and
+the schema its database stores.*
 
 ### Task 1.4: Section Folding
 
@@ -119,8 +121,13 @@ typing an `:ID:` drawer by hand.
       them.
 - [ ] `roam-ref-find`: the graph already indexes `:ROAM_REFS:` and can resolve
       them, but nothing exposes a search over them.
-- [ ] Add and remove aliases and tags on the node at point, keeping the
+- [ ] Add and remove aliases, tags *and refs* on the node at point, keeping the
       property drawer and the graph in step.
+- [ ] Open a random node, which is how a large set of notes gets revisited.
+- [ ] Dailies come in two forms upstream, and the difference matters: *goto*
+      opens the day's note, *capture* adds an entry to it through a template
+      without leaving the current buffer. Both, plus opening the dailies
+      directory itself.
 - [ ] Unlinked references: occurrences of a node's title or alias in other
       files that are not yet links, and a way to turn one into a link.
 - [ ] Renaming a node's title, updating the link descriptions that named it.
@@ -248,6 +255,75 @@ applications and mean nothing here; these are the ones that do.
 Rmail, VM, MH-E, w3m, Eshell and the macOS applications, mouse support, the
 Info reader integration, and the contrib modules built on them. As with
 Task 2.19, these are deliberately not listed as gaps.*
+
+### Task 1.17: Node Lifecycle and Restructuring
+
+Org-Roam's answer to notes growing: a heading that has outgrown its file
+becomes its own node, and a file that should be one node becomes one. None of
+this exists in the fork, and it is what people reach for once a notes
+directory is more than a few weeks old.
+
+- [ ] Extract the subtree at point into a node of its own, in a new file, and
+      leave a link behind where it was. This is the command that keeps a notes
+      directory from turning into a handful of enormous files.
+- [ ] Promote the whole buffer to a single file-level node, and demote a
+      file-level node so its content becomes a subtree.
+- [ ] Refile a node into another node, which is not Org's own refile: the
+      target is chosen from the graph, and the links pointing at the moved node
+      must keep resolving.
+- [ ] Replace legacy `roam:` title links with `id:` links across a buffer, the
+      migration path for notes written before v2.
+
+### Task 1.18: What the Index Stores
+
+The fork's node carries an id, a title, a path, tags, aliases and a line.
+Org-Roam's schema stores considerably more per node — level, position, TODO
+state, priority, scheduling, properties and the outline path — and keeps
+citations in a table of their own.
+
+This is not bookkeeping: it is what makes a query like "every unfinished node
+tagged `project`, due this week" possible. Without those fields, the graph can
+answer what links to what and nothing else.
+
+- [ ] Extend `Node` with the outline level, the TODO state, the priority, the
+      `SCHEDULED:`/`DEADLINE:` timestamps, the outline path and the arbitrary
+      properties of its drawer.
+- [ ] Index citations (`[cite:@key]`) as their own relation, so a bibliography
+      key can be asked what cites it.
+- [ ] A query layer over the graph that these fields make worth having: filter
+      by tag, state, priority and date, not only by title.
+- [ ] Decide how much of this the parser should do eagerly. Every field here is
+      another thing to re-parse on every save, and the indexer is currently
+      fast because it reads very little.
+
+### Task 1.19: The Rest of the Org-Roam Buffer
+
+The panel shows backlinks. Upstream's buffer has three sections, and two of
+them are missing.
+
+- [ ] A reflinks section: nodes that reach this one through a `:ROAM_REFS:`
+      key rather than through an `id:` link. The graph already resolves refs,
+      so this is the display half of something that exists.
+- [ ] The unlinked-references section, already filed in Task 1.8, belongs to
+      this same buffer and should share its rendering.
+- [ ] A dedicated buffer pinned to a chosen node, alongside the one that
+      follows the cursor. Comparing two nodes needs both.
+- [ ] An inline overlay showing a node's backlink count next to its headline,
+      so the graph is visible while writing rather than only in a panel.
+- [ ] Diagnose the node at point: what the index believes about it, which is
+      the only way to tell a parser bug from a malformed drawer.
+
+### Task 1.20: Graph Visualisation and Export
+
+Two extensions upstream ships that the fork has no equivalent of.
+
+- [ ] Render the graph — the whole one, or a neighbourhood around a node at a
+      chosen depth — and open it. Upstream shells out to Graphviz; doing the
+      same avoids a layout engine in-process, at the cost of a dependency the
+      fork can detect and report rather than require.
+- [ ] Export: resolve `id:` links to something meaningful in the exported
+      output rather than leaving a raw UUID. This is a prerequisite for
+      Task 1.9's export being useful on a notes directory at all.
 
 ---
 
