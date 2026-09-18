@@ -1,0 +1,16 @@
+[package]
+name = "helix-roam"
+description = "In-memory Org-Roam v2 knowledge graph for Helix"
+include = ["src/**/*", "README.md"]
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+categories.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+petgraph = { version = "0.6", default-features = false, features = ["graphmap", "stable_graph"] }
+uuid = { version = "1.0", features = ["v4"] }
