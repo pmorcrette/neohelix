@@ -77,7 +77,16 @@ You are developing a custom fork of Helix in Rust. The goal is to integrate:
   - `:magit`
   - `:terminal`
 - [ ] Add default space-leader keybindings in `helix-term/src/keymap/default.rs`:
-  - `space + r + f` -> Roam Find Node
-  - `space + r + b` -> Roam Toggle Backlinks
-  - `space + g + m` -> Open Magit Status
+  - `space + n + f` -> Roam Find Node
+  - `space + n + b` -> Roam Toggle Backlinks
+  - `space + m`     -> Open Magit Status
   - `space + t`     -> Open Terminal
+
+  Upstream Helix already binds `space + r` (`rename_symbol`) and `space + g`
+  (`changed_file_picker`), so the originally planned `space + r + f`,
+  `space + r + b` and `space + g + m` are not available without displacing
+  them. Keeping every upstream binding untouched is a deliberate constraint:
+  it preserves a Helix user's muscle memory and keeps the keymap diff against
+  upstream purely additive, so future merges have nothing to conflict with.
+  The fork's commands therefore sit on keys the default keymap leaves free —
+  `n` for notes, `m` for Magit, `t` for the terminal.
