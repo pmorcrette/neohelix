@@ -14,6 +14,11 @@ use crate::{Link, Node};
 /// be held across a mutation. `RoamGraph` is `Send + Sync`, so a shared
 /// instance lives behind the caller's lock of choice — typically
 /// `Arc<RwLock<RoamGraph>>`.
+///
+/// The `Uuid -> NodeIndex` map turns an `:ID:` into a graph position in
+/// `O(1)`, and petgraph keeps a separate incoming and outgoing edge chain per
+/// node, so backlinks cost the same as forward links: no query scans the
+/// graph.
 #[derive(Debug, Clone, Default)]
 pub struct RoamGraph {
     graph: DiGraph<Node, Link>,
@@ -61,6 +66,10 @@ impl RoamGraph {
 
     /// The nodes linking *to* `node_id`, with the link each one used.
     ///
+    /// Locating the node is `O(1)`, and only that node's incoming edge chain
+    /// is walked — never the whole graph — so the call costs `O(1)` plus the
+    /// number of backlinks it returns.
+    ///
     /// Returns an empty vector for an unknown id. The order is unspecified.
     pub fn get_backlinks(&self, node_id: &Uuid) -> Vec<(&Node, &Link)> {
         self.neighbours(node_id, Direction::Incoming)
@@ -68,12 +77,15 @@ impl RoamGraph {
 
     /// The nodes `node_id` links *out* to, with the link each one uses.
     ///
+    /// Costs `O(1)` plus the number of links returned, like
+    /// [`RoamGraph::get_backlinks`].
+    ///
     /// Returns an empty vector for an unknown id. The order is unspecified.
     pub fn get_forward_links(&self, node_id: &Uuid) -> Vec<(&Node, &Link)> {
         self.neighbours(node_id, Direction::Outgoing)
     }
 
-    /// Looks a node up by its `:ID:`.
+    /// Looks a node up by its `:ID:`, in `O(1)`.
     pub fn get_node(&self, node_id: &Uuid) -> Option<&Node> {
         let index = *self.indices.get(node_id)?;
         self.graph.node_weight(index)
