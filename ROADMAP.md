@@ -181,8 +181,10 @@ and async process handling, none of which the menu system itself covers.
 
 *Tasks 2.5 to 2.14 were derived from the actual definition of Magit's
 `magit-dispatch` transient, entry by entry, rather than from recollection of
-it. What remains uncovered after them is mostly Emacs-specific (its help and
-Info integration) or the long tail below the dispatch menu.*
+it. Tasks 2.15 to 2.19 cover the long tail below that menu, derived the same
+way: from Magit's own module list and from the interactive commands its
+grab-bag module defines. What remains after them is Emacs integration rather
+than Git, and is named at the end of Task 2.19.*
 
 ### Task 2.5: The Rest of the Status Buffer
 
@@ -345,6 +347,78 @@ offers that it did not.
       runs and the switch currently does nothing. Either the fork seeds the
       diff into the buffer itself, or the switch should go; leaving a flag that
       silently does nothing is the worst of the three.
+
+### Task 2.15: The Reflog
+
+Nothing in the fork exposes the reflog, and it is the one thing that gets a
+user's work back after a bad reset, a dropped branch or a rebase that went
+wrong. Every destructive action Tasks 2.4 and 2.9 put behind a confirmation is
+recoverable through it, which is what makes its absence worth a task of its
+own.
+
+- [ ] A reflog buffer for `HEAD` and for a chosen ref.
+- [ ] Act on the entry at point: check it out, reset to it, or create a branch
+      there.
+- [ ] Reach it from the status buffer, so it is findable at the moment it is
+      needed rather than only by someone who knows it exists.
+
+### Task 2.16: Work-in-Progress Refs
+
+Magit can commit the working tree and the index to hidden refs on every save
+and every operation, so that uncommitted work is recoverable even though it was
+never committed. It is off by default there and would be here too.
+
+- [ ] Write worktree and index wip refs on save and before destructive
+      operations.
+- [ ] A log over the wip refs, and a way to restore from one.
+- [ ] Decide the default. This writes to the repository on every save, so it is
+      opt-in or it is a surprise.
+
+### Task 2.17: Repository List, Buffer Freshness and the Margin
+
+Three separate modules that all concern how the fork's Git buffers behave
+rather than what they run.
+
+- [ ] A repository list: the repositories the user works in, with their branch
+      and how far ahead or behind each is.
+- [ ] Refresh open buffers when git changes files underneath them. A checkout
+      or a reset currently leaves every open document stale, which is a
+      correctness problem, not a convenience one.
+- [ ] A margin alongside log and status lines showing the author and the age of
+      each commit, and a way to toggle it.
+
+### Task 2.18: Sparse Checkout and Bundles
+
+Two self-contained areas with no equivalent in the fork. Neither is needed for
+the daily loop; both are the kind of thing whose absence is only discovered at
+the moment it is wanted.
+
+- [ ] Sparse checkout: enable it, list and edit the directories included.
+- [ ] Bundles: create a bundle from a range of commits, and unbundle one.
+
+### Task 2.19: The Long Tail of Everyday Commands
+
+Drawn from Magit's own grab-bag module. Small individually, and several are
+used more often than most of the transients above.
+
+- [ ] Copy the revision or the section value at point, so a commit hash can be
+      pasted somewhere without retyping it.
+- [ ] Abort whatever operation is in progress, without the user having to know
+      whether it is a merge, a rebase, a cherry-pick, a revert or a bisect.
+- [ ] `git clean`: remove untracked files, with ignored files as a separate
+      choice and a confirmation naming what goes.
+- [ ] Edit the commit that last touched the line at point, which is blame and
+      interactive rebase used together.
+- [ ] Rewrite the author and committer dates of a range of commits.
+- [ ] Resolve a conflict with the user's configured mergetool, as an escape
+      hatch from whatever Task 2.10 builds.
+- [ ] A revision stack: revisions recently looked at, insertable into a buffer
+      — useful when writing a commit message that refers to another commit.
+
+*What is left after Task 2.19 is Emacs, not Git: Dired and bookmark
+integration, `project.el` entry points, shift-selection variants of the
+cursor-motion commands, and wrappers that launch `gitk` and `git gui`. These
+have no meaning in Helix and are deliberately not listed as gaps.*
 
 ---
 
