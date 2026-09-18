@@ -283,8 +283,8 @@ Example
 directory = "~/org"
 ```
 
-The graph backs `:roam-node-find` (`<space>rf`) and the backlinks panel opened
-by `:roam-backlinks-toggle` (`<space>rb`). `:roam-reindex` rebuilds it from
+The graph backs `:roam-node-find` (`<space>nf`) and the backlinks panel opened
+by `:roam-backlinks-toggle` (`<space>nb`). `:roam-reindex` rebuilds it from
 scratch, which is needed after Org files change outside the editor.
 
 ### `[editor.auto-pairs]` Section

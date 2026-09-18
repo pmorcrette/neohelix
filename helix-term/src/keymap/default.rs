@@ -233,11 +233,13 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "S" => lsp_or_syntax_workspace_symbol_picker,
             "d" => diagnostics_picker,
             "D" => workspace_diagnostics_picker,
-            "g" => { "Git"
-                "g" => changed_file_picker,
-                "m" => magit,
-            },
+            "g" => changed_file_picker,
             "a" => code_action,
+            "m" => magit,
+            "n" => { "Notes (Org-Roam)"
+                "f" => roam_node_find,
+                "b" => roam_backlinks_toggle,
+            },
             "'" => last_picker,
             "G" => { "Debug (experimental)" sticky=true
                 "l" => dap_launch,
@@ -289,11 +291,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "R" => replace_selections_with_clipboard,
             "/" => global_search,
             "k" => hover,
-            "r" => { "Rename / Org-Roam"
-                "r" => rename_symbol,
-                "f" => roam_node_find,
-                "b" => roam_backlinks_toggle,
-            },
+            "r" => rename_symbol,
             "h" => select_references_to_symbol_under_cursor,
             "c" => toggle_comments,
             "C" => toggle_block_comments,
