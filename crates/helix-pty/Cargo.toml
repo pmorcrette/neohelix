@@ -1,0 +1,20 @@
+[package]
+name = "helix-pty"
+description = "Integrated PTY terminal for Helix"
+include = ["src/**/*", "README.md"]
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+categories.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+portable-pty = "0.9"
+alacritty_terminal = "0.25"
+crossbeam-channel = "0.5"
+tokio = { version = "1", features = ["rt"] }
+log = "0.4"
+thiserror.workspace = true

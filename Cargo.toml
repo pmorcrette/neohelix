@@ -16,6 +16,7 @@ members = [
   "helix-stdx",
   "crates/helix-roam",
   "crates/helix-magit",
+  "crates/helix-pty",
   "xtask",
 ]
 
