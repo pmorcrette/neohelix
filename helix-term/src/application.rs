@@ -625,6 +625,8 @@ impl Application {
             doc_save_event.text.to_string(),
         );
 
+        crate::magit::commit_if_written(&mut self.editor, &doc_save_event.path);
+
         let lines = doc_save_event.text.len_lines();
         let size = doc_save_event.text.len_bytes();
 

@@ -246,6 +246,63 @@ impl GitCommand {
     }
 }
 
+/// git's comment character: lines starting with it are not part of a message.
+const COMMENT: char = '#';
+
+/// The message a commit buffer starts with.
+///
+/// Mirrors what git itself writes into `COMMIT_EDITMSG`: the existing message
+/// when amending, then a comment block explaining the rules and showing what
+/// is staged. The comments are stripped again by [`strip_comments`].
+pub fn commit_template(working_directory: &Path, amend: bool) -> String {
+    let mut template = String::new();
+
+    if amend {
+        if let Some(message) = head_message(working_directory) {
+            template.push_str(&message);
+            template.push('\n');
+        }
+    }
+
+    template.push_str(
+        "\n\
+         # Write the commit message above, then write and close this buffer.\n\
+         # Lines starting with '#' are ignored, and an empty message aborts\n\
+         # the commit, leaving the index untouched.\n",
+    );
+
+    if let Ok(status) = GitCommand::new(
+        working_directory,
+        vec!["status".into(), "--short".into(), "--branch".into()],
+    )
+    .run()
+    {
+        if status.success {
+            template.push_str("#\n");
+            for line in status.stdout.lines() {
+                template.push_str("# ");
+                template.push_str(line);
+                template.push('\n');
+            }
+        }
+    }
+
+    template
+}
+
+/// Removes the comment lines, leaving the message git would use.
+///
+/// A message that is only comments and blank lines is empty, which is how git
+/// itself decides that a commit was aborted.
+pub fn strip_comments(text: &str) -> String {
+    let body: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with(COMMENT))
+        .collect();
+
+    body.join("\n").trim().to_string()
+}
+
 /// The message HEAD was committed with, for seeding an amend.
 pub fn head_message(working_directory: &Path) -> Option<String> {
     let output = GitCommand::new(
@@ -427,6 +484,20 @@ mod tests {
         );
         // And a pager would never exit.
         assert_eq!(env.get("GIT_PAGER").unwrap().to_string_lossy(), "cat");
+    }
+
+    #[test]
+    fn comments_are_stripped_the_way_git_strips_them() {
+        let text = "a message\n\n# a comment\n  # an indented comment\nmore text\n";
+        assert_eq!(strip_comments(text), "a message\n\nmore text");
+
+        // Only comments and blank lines means the commit was aborted.
+        assert!(strip_comments("# just\n# comments\n\n").is_empty());
+        assert!(strip_comments("").is_empty());
+        assert!(strip_comments("   \n\n").is_empty());
+
+        // A `#` inside a line is not a comment marker.
+        assert_eq!(strip_comments("fix issue #12\n"), "fix issue #12");
     }
 
     #[test]
