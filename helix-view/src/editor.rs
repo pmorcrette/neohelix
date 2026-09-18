@@ -541,6 +541,29 @@ pub struct RoamConfig {
     ///
     /// Defaults to `daily`, which is what Org-Roam uses.
     pub dailies_directory: PathBuf,
+    /// Shapes a captured node can take.
+    ///
+    /// Empty means the one built-in template, so the feature works before it
+    /// is configured.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub templates: Vec<RoamTemplate>,
+}
+
+/// A template for a new Org-Roam node.
+///
+/// `file` and `content` are expanded with `${title}`, `${slug}`, `${id}` and
+/// `${date}`, and `%?` in `content` marks where the cursor lands.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct RoamTemplate {
+    /// Key that selects this template.
+    pub key: String,
+    /// What the picker shows.
+    pub description: String,
+    /// The file to create, relative to the notes directory.
+    pub file: String,
+    pub content: String,
 }
 
 impl Default for RoamConfig {
@@ -549,6 +572,7 @@ impl Default for RoamConfig {
             enable: true,
             directory: None,
             dailies_directory: PathBuf::from("daily"),
+            templates: Vec::new(),
         }
     }
 }

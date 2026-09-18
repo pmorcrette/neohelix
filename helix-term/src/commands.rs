@@ -429,6 +429,7 @@ impl MappableCommand {
         roam_alias_remove, "Remove an alias from the node at the cursor",
         roam_rename_node, "Rename the node at the cursor and the links naming it",
         roam_unlinked_references, "List where this node is named without a link",
+        roam_capture, "Create an Org-Roam node from a template",
         roam_dailies_today, "Open today's daily note",
         roam_dailies_date, "Open the daily note for a date",
         roam_dailies_next, "Open the next daily note",
@@ -3836,6 +3837,75 @@ fn roam_alias_add(cx: &mut Context) {
 
 fn roam_alias_remove(cx: &mut Context) {
     prompt_for_property(cx, "Remove alias: ", crate::roam::alias_remove);
+}
+
+/// Creates a node from a template.
+///
+/// The template is chosen first and the title asked for second, because the
+/// template decides what the title will be used for.
+pub fn roam_capture_picker(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    let templates = crate::roam::capture_templates(editor);
+
+    // One template is not a choice; go straight to the title.
+    if let [only] = templates.as_slice() {
+        return Some(capture_title_prompt(only.clone()));
+    }
+
+    let columns = [
+        ui::PickerColumn::new(
+            "key",
+            |item: &helix_roam::capture::Template, _: &PathStyleConfig| item.key.as_str().into(),
+        ),
+        ui::PickerColumn::new(
+            "template",
+            |item: &helix_roam::capture::Template, _: &PathStyleConfig| {
+                item.description.as_str().into()
+            },
+        ),
+    ];
+
+    let picker = Picker::new(
+        columns,
+        1, // description
+        templates,
+        PathStyleConfig::new(&editor.theme),
+        |cx, template, _action| {
+            // Only the template crosses the job boundary: a component is not
+            // `Send`, so the prompt is built on the other side.
+            let template = template.clone();
+            cx.jobs.callback(async move {
+                let call: job::Callback = job::Callback::EditorCompositor(Box::new(
+                    move |_editor: &mut Editor, compositor: &mut Compositor| {
+                        compositor.push(capture_title_prompt(template));
+                    },
+                ));
+                Ok(call)
+            });
+        },
+    );
+
+    Some(Box::new(overlaid(picker)))
+}
+
+/// Asks for the title a captured node will have.
+fn capture_title_prompt(template: helix_roam::capture::Template) -> Box<dyn Component> {
+    Box::new(ui::Prompt::new(
+        "Title: ".into(),
+        None,
+        |_editor, _input| Vec::new(),
+        move |cx, input, event| {
+            if event == PromptEvent::Validate {
+                crate::roam::capture_node(cx.editor, &template, input);
+            }
+        },
+    ))
+}
+
+/// Opens the capture flow.
+fn roam_capture(cx: &mut Context) {
+    if let Some(component) = roam_capture_picker(cx.editor) {
+        cx.push_layer(component);
+    }
 }
 
 /// Lists the places the node at the cursor is named without being linked.

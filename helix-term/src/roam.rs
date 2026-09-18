@@ -1058,3 +1058,80 @@ pub fn unlinked_references(editor: &mut Editor) -> Vec<Unlinked> {
     }
     found
 }
+
+/// The templates a captured node can use.
+///
+/// Falls back to the built-in one, so capturing works before anything is
+/// configured rather than reporting an empty list.
+pub fn capture_templates(editor: &Editor) -> Vec<helix_roam::capture::Template> {
+    let configured = &editor.config().roam.templates;
+    if configured.is_empty() {
+        return vec![helix_roam::capture::default_template()];
+    }
+
+    configured
+        .iter()
+        .map(|template| helix_roam::capture::Template {
+            key: template.key.clone(),
+            description: template.description.clone(),
+            file: template.file.clone(),
+            content: template.content.clone(),
+        })
+        .collect()
+}
+
+/// Creates a node from `template`, opens it, and leaves the cursor at `%?`.
+pub fn capture_node(editor: &mut Editor, template: &helix_roam::capture::Template, title: &str) {
+    let title = title.trim();
+    if title.is_empty() {
+        return;
+    }
+
+    let fields = helix_roam::capture::Fields {
+        title: title.to_string(),
+        slug: helix_roam::capture::slugify(title),
+        id: helix_roam::Uuid::new_v4().to_string(),
+        date: helix_roam::Date::today().to_iso(),
+    };
+
+    let capture = match helix_roam::capture::expand(template, &fields) {
+        Ok(capture) => capture,
+        Err(err) => {
+            editor.set_error(err.to_string());
+            return;
+        }
+    };
+
+    let path = notes_directory(editor).join(&capture.path);
+    if path.exists() {
+        editor.set_error(format!("{} already exists", path.display()));
+        return;
+    }
+    // A template may name a subdirectory, which need not exist yet.
+    if let Some(parent) = path.parent() {
+        if let Err(err) = std::fs::create_dir_all(parent) {
+            editor.set_error(format!("could not create {}: {err}", parent.display()));
+            return;
+        }
+    }
+    if let Err(err) = std::fs::write(&path, &capture.content) {
+        editor.set_error(format!("could not write {}: {err}", path.display()));
+        return;
+    }
+
+    helix_roam::reindex_file(&mut editor.roam.write(), &path, &capture.content);
+
+    if let Err(err) = editor.open(&path, helix_view::editor::Action::Replace) {
+        editor.set_error(format!("could not open {}: {err}", path.display()));
+        return;
+    }
+
+    if let Some(byte) = capture.cursor {
+        let view_id = view!(editor).id;
+        let doc = doc_mut!(editor);
+        let char_at = doc.text().byte_to_char(byte.min(doc.text().len_bytes()));
+        doc.set_selection(view_id, helix_core::Selection::point(char_at));
+    }
+
+    editor.set_status(format!("Captured {}", path.display()));
+}

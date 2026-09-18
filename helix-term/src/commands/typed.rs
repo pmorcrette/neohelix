@@ -2299,6 +2299,7 @@ roam_component_command!(
     roam_unlinked_references,
     crate::commands::roam_unlinked_picker
 );
+roam_component_command!(roam_capture, crate::commands::roam_capture_picker);
 roam_component_command!(roam_alias_add, |_editor| Some(
     crate::commands::property_prompt("Alias: ", crate::roam::alias_add)
 ));
@@ -4007,6 +4008,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Remove an alias from the node at the cursor.",
         fun: roam_alias_remove,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-capture",
+        aliases: &[],
+        doc: "Create an Org-Roam node from a template.",
+        fun: roam_capture,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

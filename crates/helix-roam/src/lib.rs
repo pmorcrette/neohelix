@@ -5,6 +5,7 @@
 //! while browsing a note: what does this node point at, and what points back
 //! at it.
 
+pub mod capture;
 pub mod date;
 mod graph;
 pub mod hyperlink;
