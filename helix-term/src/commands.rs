@@ -454,6 +454,14 @@ impl MappableCommand {
         org_promote_item, "Move the list item out a level",
         org_toggle_checkbox, "Tick or untick the checkbox at the cursor",
         org_update_cookies, "Bring every statistics cookie up to date",
+        org_table_align, "Realign the Org table at the cursor",
+        org_table_insert_row, "Insert a table row below the cursor",
+        org_table_insert_separator, "Insert a table separator below the cursor",
+        org_table_delete_row, "Remove the table row at the cursor",
+        org_table_insert_column, "Insert a table column at the cursor",
+        org_table_delete_column, "Remove the table column at the cursor",
+        org_table_next_cell, "Move to the next table cell",
+        org_table_previous_cell, "Move to the previous table cell",
         org_archive_subtree, "Move the subtree at the cursor to the file's archive",
         org_set_priority, "Set the priority on the headline at the cursor",
         org_schedule, "Set SCHEDULED: on the entry at the cursor",
@@ -3967,6 +3975,38 @@ fn org_toggle_checkbox(cx: &mut Context) {
 
 fn org_update_cookies(cx: &mut Context) {
     crate::roam::update_cookies(cx.editor);
+}
+
+fn org_table_align(cx: &mut Context) {
+    crate::roam::table_align(cx.editor);
+}
+
+fn org_table_insert_row(cx: &mut Context) {
+    crate::roam::table_insert_row(cx.editor);
+}
+
+fn org_table_insert_separator(cx: &mut Context) {
+    crate::roam::table_insert_separator(cx.editor);
+}
+
+fn org_table_delete_row(cx: &mut Context) {
+    crate::roam::table_delete_row(cx.editor);
+}
+
+fn org_table_insert_column(cx: &mut Context) {
+    crate::roam::table_insert_column(cx.editor);
+}
+
+fn org_table_delete_column(cx: &mut Context) {
+    crate::roam::table_delete_column(cx.editor);
+}
+
+fn org_table_next_cell(cx: &mut Context) {
+    crate::roam::table_next_cell(cx.editor);
+}
+
+fn org_table_previous_cell(cx: &mut Context) {
+    crate::roam::table_previous_cell(cx.editor);
 }
 
 fn org_archive_subtree(cx: &mut Context) {

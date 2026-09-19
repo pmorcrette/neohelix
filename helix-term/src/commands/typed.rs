@@ -2317,6 +2317,17 @@ roam_buffer_command!(org_demote_item, crate::roam::list_demote_item);
 roam_buffer_command!(org_promote_item, crate::roam::list_promote_item);
 roam_buffer_command!(org_toggle_checkbox, crate::roam::toggle_checkbox);
 roam_buffer_command!(org_update_cookies, crate::roam::update_cookies);
+roam_buffer_command!(org_table_align, crate::roam::table_align);
+roam_buffer_command!(org_table_insert_row, crate::roam::table_insert_row);
+roam_buffer_command!(
+    org_table_insert_separator,
+    crate::roam::table_insert_separator
+);
+roam_buffer_command!(org_table_delete_row, crate::roam::table_delete_row);
+roam_buffer_command!(org_table_insert_column, crate::roam::table_insert_column);
+roam_buffer_command!(org_table_delete_column, crate::roam::table_delete_column);
+roam_buffer_command!(org_table_next_cell, crate::roam::table_next_cell);
+roam_buffer_command!(org_table_previous_cell, crate::roam::table_previous_cell);
 roam_buffer_command!(org_archive_subtree, crate::roam::archive_subtree);
 roam_component_command!(org_agenda_day, |editor| crate::commands::org_agenda_picker(
     editor, 1
@@ -4343,6 +4354,94 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Bring every [n/m] and [p%] cookie up to date.",
         fun: org_update_cookies,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-align",
+        aliases: &["org-align"],
+        doc: "Realign the Org table at the cursor.",
+        fun: org_table_align,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-insert-row",
+        aliases: &[],
+        doc: "Insert a table row below the cursor's.",
+        fun: org_table_insert_row,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-insert-separator",
+        aliases: &[],
+        doc: "Insert a table separator below the cursor's row.",
+        fun: org_table_insert_separator,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-delete-row",
+        aliases: &[],
+        doc: "Remove the table row at the cursor.",
+        fun: org_table_delete_row,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-insert-column",
+        aliases: &[],
+        doc: "Insert a table column at the cursor's.",
+        fun: org_table_insert_column,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-delete-column",
+        aliases: &[],
+        doc: "Remove the table column at the cursor.",
+        fun: org_table_delete_column,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-next-cell",
+        aliases: &[],
+        doc: "Realign, then move to the next table cell.",
+        fun: org_table_next_cell,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-previous-cell",
+        aliases: &[],
+        doc: "Realign, then move to the previous table cell.",
+        fun: org_table_previous_cell,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

@@ -17,6 +17,7 @@ pub mod parser;
 pub mod query;
 pub mod restructure;
 pub mod scanner;
+pub mod table;
 pub mod unlinked;
 
 pub use date::Date;

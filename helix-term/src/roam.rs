@@ -1785,3 +1785,117 @@ pub fn update_cookies(editor: &mut Editor) {
         helix_roam::list::update_cookies(&text),
     );
 }
+
+/// Applies a table operation, reporting when there is no table.
+fn table_op(
+    editor: &mut Editor,
+    done: &'static str,
+    op: impl FnOnce(&str, usize) -> Option<String>,
+) {
+    let (text, line) = text_and_line(editor);
+    match op(&text, line) {
+        Some(after) => apply_to_buffer(editor, done.to_string(), after),
+        None => editor.set_error("No Org table at the cursor"),
+    }
+}
+
+/// Realigns the table at the cursor.
+pub fn table_align(editor: &mut Editor) {
+    table_op(editor, "Aligned the table", helix_roam::table::align);
+}
+
+/// Inserts a row below the cursor's.
+pub fn table_insert_row(editor: &mut Editor) {
+    table_op(editor, "Inserted a row", helix_roam::table::insert_row);
+}
+
+/// Inserts a separator below the cursor's row.
+pub fn table_insert_separator(editor: &mut Editor) {
+    table_op(
+        editor,
+        "Inserted a separator",
+        helix_roam::table::insert_separator,
+    );
+}
+
+/// Removes the cursor's row.
+pub fn table_delete_row(editor: &mut Editor) {
+    table_op(editor, "Removed the row", helix_roam::table::delete_row);
+}
+
+/// The column the cursor sits in, from the pipes before it.
+fn cursor_column(editor: &Editor) -> usize {
+    let (view, doc) = current_ref!(editor);
+    let text = doc.text();
+    let cursor = doc.selection(view.id).primary().cursor(text.slice(..));
+    let line = text.char_to_line(cursor);
+    let start = text.line_to_char(line);
+    let within = text.char_to_byte(cursor) - text.char_to_byte(start);
+
+    helix_roam::table::column_at(&text.line(line).to_string(), within)
+}
+
+/// Inserts a column at the cursor's.
+pub fn table_insert_column(editor: &mut Editor) {
+    let column = cursor_column(editor);
+    table_op(editor, "Inserted a column", |text, line| {
+        helix_roam::table::insert_column(text, line, column)
+    });
+}
+
+/// Removes the cursor's column.
+pub fn table_delete_column(editor: &mut Editor) {
+    let column = cursor_column(editor);
+    table_op(editor, "Removed the column", |text, line| {
+        helix_roam::table::delete_column(text, line, column)
+    });
+}
+
+/// Moves the cursor to the next or previous cell, realigning first.
+///
+/// Realigning first is what makes the jump land where the eye expects: an
+/// edited cell has usually changed the column widths.
+pub fn table_move_cell(editor: &mut Editor, forward: bool) {
+    let (text, line) = text_and_line(editor);
+    let Some(aligned) = helix_roam::table::align(&text, line) else {
+        editor.set_error("No Org table at the cursor");
+        return;
+    };
+
+    let column = cursor_column(editor);
+    apply_to_buffer(editor, "Moved".to_string(), aligned);
+
+    let view = view!(editor).id;
+    let doc = doc_mut!(editor);
+    let row = doc
+        .text()
+        .line(line.min(doc.text().len_lines() - 1))
+        .to_string();
+
+    // The cell after (or before) the one the cursor was in, found by counting
+    // pipes rather than by guessing at widths.
+    let pipes: Vec<usize> = row
+        .char_indices()
+        .filter(|(_, c)| *c == '|')
+        .map(|(i, _)| i)
+        .collect();
+    let wanted = if forward {
+        column + 1
+    } else {
+        column.saturating_sub(1)
+    };
+
+    if let Some(open) = pipes.get(wanted) {
+        let byte = doc.text().line_to_byte(line) + open + 2;
+        let at = doc.text().byte_to_char(byte.min(doc.text().len_bytes()));
+        doc.set_selection(view, helix_core::Selection::point(at));
+    }
+}
+
+pub fn table_next_cell(editor: &mut Editor) {
+    table_move_cell(editor, true);
+}
+
+pub fn table_previous_cell(editor: &mut Editor) {
+    table_move_cell(editor, false);
+}
