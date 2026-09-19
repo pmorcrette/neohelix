@@ -5,6 +5,7 @@
 //! while browsing a note: what does this node point at, and what points back
 //! at it.
 
+pub mod agenda;
 pub mod capture;
 pub mod date;
 mod graph;
@@ -21,7 +22,7 @@ pub use date::Date;
 pub use graph::RoamGraph;
 pub use hyperlink::{find_links, link_at, LinkKind, OrgLink};
 pub use link::Link;
-pub use node::{Node, Timestamp, TodoState};
+pub use node::{Node, Repeater, RepeaterKind, RepeaterUnit, Timestamp, TodoState};
 pub use parser::{parse_org, FileSettings, ParsedFile};
 pub use query::NodeQuery;
 pub use scanner::{reindex_file, scan_directory, IndexStats};

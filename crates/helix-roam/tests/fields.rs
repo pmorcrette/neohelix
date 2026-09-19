@@ -11,6 +11,7 @@ fn ts(year: i32, month: u32, day: u32) -> Timestamp {
         hour: None,
         minute: None,
         active: true,
+        repeater: None,
     }
 }
 

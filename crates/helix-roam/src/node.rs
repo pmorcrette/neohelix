@@ -14,6 +14,35 @@ pub struct TodoState {
     pub done: bool,
 }
 
+/// How often a timestamp comes round, and what happens when one is missed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RepeaterKind {
+    /// `+1w` — shift by one interval, however long ago it was due.
+    Cumulate,
+    /// `++1w` — shift by whole intervals until it is in the future.
+    CatchUp,
+    /// `.+1w` — shift from today rather than from the old date.
+    Restart,
+}
+
+/// The unit a repeater counts in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RepeaterUnit {
+    Hour,
+    Day,
+    Week,
+    Month,
+    Year,
+}
+
+/// `+1w`, `++2m`, `.+3d`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Repeater {
+    pub kind: RepeaterKind,
+    pub count: i64,
+    pub unit: RepeaterUnit,
+}
+
 /// An Org timestamp, reduced to the parts a query needs.
 ///
 /// Field order makes the derived ordering chronological. Repeaters, warning
@@ -29,12 +58,109 @@ pub struct Timestamp {
     pub minute: Option<u32>,
     /// `<…>` is active and appears in the agenda; `[…]` is not.
     pub active: bool,
+    /// How often it comes round, when it repeats.
+    ///
+    /// Last so that the derived ordering still compares dates first.
+    pub repeater: Option<Repeater>,
 }
 
 impl Timestamp {
     /// The date alone, for comparing days rather than instants.
     pub fn date(&self) -> (i32, u32, u32) {
         (self.year, self.month, self.day)
+    }
+
+    /// The calendar day this timestamp falls on.
+    pub fn day(&self) -> crate::Date {
+        crate::Date {
+            year: self.year,
+            month: self.month,
+            day: self.day,
+        }
+    }
+
+    /// The days this timestamp falls on within `from..=to`.
+    ///
+    /// A timestamp without a repeater occurs once, if at all. A repeating one
+    /// is stepped forward from its own date, so a weekly task set up last year
+    /// still lands on the right weekday.
+    ///
+    /// Hour repeaters are treated as daily here: the agenda is a calendar of
+    /// days, and something recurring within one day belongs to that day once.
+    pub fn occurrences(&self, from: crate::Date, to: crate::Date) -> Vec<crate::Date> {
+        let start = self.day();
+        let Some(repeater) = self.repeater.filter(|r| r.count > 0) else {
+            return (start >= from && start <= to)
+                .then_some(start)
+                .into_iter()
+                .collect();
+        };
+
+        let mut days = Vec::new();
+        let mut at = start;
+
+        // Skip forward in whole intervals rather than day by day.
+        while at < from {
+            let next = repeater.advance(at);
+            // A repeater that cannot move would loop forever.
+            if next <= at {
+                return days;
+            }
+            at = next;
+        }
+
+        while at <= to {
+            days.push(at);
+            let next = repeater.advance(at);
+            if next <= at {
+                break;
+            }
+            at = next;
+        }
+
+        days
+    }
+}
+
+impl Repeater {
+    /// The date one interval after `date`.
+    ///
+    /// Month and year steps clamp to the end of the target month, so the 31st
+    /// of January plus a month is the 28th or 29th of February rather than a
+    /// date that does not exist.
+    pub fn advance(self, date: crate::Date) -> crate::Date {
+        match self.unit {
+            // A sub-day repeater still lands on the next day for a calendar.
+            RepeaterUnit::Hour => date.offset_by(1),
+            RepeaterUnit::Day => date.offset_by(self.count),
+            RepeaterUnit::Week => date.offset_by(self.count * 7),
+            RepeaterUnit::Month => add_months(date, self.count),
+            RepeaterUnit::Year => add_months(date, self.count * 12),
+        }
+    }
+}
+
+/// Adds whole months, clamping the day to the target month's length.
+fn add_months(date: crate::Date, months: i64) -> crate::Date {
+    let total = date.year as i64 * 12 + (date.month as i64 - 1) + months;
+    let year = total.div_euclid(12) as i32;
+    let month = total.rem_euclid(12) as u32 + 1;
+
+    crate::Date {
+        year,
+        month,
+        day: date.day.min(days_in_month(year, month)),
+    }
+}
+
+/// How many days a month has, leap years included.
+fn days_in_month(year: i32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 => 29,
+        2 => 28,
+        _ => 30,
     }
 }
 

@@ -441,6 +441,9 @@ impl MappableCommand {
         org_todo_previous, "Cycle the TODO state backward",
         org_priority_up, "Raise the priority towards [#A]",
         org_priority_down, "Lower the priority",
+        org_agenda_day, "Show today's agenda",
+        org_agenda_week, "Show the week's agenda",
+        org_todo_list, "List every unfinished task",
         org_archive_subtree, "Move the subtree at the cursor to the file's archive",
         org_set_priority, "Set the priority on the headline at the cursor",
         org_schedule, "Set SCHEDULED: on the entry at the cursor",
@@ -4013,6 +4016,90 @@ fn org_add_note(cx: &mut Context) {
 
 fn org_log_state(cx: &mut Context) {
     prompt_for_property(cx, "State (OLD -> NEW): ", crate::roam::log_state_change);
+}
+
+/// Shows what is due, over `days` days from today.
+pub fn org_agenda_picker(editor: &mut Editor, days: i64) -> Option<Box<dyn Component>> {
+    let lines = crate::roam::agenda_lines(editor, days);
+    if lines.is_empty() {
+        editor.set_status("Nothing on the agenda");
+        return None;
+    }
+    Some(agenda_picker(editor, lines, "when"))
+}
+
+/// Shows everything unfinished, dated or not.
+pub fn org_todo_list_picker(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    let lines = crate::roam::todo_lines(editor);
+    if lines.is_empty() {
+        editor.set_status("Nothing to do");
+        return None;
+    }
+    Some(agenda_picker(editor, lines, "state"))
+}
+
+/// The picker both views share: a column of context, then the entry.
+fn agenda_picker(
+    editor: &Editor,
+    lines: Vec<crate::roam::AgendaLine>,
+    first: &'static str,
+) -> Box<dyn Component> {
+    let columns = [
+        ui::PickerColumn::new(
+            first,
+            |item: &crate::roam::AgendaLine, _: &PathStyleConfig| item.when.as_str().into(),
+        ),
+        ui::PickerColumn::new(
+            "entry",
+            |item: &crate::roam::AgendaLine, _: &PathStyleConfig| item.what.as_str().into(),
+        ),
+        ui::PickerColumn::new(
+            "path",
+            |item: &crate::roam::AgendaLine, config: &PathStyleConfig| {
+                config.stylize(Some(item.path.as_path()), Some(item.line))
+            },
+        ),
+    ];
+
+    let picker = Picker::new(
+        columns,
+        1, // the entry itself is what a search is for
+        lines,
+        PathStyleConfig::new(&editor.theme),
+        |cx, item, action| {
+            if let Err(err) = cx.editor.open(&item.path, action) {
+                cx.editor
+                    .set_error(format!("Failed to open '{}': {}", item.path.display(), err));
+                return;
+            }
+            let doc = doc!(cx.editor);
+            if item.line < doc.text().len_lines() {
+                let pos = doc.text().line_to_char(item.line);
+                let view_id = view!(cx.editor).id;
+                doc_mut!(cx.editor).set_selection(view_id, Selection::point(pos));
+            }
+        },
+    );
+
+    Box::new(overlaid(picker))
+}
+
+fn org_agenda_day(cx: &mut Context) {
+    if let Some(picker) = org_agenda_picker(cx.editor, 1) {
+        cx.push_layer(picker);
+    }
+}
+
+fn org_agenda_week(cx: &mut Context) {
+    if let Some(picker) = org_agenda_picker(cx.editor, 7) {
+        cx.push_layer(picker);
+    }
+}
+
+fn org_todo_list(cx: &mut Context) {
+    if let Some(picker) = org_todo_list_picker(cx.editor) {
+        cx.push_layer(picker);
+    }
 }
 
 /// Creates a node from a template.

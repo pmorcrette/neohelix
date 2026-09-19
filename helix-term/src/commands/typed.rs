@@ -2312,6 +2312,14 @@ roam_buffer_command!(org_todo_previous, crate::roam::todo_previous);
 roam_buffer_command!(org_priority_up, crate::roam::priority_up);
 roam_buffer_command!(org_priority_down, crate::roam::priority_down);
 roam_buffer_command!(org_archive_subtree, crate::roam::archive_subtree);
+roam_component_command!(org_agenda_day, |editor| crate::commands::org_agenda_picker(
+    editor, 1
+));
+roam_component_command!(
+    org_agenda_week,
+    |editor| crate::commands::org_agenda_picker(editor, 7)
+);
+roam_component_command!(org_todo_list, crate::commands::org_todo_list_picker);
 roam_component_command!(org_set_priority, |_editor| Some(
     crate::commands::property_prompt("Priority (A-C, empty clears): ", crate::roam::set_priority)
 ));
@@ -4169,6 +4177,39 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Lower the priority.",
         fun: org_priority_down,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-agenda",
+        aliases: &["org-agenda-day"],
+        doc: "Show what is due today.",
+        fun: org_agenda_day,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-agenda-week",
+        aliases: &[],
+        doc: "Show what is due over the next seven days.",
+        fun: org_agenda_week,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-todo-list",
+        aliases: &["org-todos"],
+        doc: "List every unfinished task, whatever its dates.",
+        fun: org_todo_list,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

@@ -1572,3 +1572,84 @@ pub fn archive_subtree(editor: &mut Editor) {
         archived.remaining,
     );
 }
+
+/// One line of an agenda, flattened for the picker.
+pub struct AgendaLine {
+    pub when: String,
+    pub what: String,
+    pub path: PathBuf,
+    pub line: usize,
+}
+
+/// Builds the agenda for `days` days from today.
+///
+/// Snapshots what it needs from the graph rather than holding its lock, like
+/// the other pickers, so indexing stays free while it is open.
+pub fn agenda_lines(editor: &Editor, days: i64) -> Vec<AgendaLine> {
+    let today = helix_roam::Date::today();
+    let graph = editor.roam.read();
+    let nodes: Vec<&helix_roam::Node> = graph.nodes().collect();
+
+    helix_roam::agenda::agenda(nodes, today, days)
+        .into_iter()
+        .map(|entry| {
+            let marker = match entry.reason {
+                helix_roam::agenda::Reason::Deadline => match entry.days_left {
+                    Some(days) if days < 0 => format!("{} d. ago", -days),
+                    Some(0) => "today".to_string(),
+                    Some(days) => format!("in {days} d."),
+                    None => "deadline".to_string(),
+                },
+                helix_roam::agenda::Reason::Scheduled => "scheduled".to_string(),
+            };
+            let kind = match entry.reason {
+                helix_roam::agenda::Reason::Deadline => "Deadline",
+                helix_roam::agenda::Reason::Scheduled => "Scheduled",
+            };
+
+            AgendaLine {
+                when: format!(
+                    "{} {}  {kind}: {marker}",
+                    entry.day.to_iso(),
+                    entry.day.weekday()
+                ),
+                what: agenda_title(entry.node),
+                path: entry.node.file_path.clone(),
+                line: entry.node.line,
+            }
+        })
+        .collect()
+}
+
+/// Everything unfinished, whether or not it has a date.
+pub fn todo_lines(editor: &Editor) -> Vec<AgendaLine> {
+    let graph = editor.roam.read();
+    let nodes: Vec<&helix_roam::Node> = graph.nodes().collect();
+
+    helix_roam::agenda::todo_list(nodes)
+        .into_iter()
+        .map(|node| AgendaLine {
+            when: node
+                .todo
+                .as_ref()
+                .map(|state| state.keyword.clone())
+                .unwrap_or_default(),
+            what: agenda_title(node),
+            path: node.file_path.clone(),
+            line: node.line,
+        })
+        .collect()
+}
+
+/// A node's title as an agenda shows it: priority, title, then tags.
+fn agenda_title(node: &helix_roam::Node) -> String {
+    let mut out = String::new();
+    if let Some(priority) = node.priority {
+        out.push_str(&format!("[#{priority}] "));
+    }
+    out.push_str(&node.title);
+    if !node.tags.is_empty() {
+        out.push_str(&format!("  :{}:", node.tags.join(":")));
+    }
+    out
+}

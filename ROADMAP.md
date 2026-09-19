@@ -106,6 +106,10 @@ people use Org at all. It needs Task 1.5's timestamps to exist first.
       (change state, reschedule) without losing the agenda.
 - [ ] Decide where the agenda lives on screen — it is another pane, so it
       shares Phase 5's blocker.
+
+  Decided for now: a picker overlay, like the node and ref pickers. That makes
+  it searchable and jumpable immediately, at the cost of not being readable
+  beside a document. A docked agenda is Phase 5's to give.
 - [ ] Manage which files the agenda reads: add and remove them, cycle through
       them, and restrict a view to one file or subtree.
 

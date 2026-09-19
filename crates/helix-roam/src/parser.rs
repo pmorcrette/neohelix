@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
-use crate::node::{Timestamp, TodoState};
+use crate::node::{Repeater, RepeaterKind, RepeaterUnit, Timestamp, TodoState};
 use crate::Node;
 
 /// Namespace for Org-Roam ids that are not themselves UUIDs.
@@ -276,6 +276,10 @@ pub fn parse_timestamp(text: &str) -> Option<Timestamp> {
         })
         .map_or((None, None), |(h, m)| (Some(h), Some(m)));
 
+    // A repeater may sit anywhere after the date, so the whole tail is
+    // searched rather than a fixed slot.
+    let repeater = inner.split_whitespace().find_map(parse_repeater);
+
     Some(Timestamp {
         year,
         month,
@@ -283,7 +287,35 @@ pub fn parse_timestamp(text: &str) -> Option<Timestamp> {
         hour,
         minute,
         active,
+        repeater,
     })
+}
+
+/// Reads `+1w`, `++2m` or `.+3d`.
+fn parse_repeater(token: &str) -> Option<Repeater> {
+    let (kind, rest) = if let Some(rest) = token.strip_prefix("++") {
+        (RepeaterKind::CatchUp, rest)
+    } else if let Some(rest) = token.strip_prefix(".+") {
+        (RepeaterKind::Restart, rest)
+    } else if let Some(rest) = token.strip_prefix('+') {
+        (RepeaterKind::Cumulate, rest)
+    } else {
+        // `-2d` is a warning period, not a repeater, and is not one here.
+        return None;
+    };
+
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    let count: i64 = digits.parse().ok()?;
+    let unit = match rest[digits.len()..].chars().next()? {
+        'h' => RepeaterUnit::Hour,
+        'd' => RepeaterUnit::Day,
+        'w' => RepeaterUnit::Week,
+        'm' => RepeaterUnit::Month,
+        'y' => RepeaterUnit::Year,
+        _ => return None,
+    };
+
+    Some(Repeater { kind, count, unit })
 }
 
 /// Reads `SCHEDULED:` and `DEADLINE:` from the planning line under a headline.
