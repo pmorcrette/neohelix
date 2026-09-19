@@ -2328,6 +2328,23 @@ roam_buffer_command!(org_table_insert_column, crate::roam::table_insert_column);
 roam_buffer_command!(org_table_delete_column, crate::roam::table_delete_column);
 roam_buffer_command!(org_table_next_cell, crate::roam::table_next_cell);
 roam_buffer_command!(org_table_previous_cell, crate::roam::table_previous_cell);
+roam_buffer_command!(org_copy_subtree, crate::roam::copy_subtree);
+roam_buffer_command!(org_cut_subtree, crate::roam::cut_subtree);
+roam_buffer_command!(org_paste_subtree, crate::roam::paste_subtree);
+roam_buffer_command!(org_dblock_update, crate::roam::dblock_update);
+roam_buffer_command!(org_dblock_update_all, crate::roam::dblock_update_all);
+roam_component_command!(org_clone_subtree, |_editor| Some(
+    crate::commands::property_prompt("Clone (N, or N +1w): ", crate::roam::clone_subtree)
+));
+roam_component_command!(org_sort_entries, |_editor| Some(
+    crate::commands::org_sort_prompt(crate::roam::sort_entries)
+));
+roam_component_command!(org_sort_list, |_editor| Some(
+    crate::commands::org_sort_prompt(crate::roam::sort_list)
+));
+roam_component_command!(org_sort_table, |_editor| Some(
+    crate::commands::org_sort_prompt(crate::roam::sort_table)
+));
 roam_buffer_command!(org_archive_subtree, crate::roam::archive_subtree);
 roam_component_command!(org_agenda_day, |editor| crate::commands::org_agenda_picker(
     editor, 1
@@ -4354,6 +4371,105 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Bring every [n/m] and [p%] cookie up to date.",
         fun: org_update_cookies,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-copy-subtree",
+        aliases: &[],
+        doc: "Copy the subtree at the cursor.",
+        fun: org_copy_subtree,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-cut-subtree",
+        aliases: &[],
+        doc: "Cut the subtree at the cursor.",
+        fun: org_cut_subtree,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-paste-subtree",
+        aliases: &[],
+        doc: "Paste the copied subtree at the cursor's level.",
+        fun: org_paste_subtree,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-clone-subtree",
+        aliases: &[],
+        doc: "Clone the subtree at the cursor, shifting its dates.",
+        fun: org_clone_subtree,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-sort-entries",
+        aliases: &["org-sort"],
+        doc: "Sort the children of the entry at the cursor.",
+        fun: org_sort_entries,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-sort-list",
+        aliases: &[],
+        doc: "Sort the list items at the cursor.",
+        fun: org_sort_list,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-sort-table",
+        aliases: &[],
+        doc: "Sort the table rows by the cursor's column.",
+        fun: org_sort_table,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-dblock-update",
+        aliases: &["org-update-block"],
+        doc: "Regenerate the dynamic block at the cursor.",
+        fun: org_dblock_update,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-dblock-update-all",
+        aliases: &[],
+        doc: "Regenerate every dynamic block in the buffer.",
+        fun: org_dblock_update_all,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

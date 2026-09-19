@@ -198,7 +198,7 @@ impl Table {
 }
 
 /// Replaces the table containing `line` with `rows`.
-fn rewrite(text: &str, table: &Table, rows: Vec<Row>) -> String {
+pub(crate) fn rewrite(text: &str, table: &Table, rows: Vec<Row>) -> String {
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
     let rebuilt = Table {
         rows,

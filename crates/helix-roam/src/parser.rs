@@ -301,7 +301,7 @@ pub fn parse_timestamp(text: &str) -> Option<Timestamp> {
 }
 
 /// Reads `+1w`, `++2m` or `.+3d`.
-fn parse_repeater(token: &str) -> Option<Repeater> {
+pub fn parse_repeater(token: &str) -> Option<Repeater> {
     let (kind, rest) = if let Some(rest) = token.strip_prefix("++") {
         (RepeaterKind::CatchUp, rest)
     } else if let Some(rest) = token.strip_prefix(".+") {
@@ -328,7 +328,7 @@ fn parse_repeater(token: &str) -> Option<Repeater> {
 }
 
 /// Reads `SCHEDULED:` and `DEADLINE:` from the planning line under a headline.
-fn parse_planning(trimmed: &str) -> Option<(Option<Timestamp>, Option<Timestamp>)> {
+pub(crate) fn parse_planning(trimmed: &str) -> Option<(Option<Timestamp>, Option<Timestamp>)> {
     const LABELS: [&str; 3] = ["SCHEDULED:", "DEADLINE:", "CLOSED:"];
 
     // Reject without allocating: this runs on every line of every file, and
@@ -733,7 +733,7 @@ impl PendingNode {
 /// The keyword and the priority are metadata rather than title, but only the
 /// file can say which words are keywords and which letters are priorities, so
 /// both come from its [`FileSettings`].
-fn parse_headline(line: &str, settings: &FileSettings) -> Option<Headline> {
+pub(crate) fn parse_headline(line: &str, settings: &FileSettings) -> Option<Headline> {
     let stars = line.bytes().take_while(|&b| b == b'*').count();
     if stars == 0 {
         return None;
@@ -793,12 +793,12 @@ fn parse_headline(line: &str, settings: &FileSettings) -> Option<Headline> {
 }
 
 /// What a headline line carries, once its metadata is separated from its text.
-struct Headline {
-    level: usize,
-    title: String,
-    tags: Vec<String>,
-    todo: Option<TodoState>,
-    priority: Option<char>,
+pub(crate) struct Headline {
+    pub(crate) level: usize,
+    pub(crate) title: String,
+    pub(crate) tags: Vec<String>,
+    pub(crate) todo: Option<TodoState>,
+    pub(crate) priority: Option<char>,
 }
 
 /// Byte offset of a trailing `:tag:` run, if the line ends with one.

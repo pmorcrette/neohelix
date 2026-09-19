@@ -7,7 +7,9 @@
 
 pub mod agenda;
 pub mod capture;
+pub mod clip;
 pub mod date;
+pub mod dynamic;
 mod graph;
 pub mod hyperlink;
 mod link;
@@ -17,9 +19,11 @@ pub mod parser;
 pub mod query;
 pub mod restructure;
 pub mod scanner;
+pub mod sort;
 pub mod table;
 pub mod unlinked;
 
+pub use clip::Clip;
 pub use date::Date;
 pub use graph::RoamGraph;
 pub use hyperlink::{find_links, link_at, LinkKind, OrgLink};
@@ -28,6 +32,7 @@ pub use node::{Node, Repeater, RepeaterKind, RepeaterUnit, Timestamp, TodoState}
 pub use parser::{parse_org, FileSettings, ParsedFile};
 pub use query::NodeQuery;
 pub use scanner::{reindex_file, scan_directory, IndexStats};
+pub use sort::SortKey;
 pub use uuid::Uuid;
 
 #[cfg(test)]

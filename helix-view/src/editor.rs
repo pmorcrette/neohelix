@@ -1472,6 +1472,13 @@ pub struct Editor {
     /// wants it, the way Org's restriction lock does.
     pub agenda_restriction: Option<PathBuf>,
 
+    /// The last subtree cut or copied, waiting to be pasted.
+    ///
+    /// Kept apart from the registers because a subtree is not lines: pasting
+    /// one has to know the level it was taken from so it can be shifted to
+    /// the level it lands at, and a register has nowhere to put that.
+    pub org_clip: Option<helix_roam::Clip>,
+
     /// A commit whose message the user is composing in a buffer.
     ///
     /// Set when the message buffer is opened and taken when it is closed, so
@@ -1616,6 +1623,7 @@ impl Editor {
             workspace_trust,
             roam: Arc::default(),
             terminal: None,
+            org_clip: None,
             pending_commit: None,
             agenda_restriction: None,
         }

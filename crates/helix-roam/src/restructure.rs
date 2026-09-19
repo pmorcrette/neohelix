@@ -34,6 +34,8 @@ pub enum Error {
     NoSibling,
     /// The file does not declare that priority letter.
     UndeclaredPriority(char),
+    /// A clone's time shift was given in a unit the calendar cannot step by.
+    UnsupportedShift,
 }
 
 impl fmt::Display for Error {
@@ -48,6 +50,12 @@ impl fmt::Display for Error {
             Error::UndeclaredPriority(letter) => {
                 write!(f, "this file does not declare priority [#{letter}]")
             }
+            Error::UnsupportedShift => {
+                write!(
+                    f,
+                    "a time shift must be given in days, weeks, months or years"
+                )
+            }
             Error::NoDrawer => write!(f, "the entry has no property drawer; give it an :ID: first"),
         }
     }
@@ -56,7 +64,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Number of leading stars, when the line is a headline.
-fn headline_level(line: &str) -> Option<usize> {
+pub(crate) fn headline_level(line: &str) -> Option<usize> {
     let stars = line.bytes().take_while(|&b| b == b'*').count();
     if stars == 0 {
         return None;
@@ -614,7 +622,7 @@ fn planning_part(line: &str, which: Planning) -> Option<String> {
 ///
 /// Extracting, refiling and the structure commands all ask this same
 /// question, so it is answered in one place.
-fn subtree_range(lines: &[String], line: usize) -> Option<(usize, usize, usize)> {
+pub(crate) fn subtree_range(lines: &[String], line: usize) -> Option<(usize, usize, usize)> {
     let at = line.min(lines.len().saturating_sub(1));
     let start = lines[..=at]
         .iter()
@@ -1371,7 +1379,7 @@ pub fn replace_roam_links(text: &str, resolve: impl Fn(&str) -> Option<Uuid>) ->
 }
 
 /// Joins lines back, preserving whether the original ended with a newline.
-fn rejoin(lines: &[String], original: &str) -> String {
+pub(crate) fn rejoin(lines: &[String], original: &str) -> String {
     let joined = lines.join("\n");
     if original.ends_with('\n') && !joined.is_empty() {
         format!("{joined}\n")

@@ -1899,3 +1899,164 @@ pub fn table_next_cell(editor: &mut Editor) {
 pub fn table_previous_cell(editor: &mut Editor) {
     table_move_cell(editor, false);
 }
+
+// ── Subtree clipboard, sorting and dynamic blocks ─────────────────────────
+
+/// Copies the subtree at the cursor into the editor's Org clipboard.
+pub fn copy_subtree(editor: &mut Editor) {
+    let (text, line) = text_and_line(editor);
+
+    match helix_roam::clip::copy_subtree(&text, line) {
+        Some(clip) => {
+            editor.set_status(format!("Copied {} lines", clip.text.lines().count()));
+            editor.org_clip = Some(clip);
+        }
+        None => editor.set_error("No subtree at the cursor"),
+    }
+}
+
+/// Removes the subtree at the cursor, keeping it for a paste.
+pub fn cut_subtree(editor: &mut Editor) {
+    let (text, line) = text_and_line(editor);
+
+    match helix_roam::clip::cut_subtree(&text, line) {
+        Some((after, clip)) => {
+            let done = format!("Cut {} lines", clip.text.lines().count());
+            editor.org_clip = Some(clip);
+            apply_to_buffer(editor, done, after);
+        }
+        None => editor.set_error("No subtree at the cursor"),
+    }
+}
+
+/// Pastes the stored subtree as a sibling of the entry at the cursor.
+pub fn paste_subtree(editor: &mut Editor) {
+    let Some(clip) = editor.org_clip.clone() else {
+        editor.set_error("Nothing to paste; copy or cut a subtree first");
+        return;
+    };
+
+    let (text, line) = text_and_line(editor);
+    let (after, at) = helix_roam::clip::paste_subtree(&text, line, &clip);
+    apply_and_go(editor, "Pasted the subtree".to_string(), after, at);
+}
+
+/// Clones the subtree at the cursor, from `N` or `N +1w`.
+pub fn clone_subtree(editor: &mut Editor, input: &str) {
+    let mut parts = input.split_whitespace();
+
+    let Some(times) = parts.next().and_then(|n| n.parse().ok()).filter(|n| *n > 0) else {
+        editor.set_error("Give a number of copies, e.g. `3` or `3 +1w`");
+        return;
+    };
+
+    let shift = match parts.next().map(helix_roam::clip::parse_shift) {
+        Some(Ok(shift)) => Some(shift),
+        Some(Err(err)) => {
+            editor.set_error(err.to_string());
+            return;
+        }
+        None => None,
+    };
+
+    let (text, line) = text_and_line(editor);
+    match helix_roam::clip::clone_subtree(&text, line, times, shift) {
+        Ok(after) => apply_to_buffer(editor, format!("Cloned {times} times"), after),
+        Err(err) => editor.set_error(err.to_string()),
+    }
+}
+
+/// Reads `deadline` or `-deadline` into a key and a direction.
+fn sort_request(editor: &mut Editor, input: &str) -> Option<(helix_roam::SortKey, bool)> {
+    let input = input.trim();
+    // A leading `-` reverses, which is shorter to type than a second command
+    // and reads the way a descending sort is written elsewhere.
+    let (reverse, name) = match input.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, input),
+    };
+
+    match helix_roam::SortKey::parse(name) {
+        Some(key) => Some((key, reverse)),
+        None => {
+            editor.set_error(format!(
+                "Sort by one of: {}",
+                helix_roam::SortKey::names().join(", ")
+            ));
+            None
+        }
+    }
+}
+
+/// Sorts the children of the entry at the cursor.
+pub fn sort_entries(editor: &mut Editor, input: &str) {
+    let Some((key, reverse)) = sort_request(editor, input) else {
+        return;
+    };
+
+    let (text, line) = text_and_line(editor);
+    match helix_roam::sort::sort_entries(&text, line, &key, reverse) {
+        Ok(after) => apply_to_buffer(editor, "Sorted the entries".to_string(), after),
+        Err(err) => editor.set_error(err.to_string()),
+    }
+}
+
+/// Sorts the list items that are siblings of the one at the cursor.
+pub fn sort_list(editor: &mut Editor, input: &str) {
+    let Some((key, reverse)) = sort_request(editor, input) else {
+        return;
+    };
+
+    let (text, line) = text_and_line(editor);
+    match helix_roam::sort::sort_list(&text, line, &key, reverse) {
+        Some(after) => apply_to_buffer(editor, "Sorted the list".to_string(), after),
+        None => editor.set_error("No list with siblings to sort at the cursor"),
+    }
+}
+
+/// Sorts the table rows around the cursor by the column it is in.
+pub fn sort_table(editor: &mut Editor, input: &str) {
+    let Some((key, reverse)) = sort_request(editor, input) else {
+        return;
+    };
+
+    let column = cursor_column(editor);
+    let (text, line) = text_and_line(editor);
+    match helix_roam::sort::sort_table(&text, line, column, &key, reverse) {
+        Some(after) => apply_to_buffer(editor, format!("Sorted by column {}", column + 1), after),
+        None => editor.set_error("No table rows to sort at the cursor"),
+    }
+}
+
+/// The dynamic-block generators this build knows about.
+///
+/// Returning `None` for an unknown name is what lets a buffer hold a block
+/// this fork cannot write yet without the refresh destroying its contents.
+fn generate(text: &str, block: &helix_roam::dynamic::DynamicBlock) -> Option<Vec<String>> {
+    match block.name.to_ascii_lowercase().as_str() {
+        "columnview" => Some(helix_roam::dynamic::columnview(text, block)),
+        _ => None,
+    }
+}
+
+/// Regenerates the dynamic block at the cursor.
+pub fn dblock_update(editor: &mut Editor) {
+    let (text, line) = text_and_line(editor);
+
+    match helix_roam::dynamic::refresh(&text, line, generate) {
+        Some(after) => apply_to_buffer(editor, "Updated the block".to_string(), after),
+        None => editor.set_error("No dynamic block at the cursor this build can write"),
+    }
+}
+
+/// Regenerates every dynamic block in the buffer.
+pub fn dblock_update_all(editor: &mut Editor) {
+    let (text, _) = text_and_line(editor);
+    let (after, done) = helix_roam::dynamic::refresh_all(&text, generate);
+
+    if done == 0 {
+        editor.set_error("No dynamic block in this buffer this build can write");
+        return;
+    }
+    apply_to_buffer(editor, format!("Updated {done} blocks"), after);
+}

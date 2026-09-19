@@ -462,6 +462,15 @@ impl MappableCommand {
         org_table_delete_column, "Remove the table column at the cursor",
         org_table_next_cell, "Move to the next table cell",
         org_table_previous_cell, "Move to the previous table cell",
+        org_copy_subtree, "Copy the subtree at the cursor",
+        org_cut_subtree, "Cut the subtree at the cursor",
+        org_paste_subtree, "Paste the copied subtree at the cursor's level",
+        org_clone_subtree, "Clone the subtree at the cursor, shifting its dates",
+        org_sort_entries, "Sort the children of the entry at the cursor",
+        org_sort_list, "Sort the list items at the cursor",
+        org_sort_table, "Sort the table rows by the cursor's column",
+        org_dblock_update, "Regenerate the dynamic block at the cursor",
+        org_dblock_update_all, "Regenerate every dynamic block in the buffer",
         org_archive_subtree, "Move the subtree at the cursor to the file's archive",
         org_set_priority, "Set the priority on the headline at the cursor",
         org_schedule, "Set SCHEDULED: on the entry at the cursor",
@@ -3981,6 +3990,26 @@ fn org_table_align(cx: &mut Context) {
     crate::roam::table_align(cx.editor);
 }
 
+fn org_copy_subtree(cx: &mut Context) {
+    crate::roam::copy_subtree(cx.editor);
+}
+
+fn org_cut_subtree(cx: &mut Context) {
+    crate::roam::cut_subtree(cx.editor);
+}
+
+fn org_paste_subtree(cx: &mut Context) {
+    crate::roam::paste_subtree(cx.editor);
+}
+
+fn org_dblock_update(cx: &mut Context) {
+    crate::roam::dblock_update(cx.editor);
+}
+
+fn org_dblock_update_all(cx: &mut Context) {
+    crate::roam::dblock_update_all(cx.editor);
+}
+
 fn org_table_insert_row(cx: &mut Context) {
     crate::roam::table_insert_row(cx.editor);
 }
@@ -4061,6 +4090,53 @@ pub fn org_set_property_prompt(editor: &Editor) -> Box<dyn Component> {
             }
         },
     ))
+}
+
+/// Asks for a sort key, completing over the ones that exist.
+///
+/// A leading `-` reverses, so the completion offers both spellings rather
+/// than making the reversed form something the user has to know about.
+pub fn org_sort_prompt(apply: fn(&mut Editor, &str)) -> Box<dyn Component> {
+    Box::new(ui::Prompt::new(
+        "Sort by (- to reverse): ".into(),
+        None,
+        |_editor, input| {
+            let (dash, typed) = match input.strip_prefix('-') {
+                Some(rest) => ("-", rest),
+                None => ("", input),
+            };
+
+            helix_roam::SortKey::names()
+                .iter()
+                .filter(|name| name.starts_with(typed))
+                .map(|name| (0.., format!("{dash}{name}").into()))
+                .collect()
+        },
+        move |cx, input, event| {
+            if event == PromptEvent::Validate {
+                apply(cx.editor, input);
+            }
+        },
+    ))
+}
+
+fn org_sort_entries(cx: &mut Context) {
+    let prompt = org_sort_prompt(crate::roam::sort_entries);
+    cx.push_layer(prompt);
+}
+
+fn org_sort_list(cx: &mut Context) {
+    let prompt = org_sort_prompt(crate::roam::sort_list);
+    cx.push_layer(prompt);
+}
+
+fn org_sort_table(cx: &mut Context) {
+    let prompt = org_sort_prompt(crate::roam::sort_table);
+    cx.push_layer(prompt);
+}
+
+fn org_clone_subtree(cx: &mut Context) {
+    prompt_for_property(cx, "Clone (N, or N +1w): ", crate::roam::clone_subtree);
 }
 
 fn org_set_property(cx: &mut Context) {
