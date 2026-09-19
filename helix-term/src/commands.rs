@@ -442,6 +442,9 @@ impl MappableCommand {
         org_priority_up, "Raise the priority towards [#A]",
         org_priority_down, "Lower the priority",
         org_agenda_day, "Show today's agenda",
+        org_agenda_restrict, "Restrict the agenda to the current file",
+        org_agenda_unrestrict, "Lift the agenda restriction",
+        org_agenda_scope, "Say which files the agenda reads",
         org_agenda_week, "Show the week's agenda",
         org_todo_list, "List every unfinished task",
         org_archive_subtree, "Move the subtree at the cursor to the file's archive",
@@ -4082,6 +4085,21 @@ fn agenda_picker(
     );
 
     Box::new(overlaid(picker))
+}
+
+fn org_agenda_restrict(cx: &mut Context) {
+    crate::roam::agenda_restrict_to_file(cx.editor);
+}
+
+fn org_agenda_unrestrict(cx: &mut Context) {
+    crate::roam::agenda_restrict_clear(cx.editor);
+}
+
+/// Says which files the agenda is reading, so a surprising agenda can be
+/// explained rather than guessed at.
+fn org_agenda_scope(cx: &mut Context) {
+    let scope = crate::roam::agenda_scope(cx.editor);
+    cx.editor.set_status(format!("Agenda reads {scope}"));
 }
 
 fn org_agenda_day(cx: &mut Context) {

@@ -541,6 +541,13 @@ pub struct RoamConfig {
     ///
     /// Defaults to `daily`, which is what Org-Roam uses.
     pub dailies_directory: PathBuf,
+    /// Files the agenda reads, relative to `directory` unless absolute.
+    ///
+    /// Empty means every indexed file, which is the useful default for a
+    /// notes directory where any file may carry a date.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub agenda_files: Vec<PathBuf>,
     /// Shapes a captured node can take.
     ///
     /// Empty means the one built-in template, so the feature works before it
@@ -572,6 +579,7 @@ impl Default for RoamConfig {
             enable: true,
             directory: None,
             dailies_directory: PathBuf::from("daily"),
+            agenda_files: Vec::new(),
             templates: Vec::new(),
         }
     }
@@ -586,6 +594,26 @@ impl RoamConfig {
             Some(directory) => helix_stdx::path::expand_tilde(directory.as_path()).into_owned(),
             None => helix_loader::find_workspace().0,
         }
+    }
+
+    /// The files the agenda reads, resolved against the notes directory.
+    ///
+    /// An empty result means "no restriction" rather than "no files", which
+    /// the caller has to distinguish — a configuration naming nothing is not
+    /// the same as one naming files that happen to be missing.
+    pub fn agenda_files(&self) -> Vec<PathBuf> {
+        let directory = self.directory();
+        self.agenda_files
+            .iter()
+            .map(|path| {
+                let expanded = helix_stdx::path::expand_tilde(path.as_path()).into_owned();
+                if expanded.is_absolute() {
+                    expanded
+                } else {
+                    directory.join(expanded)
+                }
+            })
+            .collect()
     }
 
     /// Where daily notes live.
@@ -1437,6 +1465,13 @@ pub struct Editor {
     pub cursor_cache: CursorCache,
     pub workspace_trust: WorkspaceTrust,
 
+    /// A file the agenda is temporarily restricted to.
+    ///
+    /// Separate from the configured `agenda_files`: that says which files are
+    /// eligible at all, this narrows the view for as long as the session
+    /// wants it, the way Org's restriction lock does.
+    pub agenda_restriction: Option<PathBuf>,
+
     /// A commit whose message the user is composing in a buffer.
     ///
     /// Set when the message buffer is opened and taken when it is closed, so
@@ -1582,6 +1617,7 @@ impl Editor {
             roam: Arc::default(),
             terminal: None,
             pending_commit: None,
+            agenda_restriction: None,
         }
     }
 
@@ -2816,6 +2852,30 @@ impl CursorCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agenda_files_resolve_against_the_notes_directory() {
+        let config = RoamConfig {
+            directory: Some(PathBuf::from("/notes")),
+            agenda_files: vec![PathBuf::from("work.org"), PathBuf::from("/elsewhere/x.org")],
+            ..RoamConfig::default()
+        };
+
+        assert_eq!(
+            config.agenda_files(),
+            [
+                PathBuf::from("/notes/work.org"),
+                PathBuf::from("/elsewhere/x.org")
+            ]
+        );
+    }
+
+    #[test]
+    fn naming_no_agenda_files_is_not_the_same_as_naming_none_that_exist() {
+        // Empty means "no restriction"; the caller distinguishes the two.
+        let config = RoamConfig::default();
+        assert!(config.agenda_files().is_empty());
+    }
 
     #[test]
     fn dailies_live_under_the_notes_directory_unless_absolute() {

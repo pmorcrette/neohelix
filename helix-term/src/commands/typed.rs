@@ -2320,6 +2320,20 @@ roam_component_command!(
     |editor| crate::commands::org_agenda_picker(editor, 7)
 );
 roam_component_command!(org_todo_list, crate::commands::org_todo_list_picker);
+roam_buffer_command!(org_agenda_restrict, crate::roam::agenda_restrict_to_file);
+roam_buffer_command!(org_agenda_unrestrict, crate::roam::agenda_restrict_clear);
+
+fn org_agenda_scope(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        let scope = crate::roam::agenda_scope(cx.editor);
+        cx.editor.set_status(format!("Agenda reads {scope}"));
+    }
+    Ok(())
+}
 roam_component_command!(org_set_priority, |_editor| Some(
     crate::commands::property_prompt("Priority (A-C, empty clears): ", crate::roam::set_priority)
 ));
@@ -4177,6 +4191,39 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Lower the priority.",
         fun: org_priority_down,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-agenda-restrict",
+        aliases: &[],
+        doc: "Restrict the agenda to the file in this buffer.",
+        fun: org_agenda_restrict,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-agenda-unrestrict",
+        aliases: &[],
+        doc: "Lift the agenda restriction.",
+        fun: org_agenda_unrestrict,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-agenda-scope",
+        aliases: &[],
+        doc: "Say which files the agenda currently reads.",
+        fun: org_agenda_scope,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

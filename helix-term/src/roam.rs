@@ -1581,6 +1581,20 @@ pub struct AgendaLine {
     pub line: usize,
 }
 
+/// Whether a node's file is one the agenda should read.
+///
+/// Two filters, in order: the session's restriction, then the configured
+/// `agenda-files`. A configuration naming nothing means no restriction, which
+/// is not the same as naming files that are all missing.
+fn in_agenda_scope(editor: &Editor, path: &Path) -> bool {
+    if let Some(restriction) = &editor.agenda_restriction {
+        return path == restriction;
+    }
+
+    let configured = editor.config().roam.agenda_files();
+    configured.is_empty() || configured.iter().any(|allowed| allowed == path)
+}
+
 /// Builds the agenda for `days` days from today.
 ///
 /// Snapshots what it needs from the graph rather than holding its lock, like
@@ -1588,7 +1602,10 @@ pub struct AgendaLine {
 pub fn agenda_lines(editor: &Editor, days: i64) -> Vec<AgendaLine> {
     let today = helix_roam::Date::today();
     let graph = editor.roam.read();
-    let nodes: Vec<&helix_roam::Node> = graph.nodes().collect();
+    let nodes: Vec<&helix_roam::Node> = graph
+        .nodes()
+        .filter(|node| in_agenda_scope(editor, &node.file_path))
+        .collect();
 
     helix_roam::agenda::agenda(nodes, today, days)
         .into_iter()
@@ -1624,7 +1641,10 @@ pub fn agenda_lines(editor: &Editor, days: i64) -> Vec<AgendaLine> {
 /// Everything unfinished, whether or not it has a date.
 pub fn todo_lines(editor: &Editor) -> Vec<AgendaLine> {
     let graph = editor.roam.read();
-    let nodes: Vec<&helix_roam::Node> = graph.nodes().collect();
+    let nodes: Vec<&helix_roam::Node> = graph
+        .nodes()
+        .filter(|node| in_agenda_scope(editor, &node.file_path))
+        .collect();
 
     helix_roam::agenda::todo_list(nodes)
         .into_iter()
@@ -1652,4 +1672,41 @@ fn agenda_title(node: &helix_roam::Node) -> String {
         out.push_str(&format!("  :{}:", node.tags.join(":")));
     }
     out
+}
+
+/// Narrows the agenda to the file in the focused buffer.
+pub fn agenda_restrict_to_file(editor: &mut Editor) {
+    let Some(path) = doc!(editor).path().map(Path::to_path_buf) else {
+        editor.set_error("the buffer has no path to restrict to");
+        return;
+    };
+
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    editor.agenda_restriction = Some(path);
+    editor.set_status(format!("Agenda restricted to {name}"));
+}
+
+/// Widens the agenda back to every file it may read.
+pub fn agenda_restrict_clear(editor: &mut Editor) {
+    match editor.agenda_restriction.take() {
+        Some(_) => editor.set_status("Agenda restriction lifted"),
+        None => editor.set_status("The agenda was not restricted"),
+    }
+}
+
+/// Reports which files the agenda is reading, and why.
+pub fn agenda_scope(editor: &Editor) -> String {
+    if let Some(restriction) = &editor.agenda_restriction {
+        return format!("restricted to {}", restriction.display());
+    }
+
+    let configured = editor.config().roam.agenda_files();
+    if configured.is_empty() {
+        "every indexed file".to_string()
+    } else {
+        format!("{} configured file(s)", configured.len())
+    }
 }

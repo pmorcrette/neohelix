@@ -104,6 +104,12 @@ people use Org at all. It needs Task 1.5's timestamps to exist first.
 - [ ] A global TODO list, filtered by keyword, tag and priority.
 - [ ] Jump from an agenda line to its headline, and act on it in place
       (change state, reschedule) without losing the agenda.
+
+  Jumping works. Acting *in place* does not, and the reason is structural
+  rather than unfinished: Helix's `Picker` consumes its own keys and offers no
+  hook for an action that leaves it open, so this needs either a patch to an
+  upstream file or an agenda component of the fork's own — which is the
+  agenda buffer Org has, and what Phase 5's docked pane would host.
 - [ ] Decide where the agenda lives on screen — it is another pane, so it
       shares Phase 5's blocker.
 
