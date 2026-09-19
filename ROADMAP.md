@@ -427,24 +427,17 @@ believes.
 - [ ] Report the fork's own state — versions, notes directory, file and node
       counts — so a bug report can carry it.
 
-### Task 1.23: A `:` Command That Opens a Prompt Swallows the Next One
-
-Found while validating Task 1.13, and older than it: running any Org command
-that opens a prompt (`:org-sort-table`, `:org-set-property`, `:org-schedule`,
-…) *immediately after another `:` command* leaves the prompt unfocused. The
-label paints, but the keystrokes meant for it reach the buffer instead — so
-`numeric` runs `u` as undo and `i` as insert, and the file is quietly edited.
-
-Reproduced with two commands that predate this task, `:org-table-align`
-followed by `:org-set-property`, so it belongs to the typable-command path
-rather than to any one command. The same commands bound to a key work, which
-is why it went unnoticed: the keymap is how they are actually used.
-
-- [ ] Find where the pushed component is lost — the suspect is the order in
-      which the command prompt's own close callback and the job that pushes
-      the new component run.
-- [ ] A regression test that runs two `:` commands in a row, since this is
-      exactly the case no test covers.
+*A note on validating any of this in the editor, paid for once. The pty
+harness must **read the editor's output continuously while it types**. Sleeping
+between keystrokes without reading fills the pty's output buffer; Helix then
+blocks on write and stops reading input, so every keystroke queues up and
+arrives in one burst at the end. That made a correct editor look broken — a
+command opening a prompt asynchronously appeared to lose focus, because the
+keys meant for the prompt had already been consumed while it did not yet
+exist. Tracing the compositor stack showed the prompt being pushed 10 ms after
+the key that asked for it, and the keys arriving 2 ms apart although the
+harness had spaced them 900 ms. Reading while typing made the same sequence
+pass.*
 
 ---
 
