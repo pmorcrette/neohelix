@@ -2311,6 +2311,12 @@ roam_buffer_command!(org_todo, crate::roam::todo_next);
 roam_buffer_command!(org_todo_previous, crate::roam::todo_previous);
 roam_buffer_command!(org_priority_up, crate::roam::priority_up);
 roam_buffer_command!(org_priority_down, crate::roam::priority_down);
+roam_buffer_command!(org_insert_item, crate::roam::list_insert_item);
+roam_buffer_command!(org_renumber_list, crate::roam::list_renumber);
+roam_buffer_command!(org_demote_item, crate::roam::list_demote_item);
+roam_buffer_command!(org_promote_item, crate::roam::list_promote_item);
+roam_buffer_command!(org_toggle_checkbox, crate::roam::toggle_checkbox);
+roam_buffer_command!(org_update_cookies, crate::roam::update_cookies);
 roam_buffer_command!(org_archive_subtree, crate::roam::archive_subtree);
 roam_component_command!(org_agenda_day, |editor| crate::commands::org_agenda_picker(
     editor, 1
@@ -4271,6 +4277,72 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &["org-todos"],
         doc: "List every unfinished task, whatever its dates.",
         fun: org_todo_list,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-insert-item",
+        aliases: &[],
+        doc: "Insert a list item after the one at the cursor.",
+        fun: org_insert_item,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-renumber-list",
+        aliases: &[],
+        doc: "Renumber the ordered list at the cursor.",
+        fun: org_renumber_list,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-demote-item",
+        aliases: &[],
+        doc: "Move the list item in a level, with its children.",
+        fun: org_demote_item,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-promote-item",
+        aliases: &[],
+        doc: "Move the list item out a level, with its children.",
+        fun: org_promote_item,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-toggle-checkbox",
+        aliases: &["org-toggle"],
+        doc: "Tick or untick the checkbox at the cursor.",
+        fun: org_toggle_checkbox,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-update-cookies",
+        aliases: &[],
+        doc: "Bring every [n/m] and [p%] cookie up to date.",
+        fun: org_update_cookies,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

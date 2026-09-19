@@ -1718,3 +1718,70 @@ pub fn agenda_scope(editor: &Editor) -> String {
         format!("{} configured file(s)", configured.len())
     }
 }
+
+/// Inserts a list item after the one at the cursor.
+pub fn list_insert_item(editor: &mut Editor) {
+    let (text, line) = text_and_line(editor);
+    match helix_roam::list::insert_item(&text, line) {
+        Some((after, at)) => {
+            // The cursor goes to the end of the new item, where typing
+            // continues, rather than to its start.
+            apply_and_go(editor, "Inserted an item".to_string(), after, at);
+            let view = view!(editor).id;
+            let doc = doc_mut!(editor);
+            let end = doc
+                .text()
+                .line(at.min(doc.text().len_lines() - 1))
+                .len_chars();
+            let at_char = doc.text().line_to_char(at) + end.saturating_sub(1);
+            doc.set_selection(view, helix_core::Selection::point(at_char));
+        }
+        None => editor.set_error("No list item at the cursor"),
+    }
+}
+
+/// Renumbers the ordered list at the cursor.
+pub fn list_renumber(editor: &mut Editor) {
+    let (text, line) = text_and_line(editor);
+    apply_to_buffer(
+        editor,
+        "Renumbered".to_string(),
+        helix_roam::list::renumber(&text, line),
+    );
+}
+
+/// Moves a list item and its children in or out a level.
+fn shift_item(editor: &mut Editor, deeper: bool) {
+    let (text, line) = text_and_line(editor);
+    match helix_roam::list::shift_item(&text, line, deeper) {
+        Some(after) => apply_to_buffer(editor, "Moved the item".to_string(), after),
+        None => editor.set_error("The item cannot move that way"),
+    }
+}
+
+pub fn list_demote_item(editor: &mut Editor) {
+    shift_item(editor, true);
+}
+
+pub fn list_promote_item(editor: &mut Editor) {
+    shift_item(editor, false);
+}
+
+/// Ticks or unticks the checkbox at the cursor.
+pub fn toggle_checkbox(editor: &mut Editor) {
+    let (text, line) = text_and_line(editor);
+    match helix_roam::list::toggle_checkbox(&text, line) {
+        Some(after) => apply_to_buffer(editor, "Toggled".to_string(), after),
+        None => editor.set_error("No list item at the cursor"),
+    }
+}
+
+/// Brings every `[n/m]` and `[p%]` cookie in the buffer up to date.
+pub fn update_cookies(editor: &mut Editor) {
+    let (text, _) = text_and_line(editor);
+    apply_to_buffer(
+        editor,
+        "Updated the cookies".to_string(),
+        helix_roam::list::update_cookies(&text),
+    );
+}

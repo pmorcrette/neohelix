@@ -448,6 +448,12 @@ impl MappableCommand {
         org_agenda_week, "Show the week's agenda",
         org_todo_list, "List every unfinished task",
         org_todo_filtered, "List unfinished tasks matching a keyword, tag or priority",
+        org_insert_item, "Insert a list item after the one at the cursor",
+        org_renumber_list, "Renumber the ordered list at the cursor",
+        org_demote_item, "Move the list item in a level",
+        org_promote_item, "Move the list item out a level",
+        org_toggle_checkbox, "Tick or untick the checkbox at the cursor",
+        org_update_cookies, "Bring every statistics cookie up to date",
         org_archive_subtree, "Move the subtree at the cursor to the file's archive",
         org_set_priority, "Set the priority on the headline at the cursor",
         org_schedule, "Set SCHEDULED: on the entry at the cursor",
@@ -3937,6 +3943,30 @@ pub fn org_tag_prompt(editor: &Editor, add: bool) -> Box<dyn Component> {
             }
         },
     ))
+}
+
+fn org_insert_item(cx: &mut Context) {
+    crate::roam::list_insert_item(cx.editor);
+}
+
+fn org_renumber_list(cx: &mut Context) {
+    crate::roam::list_renumber(cx.editor);
+}
+
+fn org_demote_item(cx: &mut Context) {
+    crate::roam::list_demote_item(cx.editor);
+}
+
+fn org_promote_item(cx: &mut Context) {
+    crate::roam::list_promote_item(cx.editor);
+}
+
+fn org_toggle_checkbox(cx: &mut Context) {
+    crate::roam::toggle_checkbox(cx.editor);
+}
+
+fn org_update_cookies(cx: &mut Context) {
+    crate::roam::update_cookies(cx.editor);
 }
 
 fn org_archive_subtree(cx: &mut Context) {
