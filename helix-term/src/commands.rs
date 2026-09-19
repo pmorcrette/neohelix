@@ -447,6 +447,7 @@ impl MappableCommand {
         org_agenda_scope, "Say which files the agenda reads",
         org_agenda_week, "Show the week's agenda",
         org_todo_list, "List every unfinished task",
+        org_todo_filtered, "List unfinished tasks matching a keyword, tag or priority",
         org_archive_subtree, "Move the subtree at the cursor to the file's archive",
         org_set_priority, "Set the priority on the headline at the cursor",
         org_schedule, "Set SCHEDULED: on the entry at the cursor",
@@ -4033,7 +4034,15 @@ pub fn org_agenda_picker(editor: &mut Editor, days: i64) -> Option<Box<dyn Compo
 
 /// Shows everything unfinished, dated or not.
 pub fn org_todo_list_picker(editor: &mut Editor) -> Option<Box<dyn Component>> {
-    let lines = crate::roam::todo_lines(editor);
+    org_filtered_todo_picker(editor, &helix_roam::agenda::TodoFilter::default())
+}
+
+/// Shows the unfinished nodes matching a filter.
+pub fn org_filtered_todo_picker(
+    editor: &mut Editor,
+    filter: &helix_roam::agenda::TodoFilter,
+) -> Option<Box<dyn Component>> {
+    let lines = crate::roam::filtered_todo_lines(editor, filter);
     if lines.is_empty() {
         editor.set_status("Nothing to do");
         return None;
@@ -4112,6 +4121,36 @@ fn org_agenda_week(cx: &mut Context) {
     if let Some(picker) = org_agenda_picker(cx.editor, 7) {
         cx.push_layer(picker);
     }
+}
+
+/// Asks how to narrow the list, then shows it.
+pub fn org_todo_filter_prompt() -> Box<dyn Component> {
+    Box::new(ui::Prompt::new(
+        "Filter (WAITING :work: #A): ".into(),
+        None,
+        |_editor, _input| Vec::new(),
+        |cx, input, event| {
+            if event != PromptEvent::Validate {
+                return;
+            }
+            let filter = helix_roam::agenda::TodoFilter::parse(input);
+            cx.jobs.callback(async move {
+                let call: job::Callback = job::Callback::EditorCompositor(Box::new(
+                    move |editor: &mut Editor, compositor: &mut Compositor| {
+                        if let Some(picker) = org_filtered_todo_picker(editor, &filter) {
+                            compositor.push(picker);
+                        }
+                    },
+                ));
+                Ok(call)
+            });
+        },
+    ))
+}
+
+fn org_todo_filtered(cx: &mut Context) {
+    let prompt = org_todo_filter_prompt();
+    cx.push_layer(prompt);
 }
 
 fn org_todo_list(cx: &mut Context) {

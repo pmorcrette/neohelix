@@ -1640,13 +1640,21 @@ pub fn agenda_lines(editor: &Editor, days: i64) -> Vec<AgendaLine> {
 
 /// Everything unfinished, whether or not it has a date.
 pub fn todo_lines(editor: &Editor) -> Vec<AgendaLine> {
+    filtered_todo_lines(editor, &helix_roam::agenda::TodoFilter::default())
+}
+
+/// The unfinished nodes matching `filter`.
+pub fn filtered_todo_lines(
+    editor: &Editor,
+    filter: &helix_roam::agenda::TodoFilter,
+) -> Vec<AgendaLine> {
     let graph = editor.roam.read();
     let nodes: Vec<&helix_roam::Node> = graph
         .nodes()
         .filter(|node| in_agenda_scope(editor, &node.file_path))
         .collect();
 
-    helix_roam::agenda::todo_list(nodes)
+    helix_roam::agenda::filtered_todo_list(nodes, filter)
         .into_iter()
         .map(|node| AgendaLine {
             when: node

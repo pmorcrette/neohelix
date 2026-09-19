@@ -62,6 +62,12 @@ pub struct Timestamp {
     ///
     /// Last so that the derived ordering still compares dates first.
     pub repeater: Option<Repeater>,
+    /// The last day of a `<a>--<b>` range.
+    ///
+    /// Only the day is kept: a range spanning days is a calendar fact, and
+    /// the time halves of `<… 10:00>--<… 12:00>` say nothing about which days
+    /// it covers.
+    pub range_end: Option<crate::Date>,
 }
 
 impl Timestamp {
@@ -89,6 +95,19 @@ impl Timestamp {
     /// days, and something recurring within one day belongs to that day once.
     pub fn occurrences(&self, from: crate::Date, to: crate::Date) -> Vec<crate::Date> {
         let start = self.day();
+
+        // A range covers every day between its ends, so it is listed on each
+        // one rather than only on the day it opens.
+        if let Some(end) = self.range_end.filter(|end| *end >= start) {
+            let mut days = Vec::new();
+            let mut at = start.max(from);
+            while at <= end && at <= to {
+                days.push(at);
+                at = at.offset_by(1);
+            }
+            return days;
+        }
+
         let Some(repeater) = self.repeater.filter(|r| r.count > 0) else {
             return (start >= from && start <= to)
                 .then_some(start)

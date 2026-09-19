@@ -2320,6 +2320,9 @@ roam_component_command!(
     |editor| crate::commands::org_agenda_picker(editor, 7)
 );
 roam_component_command!(org_todo_list, crate::commands::org_todo_list_picker);
+roam_component_command!(org_todo_filtered, |_editor| Some(
+    crate::commands::org_todo_filter_prompt()
+));
 roam_buffer_command!(org_agenda_restrict, crate::roam::agenda_restrict_to_file);
 roam_buffer_command!(org_agenda_unrestrict, crate::roam::agenda_restrict_clear);
 
@@ -4191,6 +4194,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Lower the priority.",
         fun: org_priority_down,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-todo-filtered",
+        aliases: &["org-todo-filter"],
+        doc: "List unfinished tasks matching a keyword, tag or priority.",
+        fun: org_todo_filtered,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

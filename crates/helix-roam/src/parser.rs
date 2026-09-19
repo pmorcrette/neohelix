@@ -280,6 +280,14 @@ pub fn parse_timestamp(text: &str) -> Option<Timestamp> {
     // searched rather than a fixed slot.
     let repeater = inner.split_whitespace().find_map(parse_repeater);
 
+    // `<a>--<b>` is one timestamp spanning days, not two timestamps.
+    let range_end = text
+        .split_once(close)
+        .map(|(_, rest)| rest)
+        .and_then(|rest| rest.strip_prefix("--"))
+        .and_then(parse_timestamp)
+        .map(|end| end.day());
+
     Some(Timestamp {
         year,
         month,
@@ -288,6 +296,7 @@ pub fn parse_timestamp(text: &str) -> Option<Timestamp> {
         minute,
         active,
         repeater,
+        range_end,
     })
 }
 

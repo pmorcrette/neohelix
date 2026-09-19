@@ -179,3 +179,91 @@ fn the_todo_list_puts_priorities_first() {
 
     assert_eq!(titles, ["High", "Low", "Unranked"]);
 }
+
+#[test]
+fn a_range_is_listed_on_every_day_it_covers() {
+    let nodes = nodes(
+        "* TODO Conference\nSCHEDULED: <2026-09-21 Mon>--<2026-09-23 Wed>\n\
+         :PROPERTIES:\n:ID: a\n:END:\n",
+    );
+    let entries = agenda(&nodes, day(2026, 9, 19), 7);
+
+    let days: Vec<Date> = entries.iter().map(|e| e.day).collect();
+    assert_eq!(days, [day(2026, 9, 21), day(2026, 9, 22), day(2026, 9, 23)]);
+}
+
+#[test]
+fn a_range_is_read_off_the_timestamp() {
+    let nodes = nodes(
+        "* TODO Trip\nSCHEDULED: <2026-09-21 Mon>--<2026-09-23 Wed>\n\
+         :PROPERTIES:\n:ID: a\n:END:\n",
+    );
+    let stamp = nodes[0].scheduled.unwrap();
+
+    assert_eq!(stamp.date(), (2026, 9, 21));
+    assert_eq!(stamp.range_end, Some(day(2026, 9, 23)));
+}
+
+#[test]
+fn a_range_is_clipped_to_the_window_rather_than_spilling_out_of_it() {
+    let nodes = nodes(
+        "* TODO Long trip\nSCHEDULED: <2026-09-15 Tue>--<2026-09-30 Wed>\n\
+         :PROPERTIES:\n:ID: a\n:END:\n",
+    );
+    // A three-day view in the middle of it shows three days, not sixteen.
+    let entries = agenda(&nodes, day(2026, 9, 19), 3);
+    let days: Vec<Date> = entries.iter().map(|e| e.day).collect();
+
+    assert_eq!(days, [day(2026, 9, 19), day(2026, 9, 20), day(2026, 9, 21)]);
+}
+
+#[test]
+fn a_time_range_within_one_day_is_not_a_day_range() {
+    let nodes = nodes(
+        "* TODO Meeting\nSCHEDULED: <2026-09-21 Mon 10:00-12:00>\n\
+         :PROPERTIES:\n:ID: a\n:END:\n",
+    );
+    let entries = agenda(&nodes, day(2026, 9, 19), 7);
+    assert_eq!(entries.len(), 1, "one day, not several");
+    assert_eq!(entries[0].day, day(2026, 9, 21));
+}
+
+#[test]
+fn a_todo_filter_reads_keywords_tags_and_priorities_from_one_line() {
+    use helix_roam::agenda::TodoFilter;
+
+    let filter = TodoFilter::parse("WAITING :work: #a");
+    assert_eq!(filter.keyword.as_deref(), Some("WAITING"));
+    assert_eq!(filter.tag.as_deref(), Some("work"));
+    assert_eq!(filter.priority, Some('A'));
+
+    // Order does not matter, and an empty filter matches everything.
+    assert_eq!(TodoFilter::parse("#B :home:").priority, Some('B'));
+    assert_eq!(TodoFilter::parse(""), TodoFilter::default());
+}
+
+#[test]
+fn filtering_the_todo_list_narrows_it() {
+    use helix_roam::agenda::{filtered_todo_list, TodoFilter};
+
+    let nodes = nodes(
+        "#+TODO: TODO WAITING | DONE\n\
+         * WAITING [#A] Blocked thing  :work:\n:PROPERTIES:\n:ID: a\n:END:\n\
+         * TODO Ordinary thing  :work:\n:PROPERTIES:\n:ID: b\n:END:\n\
+         * WAITING Other blocked  :home:\n:PROPERTIES:\n:ID: c\n:END:\n",
+    );
+
+    let by_keyword = filtered_todo_list(&nodes, &TodoFilter::parse("WAITING"));
+    assert_eq!(by_keyword.len(), 2);
+
+    let by_tag = filtered_todo_list(&nodes, &TodoFilter::parse(":work:"));
+    assert_eq!(by_tag.len(), 2);
+
+    // The filters combine rather than replacing one another.
+    let both = filtered_todo_list(&nodes, &TodoFilter::parse("WAITING :work:"));
+    assert_eq!(both.len(), 1);
+    assert_eq!(both[0].title, "Blocked thing");
+
+    let by_priority = filtered_todo_list(&nodes, &TodoFilter::parse("#A"));
+    assert_eq!(by_priority.len(), 1);
+}

@@ -106,14 +106,73 @@ pub fn agenda<'a>(
     entries
 }
 
+/// What to narrow a TODO list to.
+///
+/// Every field left unset is a filter not applied, so the default lists
+/// everything unfinished.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TodoFilter {
+    /// Only this TODO keyword, e.g. `WAITING`.
+    pub keyword: Option<String>,
+    /// Only nodes carrying this tag.
+    pub tag: Option<String>,
+    /// Only this priority letter.
+    pub priority: Option<char>,
+}
+
+impl TodoFilter {
+    /// Reads `WAITING`, `:work:` or `#A`, in any order and any number.
+    ///
+    /// A single prompt rather than three, because narrowing a list is one
+    /// thought, and the sigils say which is which without asking.
+    pub fn parse(input: &str) -> Self {
+        let mut filter = Self::default();
+
+        for token in input.split_whitespace() {
+            if let Some(tag) = token.strip_prefix(':') {
+                filter.tag = Some(tag.trim_matches(':').to_string());
+            } else if let Some(letter) = token.strip_prefix('#') {
+                filter.priority = letter.chars().next().map(|c| c.to_ascii_uppercase());
+            } else {
+                filter.keyword = Some(token.to_uppercase());
+            }
+        }
+
+        filter
+    }
+
+    fn matches(&self, node: &Node) -> bool {
+        self.keyword.as_ref().is_none_or(|wanted| {
+            node.todo
+                .as_ref()
+                .is_some_and(|state| &state.keyword == wanted)
+        }) && self
+            .tag
+            .as_ref()
+            .is_none_or(|wanted| node.tags.iter().any(|tag| tag == wanted))
+            && self
+                .priority
+                .is_none_or(|wanted| node.priority == Some(wanted))
+    }
+}
+
 /// Every unfinished node with a TODO state, whatever its dates.
 ///
 /// This is the other half of an agenda: the things that have to happen but
 /// were never given a day.
 pub fn todo_list<'a>(nodes: impl IntoIterator<Item = &'a Node>) -> Vec<&'a Node> {
+    filtered_todo_list(nodes, &TodoFilter::default())
+}
+
+/// The unfinished nodes matching `filter`.
+pub fn filtered_todo_list<'a>(
+    nodes: impl IntoIterator<Item = &'a Node>,
+    filter: &TodoFilter,
+) -> Vec<&'a Node> {
     let mut found: Vec<&Node> = nodes
         .into_iter()
         .filter(|node| node.todo.as_ref().is_some_and(|state| !state.done))
+        .filter(|node| filter.matches(node))
         .collect();
 
     // Priority first, then title, so the list is stable and reads usefully.
