@@ -5,6 +5,7 @@ use std::ops::Range;
 use std::ptr::NonNull;
 
 use crate::doc_formatter::FormattedGrapheme;
+use crate::fold::{Fold, Folds};
 use crate::syntax::{Highlight, OverlayHighlights};
 use crate::{Position, Tendril};
 
@@ -279,6 +280,10 @@ pub struct TextAnnotations<'a> {
     inline_annotations: Vec<Layer<'a, InlineAnnotation, Option<Highlight>>>,
     overlays: Vec<Layer<'a, Overlay, Option<Highlight>>>,
     line_annotations: Vec<(Cell<usize>, RawBox<dyn LineAnnotation + 'a>)>,
+    /// Ranges the formatter skips. Unlike the layers above these are not
+    /// scanned sequentially: folds are few and sorted, so a binary search
+    /// beats carrying a cursor that every reset would have to rewind.
+    folds: Option<&'a Folds>,
 }
 
 impl Debug for TextAnnotations<'_> {
@@ -366,6 +371,22 @@ impl<'a> TextAnnotations<'a> {
 
     /// Removes all line annotations, useful for vertical motions
     /// so that virtual text lines are automatically skipped.
+    /// Hides the given ranges from the display.
+    pub fn add_folds(&mut self, folds: &'a Folds) -> &mut Self {
+        self.folds = Some(folds);
+        self
+    }
+
+    /// The fold beginning exactly at `char_idx`, which is where its marker goes.
+    pub fn fold_starting_at(&self, char_idx: usize) -> Option<Fold> {
+        self.folds?.starting_at(char_idx)
+    }
+
+    /// The fold covering `char_idx`, whether it starts there or hides it.
+    pub fn fold_at(&self, char_idx: usize) -> Option<Fold> {
+        self.folds?.at(char_idx)
+    }
+
     pub fn clear_line_annotations(&mut self) {
         self.line_annotations.clear();
     }

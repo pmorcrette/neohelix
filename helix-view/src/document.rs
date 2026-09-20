@@ -2406,6 +2406,7 @@ impl Document {
             wrap_indicator_highlight: theme
                 .and_then(|theme| theme.find_highlight("ui.virtual.wrap")),
             soft_wrap_at_text_width,
+            fold_marker: Box::from(helix_core::doc_formatter::DEFAULT_FOLD_MARKER),
         }
     }
 

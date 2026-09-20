@@ -1,4 +1,5 @@
 use crate::doc_formatter::{DocumentFormatter, TextFormat};
+use crate::fold::{Fold, Folds};
 use crate::text_annotations::{InlineAnnotation, Overlay, TextAnnotations};
 
 impl TextFormat {
@@ -13,6 +14,7 @@ impl TextFormat {
             // use a prime number to allow lining up too often with repeat
             viewport_width: 17,
             soft_wrap_at_text_width: false,
+            fold_marker: "…".into(),
         }
     }
 }
@@ -210,4 +212,89 @@ fn annotation_and_overlay() {
         .collect_to_str(),
         "fooo  bar "
     );
+}
+
+/// Renders `text` with `folds`, one line of output per visual row, each
+/// prefixed by the document line the row belongs to.
+fn folded(text: &str, folds: &[(usize, usize)], from: usize) -> String {
+    use std::fmt::Write;
+
+    let folds: Folds = folds
+        .iter()
+        .map(|&(start, end)| Fold::new(start, end))
+        .collect();
+    let mut annotations = TextAnnotations::default();
+    annotations.add_folds(&folds);
+
+    let text_fmt = TextFormat::new_test(false);
+    let mut out = String::new();
+    let mut row = usize::MAX;
+
+    for grapheme in
+        DocumentFormatter::new_at_prev_checkpoint(text.into(), &text_fmt, &annotations, from)
+    {
+        if grapheme.visual_pos.row != row {
+            row = grapheme.visual_pos.row;
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            write!(out, "{}|", grapheme.line_idx).unwrap();
+        }
+        if grapheme.raw != crate::graphemes::Grapheme::Newline {
+            write!(out, "{}", grapheme.raw).unwrap();
+        }
+    }
+
+    out
+}
+
+const OUTLINE: &str = "\
+* One
+body
+more
+* Two
+";
+
+#[test]
+fn a_fold_hides_its_text_and_leaves_a_marker() {
+    // Chars 5..15 are the newline after "* One" through the end of "more",
+    // so the two body lines collapse onto the headline.
+    assert_eq!(folded(OUTLINE, &[(5, 15)], 0), "0|* One…\n3|* Two\n4| ");
+}
+
+#[test]
+fn the_lines_after_a_fold_keep_their_numbers() {
+    // "* Two" is document line 3 whether or not the body above it is folded:
+    // a fold hides text, it does not remove it.
+    let open = folded(OUTLINE, &[], 0);
+    assert!(open.contains("3|* Two"));
+    assert!(folded(OUTLINE, &[(5, 15)], 0).contains("3|* Two"));
+}
+
+#[test]
+fn the_characters_after_a_fold_keep_their_positions() {
+    let text_fmt = TextFormat::new_test(false);
+    let folds: Folds = [Fold::new(5, 15)].into_iter().collect();
+    let mut annotations = TextAnnotations::default();
+    annotations.add_folds(&folds);
+
+    let star =
+        DocumentFormatter::new_at_prev_checkpoint(OUTLINE.into(), &text_fmt, &annotations, 0)
+            .find(|grapheme| grapheme.line_idx == 3)
+            .unwrap();
+
+    assert_eq!(star.char_idx, OUTLINE.find("* Two").unwrap());
+}
+
+#[test]
+fn starting_inside_a_fold_backs_up_to_the_line_it_opens_on() {
+    // Asking to render from the middle of hidden text must not render it.
+    assert_eq!(folded(OUTLINE, &[(5, 15)], 8), "0|* One…\n3|* Two\n4| ");
+}
+
+#[test]
+fn two_folds_on_one_buffer_both_collapse() {
+    let text = "a\nb\nc\nd\ne\n";
+    // 1..3 hides "\nb" and 5..7 hides "\nd".
+    assert_eq!(folded(text, &[(1, 3), (5, 7)], 0), "0|a…\n2|c…\n4|e\n5| ");
 }

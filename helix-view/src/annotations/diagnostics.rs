@@ -102,6 +102,8 @@ impl InlineDiagnosticsConfig {
             wrap_indicator_highlight: None,
             viewport_width: width,
             soft_wrap_at_text_width: true,
+            // Diagnostic text is not the document and carries no folds.
+            fold_marker: Box::from(helix_core::doc_formatter::DEFAULT_FOLD_MARKER),
         }
     }
 }
