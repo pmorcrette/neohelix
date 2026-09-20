@@ -11,27 +11,31 @@ You are developing a custom fork of Helix in Rust. The goal is to integrate:
 ## Phase 1: Org-Mode & Org-Roam (`crates/helix-roam`)
 
 ### Task 1.1: Tree-sitter Org Integration
-- [ ] Update `languages.toml` in Helix to include `tree-sitter-org`.
-- [ ] Add queries for highlights (`highlights.scm`) and folds (`folds.scm`).
+- [x] Update `languages.toml` in Helix to include `tree-sitter-org`.
+- [x] Add queries for highlights (`highlights.scm`) and folds (`folds.scm`).
 - [ ] Verify that `.org` files parse correctly and support section folding.
+
+  Parsing is verified; `folds.scm` is written and unused. **Blocked on Task
+  1.4**: Helix has no folding for the queries to drive.
+
 
   The folding half of this item cannot be finished here: Helix has no folding
   at all, and nothing reads a `folds.scm`. The query is written and correct,
   but inert until Task 1.4 gives the editor somewhere to use it.
 
 ### Task 1.2: Internal Crate `helix-roam` & Data Model
-- [ ] Create `crates/helix-roam` in the workspace.
-- [ ] Add `petgraph` and `uuid` to `crates/helix-roam/Cargo.toml`.
-- [ ] Implement `Node` struct (`id`, `title`, `file_path`, `tags`, `aliases`).
-- [ ] Implement `Link` enum (`Id`, `Ref`) and `RoamGraph` struct wrapping `petgraph::DiGraph`.
-- [ ] Add thread-safe methods to query incoming backlinks and outgoing links in $O(1)$.
+- [x] Create `crates/helix-roam` in the workspace.
+- [x] Add `petgraph` and `uuid` to `crates/helix-roam/Cargo.toml`.
+- [x] Implement `Node` struct (`id`, `title`, `file_path`, `tags`, `aliases`).
+- [x] Implement `Link` enum (`Id`, `Ref`) and `RoamGraph` struct wrapping `petgraph::DiGraph`.
+- [x] Add thread-safe methods to query incoming backlinks and outgoing links in $O(1)$.
 
 ### Task 1.3: Background Indexer & UI Integration
-- [ ] Implement an async directory scanner (`tokio::task::spawn_blocking`) to parse `.org` files and populate `RoamGraph`.
-- [ ] Connect `RoamGraph` to the `Editor` state in `helix-view`.
-- [ ] Extend `Picker` in `helix-term/src/ui/picker.rs` to create `:roam-node-find`.
-- [ ] Add a sidebar/popup widget to display backlinks for the active buffer.
-- [ ] Hook graph re-indexing to `Document::save` events.
+- [x] Implement an async directory scanner (`tokio::task::spawn_blocking`) to parse `.org` files and populate `RoamGraph`.
+- [x] Connect `RoamGraph` to the `Editor` state in `helix-view`.
+- [x] Extend `Picker` in `helix-term/src/ui/picker.rs` to create `:roam-node-find`.
+- [x] Add a sidebar/popup widget to display backlinks for the active buffer.
+- [x] Hook graph re-indexing to `Document::save` events.
 
 *Tasks 1.4 to 1.16 were derived from Org's own default keymap and its
 `org-modules` list, command by command, rather than from recollection. What
@@ -69,25 +73,25 @@ Nothing edits Org structure today: the fork parses `.org` files and indexes
 them, but a headline is only ever plain text to the editor. These are the
 commands that make Org feel like Org rather than like a text file with stars.
 
-- [ ] Structure: insert a headline at the same level, promote and demote a
+- [x] Structure: insert a headline at the same level, promote and demote a
       headline, promote and demote a whole subtree, move a subtree up and down.
-- [ ] TODO state cycling, honouring `#+TODO:` keyword sequences rather than a
+- [x] TODO state cycling, honouring `#+TODO:` keyword sequences rather than a
       hardcoded TODO/DONE pair.
-- [ ] Priority cookies (`[#A]`): set, raise, lower, remove. The parser already
+- [x] Priority cookies (`[#A]`): set, raise, lower, remove. The parser already
       strips them from titles, so the reading half exists.
-- [ ] Tags: add and remove on a headline, with completion from tags already in
+- [x] Tags: add and remove on a headline, with completion from tags already in
       the graph.
-- [ ] `SCHEDULED:` and `DEADLINE:` timestamps: insert, edit, and a way to pick
+- [x] `SCHEDULED:` and `DEADLINE:` timestamps: insert, edit, and a way to pick
       a date that is not typing it by hand.
-- [ ] Refile a subtree to another file or headline, and archive one.
+- [x] Refile a subtree to another file or headline, and archive one.
 
 ### Task 1.6: Tables, Lists and Checkboxes
 
-- [ ] Plain lists: insert an item, renumber an ordered list, promote and demote
+- [x] Plain lists: insert an item, renumber an ordered list, promote and demote
       an item.
-- [ ] Checkboxes (`- [ ]`): toggle, and update the statistics cookie
+- [x] Checkboxes (`- [ ]`): toggle, and update the statistics cookie
       (`[2/5]`, `[40%]`) on the parent.
-- [ ] Tables: re-align on edit, move between cells and rows, insert and delete
+- [x] Tables: re-align on edit, move between cells and rows, insert and delete
       rows and columns.
 - [ ] Table formulas are a language of their own and are deliberately not in
       this task; decide separately whether the fork wants them at all.
@@ -97,11 +101,11 @@ commands that make Org feel like Org rather than like a text file with stars.
 The single largest thing Org gives that the fork does not, and the reason many
 people use Org at all. It needs Task 1.5's timestamps to exist first.
 
-- [ ] Parse `SCHEDULED:`, `DEADLINE:`, plain and repeating timestamps into a
+- [x] Parse `SCHEDULED:`, `DEADLINE:`, plain and repeating timestamps into a
       date model, including repeaters (`+1w`, `.+1m`) and ranges.
-- [ ] An agenda buffer: a day and a week view, built from the whole notes
+- [x] An agenda buffer: a day and a week view, built from the whole notes
       directory rather than the open file.
-- [ ] A global TODO list, filtered by keyword, tag and priority.
+- [x] A global TODO list, filtered by keyword, tag and priority.
 - [ ] Jump from an agenda line to its headline, and act on it in place
       (change state, reschedule) without losing the agenda.
 
@@ -110,13 +114,13 @@ people use Org at all. It needs Task 1.5's timestamps to exist first.
   hook for an action that leaves it open, so this needs either a patch to an
   upstream file or an agenda component of the fork's own — which is the
   agenda buffer Org has, and what Phase 5's docked pane would host.
-- [ ] Decide where the agenda lives on screen — it is another pane, so it
+- [x] Decide where the agenda lives on screen — it is another pane, so it
       shares Phase 5's blocker.
 
   Decided for now: a picker overlay, like the node and ref pickers. That makes
   it searchable and jumpable immediately, at the cost of not being readable
   beside a document. A docked agenda is Phase 5's to give.
-- [ ] Manage which files the agenda reads: add and remove them, cycle through
+- [x] Manage which files the agenda reads: add and remove them, cycle through
       them, and restrict a view to one file or subtree.
 
 ### Task 1.8: Org-Roam Beyond the Graph
@@ -125,25 +129,29 @@ The graph, the picker and the backlinks panel exist. What is missing is
 everything that *writes* to the graph: today a node can only be created by
 typing an `:ID:` drawer by hand.
 
-- [ ] `roam-node-insert`: pick a node and insert an `[[id:…]]` link to it,
+- [x] `roam-node-insert`: pick a node and insert an `[[id:…]]` link to it,
       creating the node if the title does not exist yet. This is the command
       Org-Roam users press most.
-- [ ] Capture templates: create a node from a template into a configured file,
+- [x] Capture templates: create a node from a template into a configured file,
       rather than one node per file with a fixed shape.
-- [ ] Daily notes: `roam-dailies` for today, a chosen date, and moving between
+- [x] Daily notes: `roam-dailies` for today, a chosen date, and moving between
       them.
-- [ ] `roam-ref-find`: the graph already indexes `:ROAM_REFS:` and can resolve
+- [x] `roam-ref-find`: the graph already indexes `:ROAM_REFS:` and can resolve
       them, but nothing exposes a search over them.
-- [ ] Add and remove aliases, tags *and refs* on the node at point, keeping the
+- [x] Add and remove aliases, tags *and refs* on the node at point, keeping the
       property drawer and the graph in step.
-- [ ] Open a random node, which is how a large set of notes gets revisited.
+- [x] Open a random node, which is how a large set of notes gets revisited.
 - [ ] Dailies come in two forms upstream, and the difference matters: *goto*
       opens the day's note, *capture* adds an entry to it through a template
       without leaving the current buffer. Both, plus opening the dailies
       directory itself.
-- [ ] Unlinked references: occurrences of a node's title or alias in other
+
+  Only *goto* is built. `daily_directory` resolves the path but no command
+  opens it, and the capture form — the one that does not move the cursor — is
+  the half that is missing.
+- [x] Unlinked references: occurrences of a node's title or alias in other
       files that are not yet links, and a way to turn one into a link.
-- [ ] Renaming a node's title, updating the link descriptions that named it.
+- [x] Renaming a node's title, updating the link descriptions that named it.
 
 ### Task 1.9: Export, Babel and Clocking
 
@@ -164,16 +172,16 @@ Org's own link system — the thing that makes an Org file more than an outline 
 is absent: nothing stores a link, follows one, or knows that `file:`, `http:`
 and internal targets exist.
 
-- [ ] Follow the link at point, dispatching on its type, and a mark ring so
+- [x] Follow the link at point, dispatching on its type, and a mark ring so
       that following one can be undone by going back.
-- [ ] Store a link to the current location and insert a stored link elsewhere,
+- [x] Store a link to the current location and insert a stored link elsewhere,
       which is how links get made in Org without typing them.
-- [ ] The built-in types: `file:` with a line or search target, `http(s):`,
+- [x] The built-in types: `file:` with a line or search target, `http(s):`,
       `mailto:`, and internal links to a headline, a `CUSTOM_ID` or a `<<target>>`.
-- [ ] Move to the next and previous link in the buffer.
-- [ ] Link abbreviations (`[[gh:owner/repo]]`), which are per-file configuration
+- [x] Move to the next and previous link in the buffer.
+- [x] Link abbreviations (`[[gh:owner/repo]]`), which are per-file configuration
       the parser already has to read anyway.
-- [ ] `org-id` proper: create an ID on demand for the entry at point, rather
+- [x] `org-id` proper: create an ID on demand for the entry at point, rather
       than requiring the user to type a drawer by hand. Task 1.8's
       `roam-node-insert` needs this underneath it.
 - [ ] Inline preview of images and of link descriptions. Blocked for the same
@@ -187,15 +195,15 @@ The parser reads property drawers, and Task 1.8 will write the two Roam
 properties. Nothing edits properties in general, and nothing records what
 happened to an entry.
 
-- [ ] Set, change and remove a property on the entry at point, with completion
+- [x] Set, change and remove a property on the entry at point, with completion
       over the keys already used in the file.
-- [ ] Effort estimates, and incrementing one.
-- [ ] Property inheritance, which changes what a query over the graph returns
+- [x] Effort estimates, and incrementing one.
+- [x] Property inheritance, which changes what a query over the graph returns
       and so belongs with the indexer rather than only the UI.
 - [ ] Insert a drawer, and fold drawers by default the way Org does. The
       folding half is blocked on Task 1.4 for the same reason section folding
       is: Helix has none.
-- [ ] Logging: record state changes and timestamps into `:LOGBOOK:`, and add a
+- [x] Logging: record state changes and timestamps into `:LOGBOOK:`, and add a
       dated note to an entry.
 
 ### Task 1.12: Sparse Trees, Narrowing and Structural Motion
@@ -296,7 +304,7 @@ becomes its own node, and a file that should be one node becomes one. None of
 this exists in the fork, and it is what people reach for once a notes
 directory is more than a few weeks old.
 
-- [ ] Extract the subtree at point into a node of its own, in a new file. This
+- [x] Extract the subtree at point into a node of its own, in a new file. This
       is the command that keeps a notes directory from turning into a handful
       of enormous files.
 
@@ -304,12 +312,12 @@ directory is more than a few weeks old.
   implementation showed it does not, and does not need to: the subtree carries
   its `:ID:` into the new file, so links that already pointed at it keep
   resolving.
-- [ ] Promote the whole buffer to a single file-level node, and demote a
+- [x] Promote the whole buffer to a single file-level node, and demote a
       file-level node so its content becomes a subtree.
-- [ ] Refile a node into another node, which is not Org's own refile: the
+- [x] Refile a node into another node, which is not Org's own refile: the
       target is chosen from the graph, and the links pointing at the moved node
       must keep resolving.
-- [ ] Replace legacy `roam:` title links with `id:` links across a buffer, the
+- [x] Replace legacy `roam:` title links with `id:` links across a buffer, the
       migration path for notes written before v2.
 
 ### Task 1.18: What the Index Stores
@@ -323,14 +331,14 @@ This is not bookkeeping: it is what makes a query like "every unfinished node
 tagged `project`, due this week" possible. Without those fields, the graph can
 answer what links to what and nothing else.
 
-- [ ] Extend `Node` with the outline level, the TODO state, the priority, the
+- [x] Extend `Node` with the outline level, the TODO state, the priority, the
       `SCHEDULED:`/`DEADLINE:` timestamps, the outline path and the arbitrary
       properties of its drawer.
-- [ ] Index citations (`[cite:@key]`) as their own relation, so a bibliography
+- [x] Index citations (`[cite:@key]`) as their own relation, so a bibliography
       key can be asked what cites it.
-- [ ] A query layer over the graph that these fields make worth having: filter
+- [x] A query layer over the graph that these fields make worth having: filter
       by tag, state, priority and date, not only by title.
-- [ ] Decide how much of this the parser should do eagerly. Every field here is
+- [x] Decide how much of this the parser should do eagerly. Every field here is
       another thing to re-parse on every save, and the indexer is currently
       fast because it reads very little.
 
@@ -373,7 +381,7 @@ This matters more than a missing feature would, because several of these change
 how a file must be *read*. Ignoring them does not remove a capability; it
 produces a wrong index that nothing reports.
 
-- [ ] `#+TODO:`, `#+SEQ_TODO:`, `#+TYP_TODO:`. The parser currently leaves TODO
+- [x] `#+TODO:`, `#+SEQ_TODO:`, `#+TYP_TODO:`. The parser currently leaves TODO
       keywords in the headline title on purpose — the code says so — because
       the keyword set is per-file and guessing would be worse. The consequence
       is that a node reads `TODO Write the thing` in the picker, and matches
@@ -383,13 +391,13 @@ produces a wrong index that nothing reports.
       structural: it means a file's meaning depends on a second file, and the
       indexer currently reparses exactly one file per save. A setupfile change
       has to invalidate every file that includes it.
-- [ ] `#+PROPERTY:` for file-level property defaults, which Task 1.11's
+- [x] `#+PROPERTY:` for file-level property defaults, which Task 1.11's
       inheritance builds on.
-- [ ] `#+TAGS:` and `#+PRIORITIES:`, which define the tag alist and the
+- [x] `#+TAGS:` and `#+PRIORITIES:`, which define the tag alist and the
       priority range a file uses. Priority cookies are currently stripped for
       any letter, without knowing the declared range.
-- [ ] `#+CATEGORY:` and `#+ARCHIVE:`, needed by Tasks 1.7 and 1.5 respectively.
-- [ ] `#+DRAWERS:` for custom drawer names, so a drawer the file declares is
+- [x] `#+CATEGORY:` and `#+ARCHIVE:`, needed by Tasks 1.7 and 1.5 respectively.
+- [x] `#+DRAWERS:` for custom drawer names, so a drawer the file declares is
       not parsed as content.
 - [ ] `#+STARTUP:` folding and visibility options (`overview`, `content`,
       `showeverything`, `hidedrawers`, `hideblocks`, …), which is how a file
@@ -399,7 +407,7 @@ produces a wrong index that nothing reports.
 - [ ] The export and citation keywords — `#+OPTIONS:`, `#+INCLUDE:`,
       `#+MACRO:`, `#+BIBLIOGRAPHY:`, `#+CITE_EXPORT:` — belong with Tasks 1.9
       and 1.14 rather than here.
-- [ ] Keyword matching must be case-insensitive, as Org's is. The parser
+- [x] Keyword matching must be case-insensitive, as Org's is. The parser
       already lowercases keys, so this is a property to keep rather than add.
 
 *On the global variables: Org ships 1037 `defcustom` declarations, concentrated
@@ -444,21 +452,21 @@ pass.*
 ## Phase 2: Magit Client (`crates/helix-magit`)
 
 ### Task 2.1: Git Engine & Diff Data Model
-- [ ] Create `crates/helix-magit` in the workspace.
-- [ ] Integrate `git2-rs` or `gix` (Gitoxide) for repository operations.
-- [ ] Implement diff parser to extract structural AST: `FileDiff`, `DiffHunk`, `DiffLine`.
+- [x] Create `crates/helix-magit` in the workspace.
+- [x] Integrate `git2-rs` or `gix` (Gitoxide) for repository operations.
+- [x] Implement diff parser to extract structural AST: `FileDiff`, `DiffHunk`, `DiffLine`.
 
 ### Task 2.2: Transient Menu System
-- [ ] Create `TransientMenu`, `TransientGroup`, `TransientArgument`, and `TransientAction` models.
-- [ ] Implement `TransientOverlay` component in `helix-term` to render transient menus.
-- [ ] Support modal keybindings for toggling switches (`--autostash`, `--interactive`) and executing actions.
-- [ ] Implement default menu constructors for `Commit`, `Rebase`, `Push`, and `Pull`.
+- [x] Create `TransientMenu`, `TransientGroup`, `TransientArgument`, and `TransientAction` models.
+- [x] Implement `TransientOverlay` component in `helix-term` to render transient menus.
+- [x] Support modal keybindings for toggling switches (`--autostash`, `--interactive`) and executing actions.
+- [x] Implement default menu constructors for `Commit`, `Rebase`, `Push`, and `Pull`.
 
 ### Task 2.3: `DiffView` Component & Line-Level Staging
-- [ ] Create `DiffView` component in `helix-term` supporting hierarchical navigation (File -> Hunk -> Line).
-- [ ] Implement `Tab` key behavior to collapse/expand files and hunks.
-- [ ] Implement line-level patch generation algorithm for staging (`s`) and unstaging (`u`).
-- [ ] Render diff text using Helix's native Tree-sitter highlighter and active theme (`Theme`/`Style`).
+- [x] Create `DiffView` component in `helix-term` supporting hierarchical navigation (File -> Hunk -> Line).
+- [x] Implement `Tab` key behavior to collapse/expand files and hunks.
+- [x] Implement line-level patch generation algorithm for staging (`s`) and unstaging (`u`).
+- [x] Render diff text using Helix's native Tree-sitter highlighter and active theme (`Theme`/`Style`).
 
 ### Task 2.4: Executing the Transient Commands
 
@@ -467,15 +475,15 @@ but running it is deliberately not implemented: actions report the command they
 would run instead. Executing them needs a message editor, credentials, progress
 and async process handling, none of which the menu system itself covers.
 
-- [ ] Run a resolved command line asynchronously, on a job, so the editor never
+- [x] Run a resolved command line asynchronously, on a job, so the editor never
       blocks on git; stream stdout/stderr and surface failures in the status
       buffer rather than discarding them.
-- [ ] `Commit`: open a scratch buffer seeded with the commit template and the
+- [x] `Commit`: open a scratch buffer seeded with the commit template and the
       status comment block, and commit when it is written and closed — with a
       way to abort that leaves the index untouched.
-- [ ] `Commit --amend` / `Extend` / `Fixup`: seed the buffer from HEAD's
+- [x] `Commit --amend` / `Extend` / `Fixup`: seed the buffer from HEAD's
       message, and refuse to amend a pushed commit without confirmation.
-- [ ] `Push` / `Pull` / `Fetch`: decide between `gix`'s own transport and
+- [x] `Push` / `Pull` / `Fetch`: decide between `gix`'s own transport and
       invoking the `git` binary for network operations. `gix` keeps the fork
       free of a `git` dependency, but the user's credential helpers, SSH agent
       configuration and `~/.gitconfig` `url.*.insteadOf` rules come for free
@@ -483,9 +491,9 @@ and async process handling, none of which the menu system itself covers.
 - [ ] `Rebase`: `--interactive` needs `GIT_SEQUENCE_EDITOR` pointed back at
       Helix, which means the integrated terminal or a spawned instance; decide
       which before starting.
-- [ ] Refresh the `DiffView` after any command that changes the index, HEAD or
+- [x] Refresh the `DiffView` after any command that changes the index, HEAD or
       the working tree.
-- [ ] Guard destructive actions (`--force`, `branch -d`, `rebase --abort`)
+- [x] Guard destructive actions (`--force`, `branch -d`, `rebase --abort`)
       behind a confirmation that names what will be lost.
 
 *Tasks 2.5 to 2.14 were derived from the actual definition of Magit's
@@ -764,17 +772,17 @@ it — checked against what the integration does with each, rather than from a
 list of things terminals generally have.*
 
 ### Task 3.1: PTY Engine & VT100 Emulator
-- [ ] Create `crates/helix-pty` in the workspace.
-- [ ] Add `portable-pty` and `alacritty_terminal` dependencies.
-- [ ] Implement `PtyTerminal` wrapper managing shell spawning (`SHELL`), PTY I/O, and grid state thread-safety (`Arc<Mutex<Term>>`).
-- [ ] Set up background reader thread forwarding PTY ANSI output to Alacritty's processor.
+- [x] Create `crates/helix-pty` in the workspace.
+- [x] Add `portable-pty` and `alacritty_terminal` dependencies.
+- [x] Implement `PtyTerminal` wrapper managing shell spawning (`SHELL`), PTY I/O, and grid state thread-safety (`Arc<Mutex<Term>>`).
+- [x] Set up background reader thread forwarding PTY ANSI output to Alacritty's processor.
 
 ### Task 3.2: `TerminalView` UI Component
-- [ ] Implement `TerminalView` component in `helix-term`.
-- [ ] Translate Alacritty grid cells to Helix `Surface` rendering calls.
-- [ ] Implement full key pass-through from `crossterm` to the PTY writer.
-- [ ] Implement escape key sequence (e.g., `Ctrl-a Esc`) to toggle focus back to Helix normal mode.
-- [ ] Handle dynamic terminal resizing (`Pty::resize`).
+- [x] Implement `TerminalView` component in `helix-term`.
+- [x] Translate Alacritty grid cells to Helix `Surface` rendering calls.
+- [x] Implement full key pass-through from `crossterm` to the PTY writer.
+- [x] Implement escape key sequence (e.g., `Ctrl-a Esc`) to toggle focus back to Helix normal mode.
+- [x] Handle dynamic terminal resizing (`Pty::resize`).
 
 ### Task 3.3: The Emulator Events the Integration Drops
 
@@ -867,11 +875,11 @@ killing it, but it is still one.
 ## Phase 4: Commands & Keybindings
 
 ### Task 4.1: Command Registration & Shortcuts
-- [ ] Register commands in `helix-term/src/commands.rs`:
+- [x] Register commands in `helix-term/src/commands.rs`:
   - `:roam-node-find`, `:roam-backlinks`
   - `:magit`
   - `:terminal`
-- [ ] Add default space-leader keybindings in `helix-term/src/keymap/default.rs`:
+- [x] Add default space-leader keybindings in `helix-term/src/keymap/default.rs`:
   - `space + n + f` -> Roam Find Node
   - `space + n + b` -> Roam Toggle Backlinks
   - `space + m`     -> Open Magit Status
