@@ -281,6 +281,121 @@ pub fn foldable_at(
         .min_by_key(|fold| fold.end - fold.start)
 }
 
+/// How much of a foldable range is showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cycle {
+    /// Everything below its first line is hidden.
+    Folded,
+    /// The ranges directly inside it show their first lines; the rest is hidden.
+    Children,
+    /// Nothing inside it is hidden.
+    Open,
+}
+
+/// How much of a whole buffer is showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Visibility {
+    /// Only the outermost first lines.
+    Overview,
+    /// Every first line, and no bodies.
+    Contents,
+    /// Everything.
+    ShowAll,
+}
+
+/// The foldable ranges directly inside `parent`.
+///
+/// Direct means contained by `parent` and by nothing else `parent` contains,
+/// which is what makes a list of ranges into a tree without building one.
+pub fn direct_children(all: &[Fold], parent: Fold) -> Vec<Fold> {
+    let inside: Vec<Fold> = all
+        .iter()
+        .copied()
+        .filter(|fold| *fold != parent && fold.start >= parent.start && fold.end <= parent.end)
+        .collect();
+
+    inside
+        .iter()
+        .copied()
+        .filter(|fold| {
+            !inside
+                .iter()
+                .any(|other| other != fold && other.start <= fold.start && fold.end <= other.end)
+        })
+        .collect()
+}
+
+/// The text between a range's first line and the first range inside it.
+///
+/// This is the body: an Org headline's paragraphs, everything written before
+/// the first subsection. Showing "just the children" has to hide it, or the
+/// entry claims to be showing only its children while showing its prose.
+fn body(text: RopeSlice, parent: Fold, first_child: Fold) -> Option<Fold> {
+    let head = text.line_to_char(text.char_to_line(first_child.start));
+    (head > parent.start + 1).then(|| Fold::new(parent.start, head - 1))
+}
+
+/// The folds that leave `parent` showing its children and nothing else.
+///
+/// A range with nothing inside it has no children to show, so it simply
+/// closes: that is why a leaf headline has two states rather than three.
+pub fn children_folds(text: RopeSlice, all: &[Fold], parent: Fold) -> Vec<Fold> {
+    let children = direct_children(all, parent);
+    let Some(first) = children.first().copied() else {
+        return vec![parent];
+    };
+
+    body(text, parent, first)
+        .into_iter()
+        .chain(children)
+        .collect()
+}
+
+/// Which of the three states the current folds put `parent` in.
+///
+/// Derived rather than remembered: a stored cycle position goes stale the
+/// moment an edit or another command changes the folds under it.
+pub fn cycle_state(folds: &Folds, text: RopeSlice, all: &[Fold], parent: Fold) -> Cycle {
+    if folds.iter().any(|fold| *fold == parent) {
+        return Cycle::Folded;
+    }
+
+    let wanted = children_folds(text, all, parent);
+    if wanted
+        .iter()
+        .all(|fold| folds.iter().any(|other| other == fold))
+    {
+        return Cycle::Children;
+    }
+
+    Cycle::Open
+}
+
+/// The folds that hide every body while leaving every first line showing.
+pub fn contents_folds(text: RopeSlice, all: &[Fold]) -> Vec<Fold> {
+    all.iter()
+        .filter_map(|parent| match direct_children(all, *parent).first() {
+            // Nothing inside it, so the whole range is body.
+            None => Some(*parent),
+            Some(first) => body(text, *parent, *first),
+        })
+        .collect()
+}
+
+/// Which of the three whole-buffer states the current folds amount to.
+pub fn visibility(folds: &Folds, all: &[Fold]) -> Visibility {
+    if folds.is_empty() {
+        return Visibility::ShowAll;
+    }
+
+    let overview = outermost(all.iter().copied());
+    if folds.as_slice() == overview.as_slice() {
+        return Visibility::Overview;
+    }
+
+    Visibility::Contents
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,6 +504,103 @@ mod tests {
         let all = [Fold::new(5, 40), Fold::new(20, 35), Fold::new(50, 60)];
 
         assert_eq!(outermost(all), [Fold::new(5, 40), Fold::new(50, 60)]);
+    }
+
+    /// `* One` / body / `** Two` / body / `* Three`, with the folds a
+    /// `folds.scm` would give for the two sections and the subsection.
+    fn outline() -> (Rope, Vec<Fold>) {
+        let text = Rope::from("* One\nbody\nmore\n** Two\ndeep\n* Three\n");
+        // "* One" ends at char 5 and its section runs to the newline at 27,
+        // just before "* Three"; "** Two" ends at 22 and ends in the same
+        // place.
+        let one = Fold::new(5, 27);
+        let two = Fold::new(22, 27);
+        (text, vec![one, two])
+    }
+
+    #[test]
+    fn a_range_inside_another_is_its_child_and_not_its_grandparent_s() {
+        let all = [Fold::new(0, 100), Fold::new(10, 60), Fold::new(20, 30)];
+
+        assert_eq!(
+            direct_children(&all, Fold::new(0, 100)),
+            [Fold::new(10, 60)]
+        );
+        assert_eq!(
+            direct_children(&all, Fold::new(10, 60)),
+            [Fold::new(20, 30)]
+        );
+        assert!(direct_children(&all, Fold::new(20, 30)).is_empty());
+    }
+
+    #[test]
+    fn showing_the_children_hides_the_body_with_them() {
+        let (text, all) = outline();
+        let folds = children_folds(text.slice(..), &all, all[0]);
+
+        // The body between the headline and the first subsection, and the
+        // subsection itself. Showing the prose while claiming to show only
+        // the children is the mistake this guards.
+        assert_eq!(folds, [Fold::new(5, 15), Fold::new(22, 27)]);
+    }
+
+    #[test]
+    fn a_range_with_nothing_inside_it_has_two_states_not_three() {
+        let (text, all) = outline();
+
+        // A leaf has no children to show, so asking for them closes it.
+        assert_eq!(children_folds(text.slice(..), &all, all[1]), [all[1]]);
+    }
+
+    #[test]
+    fn the_cycle_state_is_read_back_from_the_folds() {
+        let (text, all) = outline();
+        let parent = all[0];
+
+        let open = Folds::new();
+        assert_eq!(
+            cycle_state(&open, text.slice(..), &all, parent),
+            Cycle::Open
+        );
+
+        let closed: Folds = [parent].into_iter().collect();
+        assert_eq!(
+            cycle_state(&closed, text.slice(..), &all, parent),
+            Cycle::Folded
+        );
+
+        let children: Folds = children_folds(text.slice(..), &all, parent)
+            .into_iter()
+            .collect();
+        assert_eq!(
+            cycle_state(&children, text.slice(..), &all, parent),
+            Cycle::Children
+        );
+    }
+
+    #[test]
+    fn the_contents_view_keeps_every_first_line_and_no_body() {
+        let (text, all) = outline();
+
+        // The outer section loses its body up to the subsection; the
+        // subsection has no children, so all of it goes.
+        assert_eq!(
+            contents_folds(text.slice(..), &all),
+            [Fold::new(5, 15), Fold::new(22, 27)]
+        );
+    }
+
+    #[test]
+    fn the_buffer_state_is_read_back_too() {
+        let (text, all) = outline();
+
+        assert_eq!(visibility(&Folds::new(), &all), Visibility::ShowAll);
+
+        let overview: Folds = outermost(all.iter().copied()).into_iter().collect();
+        assert_eq!(visibility(&overview, &all), Visibility::Overview);
+
+        let contents: Folds = contents_folds(text.slice(..), &all).into_iter().collect();
+        assert_eq!(visibility(&contents, &all), Visibility::Contents);
     }
 
     #[test]

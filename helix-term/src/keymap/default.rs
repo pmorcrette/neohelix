@@ -315,6 +315,19 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "?" => rsearch,
             "n" => search_next,
             "N" => search_prev,
+
+            // Folding, on the keys Vim puts it on. `zc` and `zm` are taken by
+            // upstream's view commands, so closing is `zf` and closing every
+            // fold is `zM`; nothing upstream binds is moved. `z` then tab is
+            // Org's visibility cycling, which cannot have tab itself: upstream
+            // binds it to jump_forward.
+            "a" => toggle_fold,
+            "f" => fold,
+            "o" => unfold,
+            "M" => fold_all,
+            "R" => unfold_all,
+            "tab" => cycle_fold,
+            "S-tab" => cycle_fold_all,
         },
         "Z" => { "View" sticky=true
             "z" | "c" => align_view_center,
@@ -332,6 +345,19 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "?" => rsearch,
             "n" => search_next,
             "N" => search_prev,
+
+            // Folding, on the keys Vim puts it on. `zc` and `zm` are taken by
+            // upstream's view commands, so closing is `zf` and closing every
+            // fold is `zM`; nothing upstream binds is moved. `z` then tab is
+            // Org's visibility cycling, which cannot have tab itself: upstream
+            // binds it to jump_forward.
+            "a" => toggle_fold,
+            "f" => fold,
+            "o" => unfold,
+            "M" => fold_all,
+            "R" => unfold_all,
+            "tab" => cycle_fold,
+            "S-tab" => cycle_fold_all,
         },
 
         "\"" => select_register,

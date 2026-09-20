@@ -463,6 +463,8 @@ impl MappableCommand {
         org_table_next_cell, "Move to the next table cell",
         org_table_previous_cell, "Move to the previous table cell",
         fold, "Fold the innermost foldable range at the cursor",
+        cycle_fold, "Step the range at the cursor through folded, children, open",
+        cycle_fold_all, "Step the buffer through overview, contents, everything",
         unfold, "Open the fold at the cursor",
         toggle_fold, "Close the fold at the cursor, or open it",
         fold_all, "Fold everything the language marks as foldable",
@@ -8416,4 +8418,91 @@ fn fold_all(cx: &mut Context) {
 /// Opens every fold in the buffer.
 fn unfold_all(cx: &mut Context) {
     doc_mut!(cx.editor).folds_mut().clear();
+}
+
+/// Every foldable range in the focused document, from its `folds.scm`.
+fn foldable_in_document(editor: &Editor) -> Vec<helix_core::fold::Fold> {
+    let loader = editor.syn_loader.load();
+    let (_, doc) = current_ref!(editor);
+
+    match doc.syntax() {
+        Some(syntax) => helix_core::fold::foldable(doc.text().slice(..), syntax, &loader),
+        None => Vec::new(),
+    }
+}
+
+/// Steps the range at the cursor through folded, children, open.
+///
+/// This is Org's `TAB` on a headline. The state is read back from the folds
+/// rather than remembered: a stored cycle position goes stale the moment an
+/// edit or another fold command changes what is closed.
+fn cycle_fold(cx: &mut Context) {
+    use helix_core::fold::{children_folds, cycle_state, Cycle};
+
+    let all = foldable_in_document(cx.editor);
+    let Some(parent) = foldable_at_cursor(cx) else {
+        cx.editor.set_error("Nothing to fold here");
+        return;
+    };
+
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().clone();
+    let cursor = doc.selection(view.id).primary().cursor(text.slice(..));
+    let state = cycle_state(doc.folds(), text.slice(..), &all, parent);
+
+    match state {
+        Cycle::Open => {
+            doc.folds_mut().insert(parent);
+        }
+        Cycle::Folded => {
+            doc.folds_mut().remove_at(cursor.max(parent.start));
+            for fold in children_folds(text.slice(..), &all, parent) {
+                doc.folds_mut().insert(fold);
+            }
+        }
+        Cycle::Children => {
+            // Opening means dropping every fold the range contains, not only
+            // the ones this cycle put there: a child folded by hand belongs to
+            // the range too.
+            let inside: Vec<_> = doc
+                .folds()
+                .iter()
+                .copied()
+                .filter(|fold| fold.start >= parent.start && fold.end <= parent.end)
+                .collect();
+            for fold in inside {
+                doc.folds_mut().remove_at(fold.start);
+            }
+        }
+    }
+
+    reveal_cursors(cx.editor);
+}
+
+/// Steps the whole buffer through overview, contents, everything.
+///
+/// This is Org's `S-TAB`.
+fn cycle_fold_all(cx: &mut Context) {
+    use helix_core::fold::{contents_folds, outermost, visibility, Visibility};
+
+    let all = foldable_in_document(cx.editor);
+    if all.is_empty() {
+        cx.editor.set_error("Nothing to fold in this file");
+        return;
+    }
+
+    let (_, doc) = current!(cx.editor);
+    let text = doc.text().clone();
+    let next = match visibility(doc.folds(), &all) {
+        Visibility::ShowAll => outermost(all.iter().copied()),
+        Visibility::Overview => contents_folds(text.slice(..), &all),
+        Visibility::Contents => Vec::new(),
+    };
+
+    doc.folds_mut().clear();
+    for fold in next {
+        doc.folds_mut().insert(fold);
+    }
+
+    reveal_cursors(cx.editor);
 }

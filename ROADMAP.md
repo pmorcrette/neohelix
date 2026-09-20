@@ -72,23 +72,45 @@ and every command that counts lines.
 
 - [x] A fold model on the document: which ranges are folded, surviving edits.
 - [x] Rendering: collapsed ranges, a marker, and correct line numbers.
-- [ ] Commands and bindings, including Org's visibility cycling (`TAB` on a
+- [x] Commands and bindings, including Org's visibility cycling (`TAB` on a
       headline, `S-TAB` for the whole buffer).
 
-  `:fold`, `:unfold`, `:toggle-fold`, `:fold-all` and `:unfold-all` are
-  built. Neither the keybindings nor Org's cycling are: cycling is a third
-  state between open and closed — headline, then children, then everything —
-  and it needs somewhere to remember which one the buffer is in.
+  Seven commands, all typable and all bound under `z`, on the keys Vim uses:
+  `za` toggles, `zf` closes, `zo` opens, `zM` closes every fold, `zR` opens
+  every fold. `zc` and `zm` are upstream's view commands, so closing took
+  `zf` and `zM` — no upstream binding is moved, as Task 4.1 requires.
+
+  Cycling is `z` then tab, and the whole buffer is `z` then shift-tab. It
+  cannot be tab itself: upstream binds that to `jump_forward`. The three
+  states are Org's — the subtree hidden, then its children's headlines with
+  every body hidden, then everything — and the whole-buffer cycle is Org's
+  overview, contents, show-all.
+
+  Nothing remembers which state a range is in: it is read back from the folds
+  themselves. A stored cycle position goes stale the moment an edit or
+  another fold command changes what is closed, and there is no edit that can
+  make the folds disagree with themselves.
 
 - [x] Feed it from `folds.scm`, so every language gets it and not just Org.
 
-*Two things the editor caught that the library tests did not. A fold is asked
-for from the headline above it, which is **before** the first hidden
+*Three things the editor caught that the library tests did not. A fold is
+asked for from the headline above it, which is **before** the first hidden
 character, so a fold that could only be found at its exact start could be
-closed from a line and never opened from it again. And folding everything
-means folding to the top level: handing every nested range to a model where a
-later fold replaces the one containing it folds the file to its leaves,
-which hides almost nothing.*
+closed from a line and never opened from it again. Folding everything means
+folding to the top level: handing every nested range to a model where a later
+fold replaces the one containing it folds the file to its leaves, which hides
+almost nothing. And showing "just the children" has to hide the body as well
+as collapse the children, or the entry shows its prose while claiming to show
+only its children.*
+
+*Where this differs from Emacs, and knowingly: the three states are derived
+from the fold hierarchy `folds.scm` gives, not from Org's headline structure.
+For an ordinary outline the two agree — a section's direct children are its
+subsections. For a section whose body opens with a list or a table, that list
+counts as a child, so the "children" state collapses it instead of hiding it
+with the rest of the body. Org's own reader was not reachable to check the
+exact rule against (see Task 1.13's note), and this is the deviation to look
+at first when it is.*
 
 ### Task 1.5: Org Structure and Metadata Editing
 
@@ -912,6 +934,8 @@ killing it, but it is still one.
   - `space + n + b` -> Roam Toggle Backlinks
   - `space + m`     -> Open Magit Status
   - `space + t`     -> Open Terminal
+  - `z a` / `z f` / `z o` / `z M` / `z R` -> folding (Task 1.4)
+  - `z tab` / `z S-tab` -> Org's visibility cycling (Task 1.4)
 
   Upstream Helix already binds `space + r` (`rename_symbol`) and `space + g`
   (`changed_file_picker`), so the originally planned `space + r + f`,

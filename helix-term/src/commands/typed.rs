@@ -2357,6 +2357,8 @@ fold_command!(unfold, crate::commands::unfold);
 fold_command!(toggle_fold, crate::commands::toggle_fold);
 fold_command!(fold_all, crate::commands::fold_all);
 fold_command!(unfold_all, crate::commands::unfold_all);
+fold_command!(cycle_fold, crate::commands::cycle_fold);
+fold_command!(cycle_fold_all, crate::commands::cycle_fold_all);
 roam_buffer_command!(org_copy_subtree, crate::roam::copy_subtree);
 roam_buffer_command!(org_cut_subtree, crate::roam::cut_subtree);
 roam_buffer_command!(org_paste_subtree, crate::roam::paste_subtree);
@@ -4400,6 +4402,28 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Bring every [n/m] and [p%] cookie up to date.",
         fun: org_update_cookies,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "cycle-fold",
+        aliases: &[],
+        doc: "Step the range at the cursor through folded, children, open.",
+        fun: cycle_fold,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "cycle-fold-all",
+        aliases: &[],
+        doc: "Step the buffer through overview, contents, everything.",
+        fun: cycle_fold_all,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
