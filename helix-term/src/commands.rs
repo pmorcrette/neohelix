@@ -462,6 +462,11 @@ impl MappableCommand {
         org_table_delete_column, "Remove the table column at the cursor",
         org_table_next_cell, "Move to the next table cell",
         org_table_previous_cell, "Move to the previous table cell",
+        fold, "Fold the innermost foldable range at the cursor",
+        unfold, "Open the fold at the cursor",
+        toggle_fold, "Close the fold at the cursor, or open it",
+        fold_all, "Fold everything the language marks as foldable",
+        unfold_all, "Open every fold in the buffer",
         org_copy_subtree, "Copy the subtree at the cursor",
         org_cut_subtree, "Cut the subtree at the cursor",
         org_paste_subtree, "Paste the copied subtree at the cursor's level",
@@ -8310,4 +8315,105 @@ fn lsp_or_syntax_workspace_symbol_picker(cx: &mut Context) {
     } else {
         syntax_workspace_symbol_picker(cx);
     }
+}
+
+// ── Folding ───────────────────────────────────────────────────────────────
+
+/// The fold the cursor would open or close, from the language's `folds.scm`.
+fn foldable_at_cursor(cx: &mut Context) -> Option<helix_core::fold::Fold> {
+    let loader = cx.editor.syn_loader.load();
+    let (view, doc) = current_ref!(cx.editor);
+    let text = doc.text().slice(..);
+    let cursor = doc.selection(view.id).primary().cursor(text);
+
+    helix_core::fold::foldable_at(text, doc.syntax()?, &loader, cursor)
+}
+
+/// Moves any cursor that a fold just hid onto the fold's marker.
+///
+/// A cursor inside folded text is a cursor nobody can see, and the next
+/// keystroke would edit a line that is not on screen.
+fn reveal_cursors(editor: &mut Editor) {
+    let (view, doc) = current!(editor);
+    let text = doc.text().slice(..);
+    let folds = doc.folds().clone();
+
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        match folds
+            .at(range.cursor(text))
+            .filter(|fold| fold.hides(range.cursor(text)))
+        {
+            Some(fold) => helix_core::Range::point(fold.start),
+            None => range,
+        }
+    });
+    doc.set_selection(view.id, selection);
+}
+
+/// Folds the smallest foldable range at the cursor.
+fn fold(cx: &mut Context) {
+    let Some(fold) = foldable_at_cursor(cx) else {
+        cx.editor.set_error("Nothing to fold here");
+        return;
+    };
+
+    doc_mut!(cx.editor).folds_mut().insert(fold);
+    reveal_cursors(cx.editor);
+}
+
+/// Removes the fold the cursor's line owns, reporting whether there was one.
+fn remove_fold_at_cursor(editor: &mut Editor) -> bool {
+    let (view, doc) = current!(editor);
+    let text = doc.text().clone();
+    let cursor = doc.selection(view.id).primary().cursor(text.slice(..));
+
+    doc.folds_mut()
+        .remove_on_line(text.slice(..), cursor)
+        .is_some()
+}
+
+/// Opens the fold at the cursor.
+fn unfold(cx: &mut Context) {
+    if !remove_fold_at_cursor(cx.editor) {
+        cx.editor.set_error("No fold here");
+    }
+}
+
+/// Closes the fold at the cursor, or opens it if it is already closed.
+fn toggle_fold(cx: &mut Context) {
+    if !remove_fold_at_cursor(cx.editor) {
+        fold(cx);
+    }
+}
+
+/// Folds every range the language marks as foldable.
+fn fold_all(cx: &mut Context) {
+    let loader = cx.editor.syn_loader.load();
+    let (_, doc) = current_ref!(cx.editor);
+    let text = doc.text().slice(..);
+
+    let Some(syntax) = doc.syntax() else {
+        cx.editor.set_error("No syntax tree for this file");
+        return;
+    };
+    // Only the outermost: `insert` lets a later fold replace the one that
+    // contains it, so handing it every nested range would fold the file to
+    // its leaves — the opposite of what folding everything means.
+    let foldable = helix_core::fold::outermost(helix_core::fold::foldable(text, syntax, &loader));
+    if foldable.is_empty() {
+        cx.editor.set_error("Nothing to fold in this file");
+        return;
+    }
+
+    let doc = doc_mut!(cx.editor);
+    doc.folds_mut().clear();
+    for fold in foldable {
+        doc.folds_mut().insert(fold);
+    }
+    reveal_cursors(cx.editor);
+}
+
+/// Opens every fold in the buffer.
+fn unfold_all(cx: &mut Context) {
+    doc_mut!(cx.editor).folds_mut().clear();
 }

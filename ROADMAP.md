@@ -13,15 +13,15 @@ You are developing a custom fork of Helix in Rust. The goal is to integrate:
 ### Task 1.1: Tree-sitter Org Integration
 - [x] Update `languages.toml` in Helix to include `tree-sitter-org`.
 - [x] Add queries for highlights (`highlights.scm`) and folds (`folds.scm`).
-- [ ] Verify that `.org` files parse correctly and support section folding.
+- [x] Verify that `.org` files parse correctly and support section folding.
 
-  Parsing is verified; `folds.scm` is written and unused. **Blocked on Task
-  1.4**: Helix has no folding for the queries to drive.
+  Both true since Task 1.4: `folds.scm` drives the fold commands, and a
+  section collapses onto its headline.
 
 
-  The folding half of this item cannot be finished here: Helix has no folding
-  at all, and nothing reads a `folds.scm`. The query is written and correct,
-  but inert until Task 1.4 gives the editor somewhere to use it.
+  The folding half of this item could not be finished here: at the time
+  Helix had no folding at all and nothing read a `folds.scm`. Task 1.4 gave
+  the editor somewhere to use it, and this query is what drives it.
 
 ### Task 1.2: Internal Crate `helix-roam` & Data Model
 - [x] Create `crates/helix-roam` in the workspace.
@@ -58,14 +58,37 @@ Folding is an editor-wide feature, not an Org one, which is what makes this
 expensive: it touches the view, the rendering of line numbers and gutters,
 and every command that counts lines.
 
-- [ ] Decide whether to implement folding in the fork or wait for upstream.
+- [x] Decide whether to implement folding in the fork or wait for upstream.
       Upstream Helix has wanted it for years; carrying our own is a permanent
       merge cost on the same files as Phase 5.
-- [ ] A fold model on the document: which ranges are folded, surviving edits.
-- [ ] Rendering: collapsed ranges, a marker, and correct line numbers.
+
+  Decided: in the fork, and in `helix-core` rather than the Org layer. The
+  cost feared above is not where it looked. The gutter is a decoration fed
+  `LinePos { doc_line }` straight from the document formatter, every
+  char-to-visual mapping in `position.rs` runs through that same formatter,
+  and `View::text_annotations` is the single place all eleven callers build
+  annotations from. Teaching the formatter to skip a range is one change, and
+  line numbers, scrolling and cursor movement follow from it.
+
+- [x] A fold model on the document: which ranges are folded, surviving edits.
+- [x] Rendering: collapsed ranges, a marker, and correct line numbers.
 - [ ] Commands and bindings, including Org's visibility cycling (`TAB` on a
       headline, `S-TAB` for the whole buffer).
-- [ ] Feed it from `folds.scm`, so every language gets it and not just Org.
+
+  `:fold`, `:unfold`, `:toggle-fold`, `:fold-all` and `:unfold-all` are
+  built. Neither the keybindings nor Org's cycling are: cycling is a third
+  state between open and closed — headline, then children, then everything —
+  and it needs somewhere to remember which one the buffer is in.
+
+- [x] Feed it from `folds.scm`, so every language gets it and not just Org.
+
+*Two things the editor caught that the library tests did not. A fold is asked
+for from the headline above it, which is **before** the first hidden
+character, so a fold that could only be found at its exact start could be
+closed from a line and never opened from it again. And folding everything
+means folding to the top level: handing every nested range to a model where a
+later fold replaces the one containing it folds the file to its leaves,
+which hides almost nothing.*
 
 ### Task 1.5: Org Structure and Metadata Editing
 
@@ -200,16 +223,20 @@ happened to an entry.
 - [x] Effort estimates, and incrementing one.
 - [x] Property inheritance, which changes what a query over the graph returns
       and so belongs with the indexer rather than only the UI.
-- [ ] Insert a drawer, and fold drawers by default the way Org does. The
-      folding half is blocked on Task 1.4 for the same reason section folding
-      is: Helix has none.
+- [ ] Insert a drawer, and fold drawers by default the way Org does.
+      Inserting is built. Folding is no longer blocked — Task 1.4 landed, and
+      `folds.scm` already marks `(property_drawer)` and `(drawer)` — but
+      *by default* means folding them when a file opens, which needs the
+      `#+STARTUP:` options of Task 1.21 to say so.
 - [x] Logging: record state changes and timestamps into `:LOGBOOK:`, and add a
       dated note to an entry.
 
 ### Task 1.12: Sparse Trees, Narrowing and Structural Motion
 
 Org's way of reading a large file: hide everything that does not match, or
-narrow to one part of it. The fork has neither, and both depend on Task 1.4.
+narrow to one part of it. The fork has neither. Task 1.4 has since landed,
+so the folding these need exists; what is missing is choosing *which* ranges
+to fold from a query, and a narrowing that is not folding at all.
 
 - [ ] Sparse trees: show only the entries matching a regexp, a TODO state, a
       tag or a property query, with the rest folded away.
@@ -229,8 +256,8 @@ narrow to one part of it. The fork has neither, and both depend on Task 1.4.
 - [x] Clone a subtree a number of times, shifting its timestamps — the standard
       way of creating a recurring set of entries.
 - [ ] Copy only the visible text of a region, so a folded outline can be shared
-      as an outline. **Blocked on Task 1.4**: with no folding there is no such
-      thing as visible text here, and every region is already its own text.
+      as an outline. Unblocked by Task 1.4: there is now such a thing as
+      visible text, and `Folds::hidden` says which characters are not.
 - [x] Sort entries, list items or table rows by a chosen key.
 - [x] Dynamic blocks: a block whose contents are regenerated by a named
       function, and the command that refreshes it. Column view and clock
@@ -401,7 +428,8 @@ produces a wrong index that nothing reports.
       not parsed as content.
 - [ ] `#+STARTUP:` folding and visibility options (`overview`, `content`,
       `showeverything`, `hidedrawers`, `hideblocks`, …), which is how a file
-      says how it wants to open. These feed Task 1.4 and are useless before it.
+      says how it wants to open. Task 1.4 built what these drive; the parser
+      already collects them, and nothing applies them yet.
 - [ ] `#+STARTUP:` logging options (`logdone`, `logdrawer`, `logrepeat`, …),
       which Task 1.11 needs to know what to record.
 - [ ] The export and citation keywords — `#+OPTIONS:`, `#+INCLUDE:`,

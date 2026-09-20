@@ -12,7 +12,8 @@
 
 use std::ops::Range;
 
-use crate::{Assoc, ChangeSet};
+use crate::syntax::Loader;
+use crate::{Assoc, ChangeSet, RopeSlice, Syntax};
 
 /// A stretch of text the display leaves out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -120,6 +121,35 @@ impl Folds {
         self.at(char_idx).is_some_and(|fold| fold.hides(char_idx))
     }
 
+    /// The fold the cursor's line owns: one covering `char_idx`, or one whose
+    /// marker sits on the same line.
+    ///
+    /// A fold is asked for from the headline above it, which is *before* the
+    /// first hidden character, so it has to be findable from there. Matching
+    /// only the exact position would let a fold be closed from a line and
+    /// never opened from it again.
+    pub fn on_line(&self, text: RopeSlice, char_idx: usize) -> Option<Fold> {
+        if let Some(fold) = self.at(char_idx) {
+            return Some(fold);
+        }
+
+        let line = text.char_to_line(char_idx.min(text.len_chars()));
+        let from = text.line_to_char(line);
+        let to = text.line_to_char((line + 1).min(text.len_lines()));
+
+        self.folds
+            .iter()
+            .copied()
+            .find(|fold| (from..to).contains(&fold.start))
+    }
+
+    /// Removes the fold the cursor's line owns, returning it.
+    pub fn remove_on_line(&mut self, text: RopeSlice, char_idx: usize) -> Option<Fold> {
+        let fold = self.on_line(text, char_idx)?;
+        let at = self.folds.iter().position(|other| *other == fold)?;
+        Some(self.folds.remove(at))
+    }
+
     /// Removes the fold covering `char_idx`, returning it.
     pub fn remove_at(&mut self, char_idx: usize) -> Option<Fold> {
         let fold = self.at(char_idx)?;
@@ -154,6 +184,101 @@ impl FromIterator<Fold> for Folds {
         }
         folds
     }
+}
+
+/// Turns a syntax node's byte range into the fold that hides it.
+///
+/// The node's first line stays visible and the newline that ends the node
+/// stays out of the fold. Both matter: a folded section whose headline
+/// vanished would be unopenable, and a fold that swallowed its final newline
+/// would pull the line after it up onto the marker.
+fn fold_for(text: RopeSlice, start_byte: usize, end_byte: usize) -> Option<Fold> {
+    let last = text.len_chars();
+    let start = text.byte_to_char(start_byte.min(text.len_bytes()));
+    let end = text.byte_to_char(end_byte.min(text.len_bytes())).min(last);
+
+    let first_line = text.char_to_line(start);
+    if first_line + 1 >= text.len_lines() {
+        return None;
+    }
+    // The newline ending the first line, which is where the marker goes.
+    let from = text.line_to_char(first_line + 1) - 1;
+
+    let to = if end > from && text.char(end - 1) == '\n' {
+        end - 1
+    } else {
+        end
+    };
+
+    (from < to).then(|| Fold::new(from, to))
+}
+
+/// The outermost of `folds`, dropping every fold another one contains.
+///
+/// What "fold everything" means is folding the file to its top level; folding
+/// it to its leaves would hide almost nothing, since a leaf's marker sits
+/// inside its parent anyway.
+pub fn outermost(folds: impl IntoIterator<Item = Fold>) -> Vec<Fold> {
+    let mut sorted: Vec<Fold> = folds.into_iter().collect();
+    sorted.sort_unstable_by_key(|fold| (fold.start, std::cmp::Reverse(fold.end)));
+
+    let mut kept: Vec<Fold> = Vec::new();
+    for fold in sorted {
+        if kept.last().is_none_or(|outer| fold.start >= outer.end) {
+            kept.push(fold);
+        }
+    }
+    kept
+}
+
+/// Every range the language's `folds.scm` marks, outermost first.
+///
+/// A language with no `folds.scm`, or one whose grammar is not built, simply
+/// has nothing to fold; that is not an error and not worth a message.
+pub fn foldable(text: RopeSlice, syntax: &Syntax, loader: &Loader) -> Vec<Fold> {
+    let layer = syntax.layer(syntax.root_layer());
+    let Some(query) = loader.fold_query(layer.language) else {
+        return Vec::new();
+    };
+    let root = syntax.tree().root_node();
+    let Some(nodes) = query.capture_nodes("fold", &root, text) else {
+        return Vec::new();
+    };
+
+    let mut folds: Vec<Fold> = nodes
+        .flat_map(|node| {
+            let range = node.byte_range();
+            fold_for(text, range.start, range.end)
+        })
+        .collect();
+
+    folds.sort_unstable();
+    folds.dedup();
+    folds
+}
+
+/// The smallest foldable range whose marker would sit at or after `char_idx`'s
+/// line, and which covers the cursor.
+///
+/// Smallest rather than outermost, so folding twice on a headline folds the
+/// section and not the file.
+pub fn foldable_at(
+    text: RopeSlice,
+    syntax: &Syntax,
+    loader: &Loader,
+    char_idx: usize,
+) -> Option<Fold> {
+    let line = text.char_to_line(char_idx.min(text.len_chars()));
+
+    foldable(text, syntax, loader)
+        .into_iter()
+        .filter(|fold| {
+            // The cursor is inside the range, counting the line the marker
+            // would sit on: folding is asked for from the headline, which is
+            // just before the first hidden character.
+            text.char_to_line(fold.start) <= line && line < text.char_to_line(fold.end) + 1
+        })
+        .min_by_key(|fold| fold.end - fold.start)
 }
 
 #[cfg(test)]
@@ -228,6 +353,42 @@ mod tests {
         assert_eq!(folds.remove_at(9), Some(Fold::new(5, 15)));
         assert_eq!(ranges(&folds), [(20, 30)]);
         assert_eq!(folds.remove_at(9), None);
+    }
+
+    #[test]
+    fn a_fold_is_found_from_the_line_it_was_asked_for() {
+        let text = Rope::from("* One\nbody\nmore\n* Two\n");
+        let folds = folds(&[(5, 15)]);
+
+        // The cursor sits on the headline, before the first hidden character.
+        // Matching only the exact position would let a fold be closed from a
+        // line and never opened from it again.
+        assert_eq!(folds.at(0), None);
+        assert_eq!(folds.on_line(text.slice(..), 0), Some(Fold::new(5, 15)));
+        assert_eq!(folds.on_line(text.slice(..), 3), Some(Fold::new(5, 15)));
+        assert_eq!(folds.on_line(text.slice(..), 16), None);
+    }
+
+    #[test]
+    fn removing_from_the_headline_opens_the_fold_below_it() {
+        let text = Rope::from("* One\nbody\nmore\n* Two\n");
+        let mut folds = folds(&[(5, 15)]);
+
+        assert_eq!(
+            folds.remove_on_line(text.slice(..), 0),
+            Some(Fold::new(5, 15))
+        );
+        assert!(folds.is_empty());
+    }
+
+    #[test]
+    fn folding_everything_means_the_top_level_not_the_leaves() {
+        // A section and the subsection inside it: keeping both would fold the
+        // file to its leaves, and the inner marker is hidden by the outer fold
+        // anyway.
+        let all = [Fold::new(5, 40), Fold::new(20, 35), Fold::new(50, 60)];
+
+        assert_eq!(outermost(all), [Fold::new(5, 40), Fold::new(50, 60)]);
     }
 
     #[test]

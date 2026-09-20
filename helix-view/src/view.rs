@@ -462,6 +462,10 @@ impl View {
     ) -> TextAnnotations<'a> {
         let mut text_annotations = TextAnnotations::default();
 
+        // Folds go on first: everything below positions itself against the
+        // document, and a fold changes what the document looks like.
+        text_annotations.add_folds(doc.folds());
+
         if let Some(labels) = doc.jump_labels.get(&self.id) {
             let style = theme.and_then(|t| t.find_highlight("ui.virtual.jump-label"));
             text_annotations.add_overlay(labels, style);

@@ -36,6 +36,7 @@ use std::time::SystemTime;
 use helix_core::{
     editor_config::EditorConfig,
     encoding,
+    fold::Folds,
     history::{History, State, UndoKind},
     indent::{auto_detect_indent_style, IndentStyle},
     line_ending::auto_detect_line_ending,
@@ -151,6 +152,14 @@ pub struct Document {
     pub(crate) inlay_hints: HashMap<ViewId, DocumentInlayHints>,
     /// Jump label overlays for each view.
     pub(crate) jump_labels: HashMap<ViewId, Vec<Overlay>>,
+
+    /// Ranges hidden from the display.
+    ///
+    /// Per document rather than per view: Org treats visibility as a property
+    /// of the buffer, and a split showing the same file shows it folded the
+    /// same way. Selections are per view because two views have two cursors;
+    /// two views do not have two outlines.
+    folds: Folds,
     /// LSP document highlights for each view, stored as char ranges.
     pub(crate) document_highlights: HashMap<ViewId, DocumentHighlights>,
     /// LSP code action hints for each view.
@@ -765,6 +774,7 @@ impl Document {
             focused_at: std::time::Instant::now(),
             readonly: false,
             jump_labels: HashMap::new(),
+            folds: Folds::new(),
             document_highlights: HashMap::new(),
             code_action_hints: HashSet::new(),
             color_swatches: None,
@@ -1488,6 +1498,11 @@ impl Document {
                 // Ensure all selections across all views still adhere to invariants.
                 .ensure_invariants(self.text.slice(..));
         }
+
+        // Folds move with the text they hide, exactly as the selections above
+        // do, so an edit above a folded section does not leave it hiding the
+        // wrong lines.
+        self.folds.map(transaction.changes());
 
         for view_data in self.view_data.values_mut() {
             view_data.view_position.anchor = transaction
@@ -2413,6 +2428,15 @@ impl Document {
     /// Set the inlay hints for this document and `view_id`.
     pub fn set_inlay_hints(&mut self, view_id: ViewId, inlay_hints: DocumentInlayHints) {
         self.inlay_hints.insert(view_id, inlay_hints);
+    }
+
+    /// The ranges this document hides.
+    pub fn folds(&self) -> &Folds {
+        &self.folds
+    }
+
+    pub fn folds_mut(&mut self) -> &mut Folds {
+        &mut self.folds
     }
 
     pub fn set_jump_labels(&mut self, view_id: ViewId, labels: Vec<Overlay>) {

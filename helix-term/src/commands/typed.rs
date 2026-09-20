@@ -2239,6 +2239,30 @@ fn roam_node_find(
     Ok(())
 }
 
+/// Runs a folding command, which needs the whole `Context`.
+macro_rules! fold_command {
+    ($name:ident, $call:path) => {
+        fn $name(
+            cx: &mut compositor::Context,
+            _args: Args,
+            event: PromptEvent,
+        ) -> anyhow::Result<()> {
+            if event == PromptEvent::Validate {
+                let mut cx = Context {
+                    register: None,
+                    count: None,
+                    editor: cx.editor,
+                    callback: Vec::new(),
+                    on_next_key_callback: None,
+                    jobs: cx.jobs,
+                };
+                $call(&mut cx);
+            }
+            Ok(())
+        }
+    };
+}
+
 macro_rules! roam_buffer_command {
     ($name:ident, $call:path) => {
         fn $name(
@@ -2328,6 +2352,11 @@ roam_buffer_command!(org_table_insert_column, crate::roam::table_insert_column);
 roam_buffer_command!(org_table_delete_column, crate::roam::table_delete_column);
 roam_buffer_command!(org_table_next_cell, crate::roam::table_next_cell);
 roam_buffer_command!(org_table_previous_cell, crate::roam::table_previous_cell);
+fold_command!(fold, crate::commands::fold);
+fold_command!(unfold, crate::commands::unfold);
+fold_command!(toggle_fold, crate::commands::toggle_fold);
+fold_command!(fold_all, crate::commands::fold_all);
+fold_command!(unfold_all, crate::commands::unfold_all);
 roam_buffer_command!(org_copy_subtree, crate::roam::copy_subtree);
 roam_buffer_command!(org_cut_subtree, crate::roam::cut_subtree);
 roam_buffer_command!(org_paste_subtree, crate::roam::paste_subtree);
@@ -4371,6 +4400,61 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Bring every [n/m] and [p%] cookie up to date.",
         fun: org_update_cookies,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "fold",
+        aliases: &[],
+        doc: "Fold the innermost foldable range at the cursor.",
+        fun: fold,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "unfold",
+        aliases: &[],
+        doc: "Open the fold at the cursor.",
+        fun: unfold,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "toggle-fold",
+        aliases: &[],
+        doc: "Close the fold at the cursor, or open it.",
+        fun: toggle_fold,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "fold-all",
+        aliases: &[],
+        doc: "Fold everything the language marks as foldable.",
+        fun: fold_all,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "unfold-all",
+        aliases: &[],
+        doc: "Open every fold in the buffer.",
+        fun: unfold_all,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
