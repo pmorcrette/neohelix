@@ -2360,6 +2360,10 @@ fold_command!(unfold_all, crate::commands::unfold_all);
 fold_command!(narrow_to_selection, crate::commands::narrow_to_selection);
 fold_command!(cycle_fold, crate::commands::cycle_fold);
 fold_command!(cycle_fold_all, crate::commands::cycle_fold_all);
+roam_buffer_command!(roam_backlink_counts, crate::roam::toggle_backlink_counts);
+roam_buffer_command!(roam_pin_node, crate::roam::pin_node);
+roam_buffer_command!(roam_unpin_node, crate::roam::unpin_node);
+roam_buffer_command!(roam_diagnose, crate::roam::diagnose_node);
 roam_buffer_command!(org_footnote_new, crate::roam::footnote_new);
 roam_buffer_command!(org_footnote_goto, crate::roam::footnote_goto);
 roam_buffer_command!(org_footnote_renumber, crate::roam::footnote_renumber);
@@ -4522,6 +4526,50 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Open every fold in the buffer.",
         fun: unfold_all,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-backlink-counts",
+        aliases: &["roam-counts"],
+        doc: "Show each headline's backlink count beside it.",
+        fun: roam_backlink_counts,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-pin",
+        aliases: &[],
+        doc: "Pin the Roam panel to the node at the cursor.",
+        fun: roam_pin_node,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-unpin",
+        aliases: &[],
+        doc: "Let the Roam panel follow the cursor again.",
+        fun: roam_unpin_node,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-diagnose",
+        aliases: &["roam-doctor"],
+        doc: "Report what the index believes about the node at the cursor.",
+        fun: roam_diagnose,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

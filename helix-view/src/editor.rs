@@ -516,6 +516,15 @@ impl Config {
     }
 }
 
+/// What the panel shows in its unlinked-references section.
+#[derive(Debug, Clone)]
+pub struct RoamUnlinked {
+    /// The node the references are to.
+    pub node: helix_roam::Uuid,
+    /// The matching line, and `path:line` of where it is.
+    pub entries: Vec<(String, String)>,
+}
+
 /// A commit waiting on the message being written in a buffer.
 ///
 /// Plain data rather than a git type, so the editor's state does not depend on
@@ -1472,6 +1481,21 @@ pub struct Editor {
     /// wants it, the way Org's restriction lock does.
     pub agenda_restriction: Option<PathBuf>,
 
+    /// The node the Roam panel is pinned to, beside the one it follows.
+    ///
+    /// Comparing two nodes needs both at once, and the panel shows them in
+    /// one column rather than two: a second panel would have to know whether
+    /// the first one is open to place itself, and components cannot see each
+    /// other.
+    pub roam_pinned: Option<helix_roam::Uuid>,
+
+    /// Unlinked references the panel is showing, and whose node they are for.
+    ///
+    /// Cached rather than computed per frame: finding them reads every file
+    /// in the notes directory, which is not something to do sixty times a
+    /// second. A command fills this; the panel only displays it.
+    pub roam_unlinked: Option<RoamUnlinked>,
+
     /// The last subtree cut or copied, waiting to be pasted.
     ///
     /// Kept apart from the registers because a subtree is not lines: pasting
@@ -1623,6 +1647,8 @@ impl Editor {
             workspace_trust,
             roam: Arc::default(),
             terminal: None,
+            roam_pinned: None,
+            roam_unlinked: None,
             org_clip: None,
             pending_commit: None,
             agenda_restriction: None,

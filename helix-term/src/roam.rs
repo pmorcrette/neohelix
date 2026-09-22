@@ -2402,3 +2402,214 @@ pub fn follow_citation(editor: &mut Editor) {
 
     editor.set_error(format!("No bibliography here defines {key}"));
 }
+
+// ── The Roam panel: pinning, unlinked refs and diagnosis ──────────────────
+
+/// The node the cursor is in, by the buffer rather than by the index.
+///
+/// The buffer is usually ahead of the index — a heading given an `:ID:` a
+/// moment ago is not a node until the file is saved — so the id comes from
+/// the text and only then is looked up.
+fn node_at_cursor(editor: &Editor) -> Option<(helix_roam::Uuid, String)> {
+    let (text, line) = text_and_line(editor);
+    helix_roam::restructure::entry_at(&text, line)
+}
+
+/// Pins the panel to the node at the cursor.
+pub fn pin_node(editor: &mut Editor) {
+    let Some((id, title)) = node_at_cursor(editor) else {
+        editor.set_error("No node at the cursor; give it an :ID: first");
+        return;
+    };
+
+    editor.roam_pinned = Some(id);
+    editor.set_status(format!("Pinned {title}"));
+}
+
+/// Lets the panel go back to following the cursor alone.
+pub fn unpin_node(editor: &mut Editor) {
+    match editor.roam_pinned.take() {
+        Some(_) => editor.set_status("Unpinned"),
+        None => editor.set_status("Nothing was pinned"),
+    }
+}
+
+/// Puts the unlinked references of the node at the cursor into the panel.
+pub fn cache_unlinked(editor: &mut Editor, found: &[Unlinked]) {
+    let Some((id, _)) = node_at_cursor(editor) else {
+        return;
+    };
+
+    editor.roam_unlinked = Some(helix_view::editor::RoamUnlinked {
+        node: id,
+        entries: found
+            .iter()
+            .map(|reference| {
+                let path = helix_stdx::path::get_relative_path(&reference.path);
+                (
+                    reference.text.trim().to_string(),
+                    format!("{}:{}", path.display(), reference.line + 1),
+                )
+            })
+            .collect(),
+    });
+}
+
+/// Reports what the index believes about the node at the cursor.
+///
+/// The only way to tell a parser bug from a malformed drawer: the buffer says
+/// one thing, the index says another, and until you can see both you are
+/// guessing which one is wrong.
+pub fn diagnose_node(editor: &mut Editor) {
+    let Some((id, title)) = node_at_cursor(editor) else {
+        editor.set_error("No node at the cursor; give it an :ID: first");
+        return;
+    };
+
+    let modified = doc!(editor).is_modified();
+    let graph = editor.roam.read();
+    let Some(node) = graph.get_node(&id) else {
+        drop(graph);
+        let why = if modified {
+            "this buffer has unsaved changes, and the index reads files"
+        } else {
+            "run :roam-reindex, or check the :ID: drawer"
+        };
+        editor.set_error(format!("The index has no node {id}: {why}"));
+        return;
+    };
+
+    let none = "—".to_string();
+    let join = |values: &[String]| {
+        if values.is_empty() {
+            none.clone()
+        } else {
+            values.join(", ")
+        }
+    };
+
+    let backlinks = graph.get_backlinks(&id);
+    let ids = backlinks.iter().filter(|(_, link)| link.is_id()).count();
+    let body = vec![
+        ("id", id.to_string()),
+        ("title in buffer", title),
+        ("title in index", node.title.clone()),
+        ("file", node.file_path.display().to_string()),
+        ("line", (node.line + 1).to_string()),
+        ("level", node.level.to_string()),
+        ("aliases", join(&node.aliases)),
+        ("tags", join(&node.tags)),
+        ("outline path", join(&node.outline_path)),
+        (
+            "backlinks",
+            format!("{ids} id, {} ref", backlinks.len() - ids),
+        ),
+        ("links out", graph.get_forward_links(&id).len().to_string()),
+        (
+            "properties",
+            node.properties
+                .iter()
+                .map(|(key, _)| key.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+        (
+            "buffer",
+            if modified {
+                "modified since the index last read it".to_string()
+            } else {
+                "matches what the index read".to_string()
+            },
+        ),
+    ];
+    drop(graph);
+
+    editor.autoinfo = Some(helix_view::info::Info::new("Node at the cursor", &body));
+}
+
+/// Every node in the buffer, as the headline it belongs to rather than the
+/// `:ID:` line that declares it.
+///
+/// One pass: the index knows where a node's `:ID:` is, but a count drawn on
+/// the drawer line would sit under the headline it is about.
+fn nodes_by_headline(text: &str) -> Vec<(usize, helix_roam::Uuid)> {
+    let mut found = Vec::new();
+    let mut headline = None;
+
+    for (line, raw) in text.lines().enumerate() {
+        if raw.starts_with('*') && raw.trim_start_matches('*').starts_with([' ', '\t']) {
+            headline = Some(line);
+            continue;
+        }
+
+        let trimmed = raw.trim();
+        let Some(rest) = trimmed
+            .strip_prefix(":ID:")
+            .or_else(|| trimmed.strip_prefix(":id:"))
+        else {
+            continue;
+        };
+        if let Ok(id) = rest.trim().parse::<helix_roam::Uuid>() {
+            // A file-level `:ID:` sits above every headline and belongs to
+            // the file, which has no headline to be drawn beside.
+            if let Some(at) = headline {
+                found.push((at, id));
+            }
+        }
+    }
+
+    found
+}
+
+/// Draws each headline's backlink count beside it, or clears them if shown.
+///
+/// Toggling rather than always on: the count is worth seeing while writing
+/// about how notes connect, and noise the rest of the time.
+///
+/// What is drawn is a snapshot, taken each time the counts are switched on.
+/// They do not follow the index: re-indexing is asynchronous, so a count that
+/// updated itself would need an event the editor does not raise, and reading
+/// the graph on every frame to find out costs a lock and a scan of the buffer
+/// sixty times a second. Switching them off and on again re-reads.
+pub fn toggle_backlink_counts(editor: &mut Editor) {
+    if !doc!(editor).roam_counts.is_empty() {
+        doc_mut!(editor).roam_counts.clear();
+        editor.set_status("Backlink counts off");
+        return;
+    }
+
+    refresh_backlink_counts(editor);
+    if doc!(editor).roam_counts.is_empty() {
+        editor.set_status("No node in this buffer has a backlink");
+    } else {
+        editor.set_status("Backlink counts on");
+    }
+}
+
+/// Recomputes the counts the buffer is already showing.
+pub fn refresh_backlink_counts(editor: &mut Editor) {
+    let text = doc!(editor).text().clone();
+    let nodes = nodes_by_headline(&text.to_string());
+
+    let counts: Vec<_> = {
+        let graph = editor.roam.read();
+        nodes
+            .into_iter()
+            .filter_map(|(line, id)| {
+                let count = graph.get_backlinks(&id).len();
+                if count == 0 || line + 1 >= text.len_lines() {
+                    return None;
+                }
+                // At the line's end, before its newline, so the count reads as
+                // part of the headline rather than as the next line's start.
+                let at = text.line_to_char(line + 1) - 1;
+                Some(helix_core::text_annotations::InlineAnnotation::new(
+                    at,
+                    format!(" ←{count}"),
+                ))
+            })
+            .collect()
+    };
+
+    doc_mut!(editor).roam_counts = counts;
+}

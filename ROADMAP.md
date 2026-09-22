@@ -465,20 +465,48 @@ answer what links to what and nothing else.
 
 ### Task 1.19: The Rest of the Org-Roam Buffer
 
-The panel shows backlinks. Upstream's buffer has three sections, and two of
-them are missing.
+The panel showed backlinks in one list. It now has sections.
 
-- [ ] A reflinks section: nodes that reach this one through a `:ROAM_REFS:`
+- [x] A reflinks section: nodes that reach this one through a `:ROAM_REFS:`
       key rather than through an `id:` link. The graph already resolves refs,
       so this is the display half of something that exists.
-- [ ] The unlinked-references section, already filed in Task 1.8, belongs to
+
+  Less than it looked: the panel already drew `⇢` beside a ref link and `→`
+  beside an `id:` one, so the two were distinguished and merely mixed. What
+  was missing was the heading that separates them.
+
+- [x] The unlinked-references section, already filed in Task 1.8, belongs to
       this same buffer and should share its rendering.
-- [ ] A dedicated buffer pinned to a chosen node, alongside the one that
+
+  Filled by the command rather than by the panel: finding unlinked references
+  reads every file in the notes directory, which is not a thing to do sixty
+  times a second. The section says which command fills it while it is empty,
+  and the cache is tied to the node it was computed for — showing another
+  node's references under this one's heading would be a lie.
+
+- [x] A dedicated buffer pinned to a chosen node, alongside the one that
       follows the cursor. Comparing two nodes needs both.
-- [ ] An inline overlay showing a node's backlink count next to its headline,
+
+  One panel showing both rather than two panels. Two components cannot see
+  each other, so a second panel would have no way to know whether the first
+  is open and where to place itself; the pinned node's sections simply go
+  above the current one's.
+
+- [x] An inline overlay showing a node's backlink count next to its headline,
       so the graph is visible while writing rather than only in a panel.
-- [ ] Diagnose the node at point: what the index believes about it, which is
+
+  A snapshot, taken when the counts are switched on. They do not follow the
+  index: re-indexing is asynchronous, so a count that updated itself would
+  need an event the editor does not raise, and reading the graph every frame
+  to find out costs a lock and a scan of the buffer sixty times a second.
+
+- [x] Diagnose the node at point: what the index believes about it, which is
       the only way to tell a parser bug from a malformed drawer.
+
+  It reports the title twice, from the buffer and from the index, and says
+  whether the buffer has changed since the index last read it — which is the
+  answer most of the time, and the one that stops the hunt for a parser bug
+  that is not there.
 
 ### Task 1.20: Graph Visualisation and Export
 

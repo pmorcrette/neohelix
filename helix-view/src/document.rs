@@ -153,6 +153,13 @@ pub struct Document {
     /// Jump label overlays for each view.
     pub(crate) jump_labels: HashMap<ViewId, Vec<Overlay>>,
 
+    /// Backlink counts drawn beside the headlines that have them.
+    ///
+    /// Stored rather than computed while rendering, like the inlay hints
+    /// above: the annotations are built from a `&Document`, and the graph
+    /// lives on the editor. A command fills these; a re-index refreshes them.
+    pub roam_counts: Vec<helix_core::text_annotations::InlineAnnotation>,
+
     /// Ranges hidden from the display.
     ///
     /// Per document rather than per view: Org treats visibility as a property
@@ -774,6 +781,7 @@ impl Document {
             focused_at: std::time::Instant::now(),
             readonly: false,
             jump_labels: HashMap::new(),
+            roam_counts: Vec::new(),
             folds: Folds::new(),
             document_highlights: HashMap::new(),
             code_action_hints: HashSet::new(),

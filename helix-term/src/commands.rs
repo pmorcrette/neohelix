@@ -470,6 +470,10 @@ impl MappableCommand {
         toggle_fold, "Close the fold at the cursor, or open it",
         fold_all, "Fold everything the language marks as foldable",
         unfold_all, "Open every fold in the buffer",
+        roam_backlink_counts, "Show each headline's backlink count beside it",
+        roam_pin_node, "Pin the Roam panel to the node at the cursor",
+        roam_unpin_node, "Let the Roam panel follow the cursor again",
+        roam_diagnose, "Report what the index believes about the node at the cursor",
         org_emphasis, "Toggle an emphasis marker on the selection",
         org_insert_block, "Insert a structure block, wrapping the selection",
         org_footnote_new, "Add a footnote and go to where its text goes",
@@ -3678,8 +3682,8 @@ fn roam_node_find(cx: &mut Context) {
 
 /// Shows or hides the backlinks panel, returning whether it is now shown.
 pub fn toggle_roam_backlinks(compositor: &mut crate::compositor::Compositor) -> bool {
-    if compositor.remove(ui::roam::RoamBacklinks::ID).is_none() {
-        compositor.push(Box::new(ui::roam::RoamBacklinks));
+    if compositor.remove(ui::roam::RoamPanel::ID).is_none() {
+        compositor.push(Box::new(ui::roam::RoamPanel));
         true
     } else {
         false
@@ -4445,6 +4449,22 @@ fn org_footnote_renumber(cx: &mut Context) {
     crate::roam::footnote_renumber(cx.editor);
 }
 
+fn roam_backlink_counts(cx: &mut Context) {
+    crate::roam::toggle_backlink_counts(cx.editor);
+}
+
+fn roam_pin_node(cx: &mut Context) {
+    crate::roam::pin_node(cx.editor);
+}
+
+fn roam_unpin_node(cx: &mut Context) {
+    crate::roam::unpin_node(cx.editor);
+}
+
+fn roam_diagnose(cx: &mut Context) {
+    crate::roam::diagnose_node(cx.editor);
+}
+
 fn org_agenda_restrict(cx: &mut Context) {
     crate::roam::agenda_restrict_to_file(cx.editor);
 }
@@ -4580,6 +4600,11 @@ fn roam_capture(cx: &mut Context) {
 /// Lists the places the node at the cursor is named without being linked.
 pub fn roam_unlinked_picker(editor: &mut Editor) -> Option<Box<dyn Component>> {
     let found = crate::roam::unlinked_references(editor);
+    // The panel shows them too, and this scan is what pays for them: it reads
+    // every file in the notes directory, so it happens on demand and the
+    // result is kept rather than recomputed per frame.
+    crate::roam::cache_unlinked(editor, &found);
+
     if found.is_empty() {
         return None;
     }

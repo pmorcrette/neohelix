@@ -466,6 +466,11 @@ impl View {
         // document, and a fold changes what the document looks like.
         text_annotations.add_folds(doc.folds());
 
+        if !doc.roam_counts.is_empty() {
+            let style = theme.and_then(|t| t.find_highlight("ui.virtual.inlay-hint"));
+            text_annotations.add_inline_annotations(&doc.roam_counts, style);
+        }
+
         if let Some(labels) = doc.jump_labels.get(&self.id) {
             let style = theme.and_then(|t| t.find_highlight("ui.virtual.jump-label"));
             text_annotations.add_overlay(labels, style);
