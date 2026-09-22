@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::EdgeRef;
@@ -39,6 +39,13 @@ pub struct RoamGraph {
     /// A link whose target is not an `[[id:…]]` resolves through this map, so
     /// citing a node's external identifier produces a [`Link::Ref`] edge.
     refs: HashMap<String, Uuid>,
+    /// Where an `:ID:` was last seen, for ids the index does not own.
+    ///
+    /// The graph knows the files it scanned. An `id:` link into a file
+    /// outside the notes directory resolves to nothing, however real the
+    /// target is — so every `.org` file the editor opens leaves its ids here,
+    /// and a link that the nodes cannot answer is asked of this.
+    locations: HashMap<Uuid, PathBuf>,
 }
 
 impl RoamGraph {
@@ -154,6 +161,11 @@ impl RoamGraph {
             self.remove_node(id);
         }
 
+        // Locations pointing at this file go with its nodes: the file has
+        // just been re-read, and whatever it no longer declares is no longer
+        // there to be found.
+        self.locations.retain(|_, seen| seen != path);
+
         // Links out of the removed nodes must not linger as pending work.
         self.pending
             .retain(|(source, _, _)| self.indices.contains_key(source));
@@ -200,6 +212,40 @@ impl RoamGraph {
     /// The nodes matching `query`, in insertion order.
     pub fn query(&self, query: &NodeQuery) -> Vec<&Node> {
         self.nodes().filter(|node| query.matches(node)).collect()
+    }
+
+    /// Records that `id` was seen in `path`.
+    pub fn register_location(&mut self, id: Uuid, path: impl Into<PathBuf>) {
+        self.locations.insert(id, path.into());
+    }
+
+    /// The file an id was last seen in, whether or not it is a node here.
+    ///
+    /// A node answers for itself: the index knows where it read it, and a
+    /// remembered location for the same id would only be a second opinion.
+    pub fn location(&self, id: &Uuid) -> Option<&Path> {
+        self.get_node(id)
+            .map(|node| node.file_path.as_path())
+            .or_else(|| self.locations.get(id).map(PathBuf::as_path))
+    }
+
+    /// Every remembered location, for carrying across a rebuild.
+    pub fn locations(&self) -> impl Iterator<Item = (Uuid, &Path)> {
+        self.locations
+            .iter()
+            .map(|(id, path)| (*id, path.as_path()))
+    }
+
+    /// How many remembered locations point at ids the index does not hold.
+    ///
+    /// The ones it does hold are counted by the nodes already; what is worth
+    /// reporting is how many ids this session can reach that a rebuild
+    /// cannot find.
+    pub fn location_count(&self) -> usize {
+        self.locations
+            .keys()
+            .filter(|id| !self.indices.contains_key(id))
+            .count()
     }
 
     pub fn resolve_ref(&self, key: &str) -> Option<Uuid> {

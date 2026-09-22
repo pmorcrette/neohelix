@@ -139,8 +139,17 @@ pub async fn scan_directory_async(
     graph: Arc<RwLock<RoamGraph>>,
     root: PathBuf,
 ) -> Result<IndexStats, tokio::task::JoinError> {
-    let (scanned, stats) = tokio::task::spawn_blocking(move || scan_directory(&root)).await?;
-    *graph.write() = scanned;
+    let (mut scanned, stats) = tokio::task::spawn_blocking(move || scan_directory(&root)).await?;
+
+    let mut graph = graph.write();
+    // A rebuild replaces the index, but not what the session has learned
+    // about ids living outside it. Those files are never scanned, so a
+    // location dropped here has no way of coming back.
+    for (id, path) in graph.locations() {
+        scanned.register_location(id, path);
+    }
+    *graph = scanned;
+
     Ok(stats)
 }
 

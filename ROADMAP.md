@@ -571,19 +571,44 @@ wrong is silent.*
 ### Task 1.22: Index Maintenance and Inspection
 
 Upstream ships a set of commands for when the index and the files disagree.
-The fork has one, `roam-reindex`, and no way to look at what the index
-believes.
 
-- [ ] Rebuild the whole index from scratch, distinct from reindexing one file,
+- [x] Rebuild the whole index from scratch, distinct from reindexing one file,
       for when an incremental update has gone wrong.
-- [ ] Resolve `id:` links whose target lives outside the notes directory.
+
+  It already was one: `scan_directory_async` assigns a new graph rather than
+  updating the old, so `:roam-reindex` never trusted what was there. What was
+  missing was the user learning the outcome — it logged and said nothing —
+  and the rebuild now reports its counts, and refreshes the backlink counts
+  drawn beside headlines, which were read from the index it just replaced.
+
+- [x] Resolve `id:` links whose target lives outside the notes directory.
       Upstream keeps a separate cache of id locations for exactly this; the
       fork's graph only knows the files it scanned, so such a link silently
       fails to resolve.
-- [ ] Browse the index: which nodes, links and refs it holds, as a way of
+
+  Every `.org` file the editor opens now leaves its ids in the graph, so a
+  link into a file you have visited resolves even though the indexer has
+  never seen it. A node answers for its own location; the cache is only for
+  ids the index does not hold. Re-reading a file forgets the locations that
+  pointed at it, and a rebuild carries the rest across — those files are
+  never scanned, so a location dropped there has no way back. A link that
+  still fails now says which of the two places was looked in.
+
+- [x] Browse the index: which nodes, links and refs it holds, as a way of
       telling a parser bug from a malformed file.
-- [ ] Report the fork's own state — versions, notes directory, file and node
+
+  Nodes with their in and out counts, refs and citations in one list rather
+  than three views: the case worth seeing is usually the one where a kind is
+  missing entirely, and a view per kind hides exactly that.
+
+- [x] Report the fork's own state — versions, notes directory, file and node
       counts — so a bug report can carry it.
+
+  Two of the numbers are there to be compared. *Unresolved links* counts
+  links whose target the index has not seen; *ids outside the index* counts
+  the ones this session can nonetheless reach. When the first stays high
+  after a rebuild, the links point outside the notes directory, and the
+  second says how many of those are already answerable.
 
 *A note on validating any of this in the editor, paid for once. The pty
 harness must **read the editor's output continuously while it types**. Sleeping

@@ -470,6 +470,8 @@ impl MappableCommand {
         toggle_fold, "Close the fold at the cursor, or open it",
         fold_all, "Fold everything the language marks as foldable",
         unfold_all, "Open every fold in the buffer",
+        roam_index, "Look through everything the index holds",
+        roam_state, "Report the fork's Org-Roam state for a bug report",
         roam_backlink_counts, "Show each headline's backlink count beside it",
         roam_pin_node, "Pin the Roam panel to the node at the cursor",
         roam_unpin_node, "Let the Roam panel follow the cursor again",
@@ -4447,6 +4449,62 @@ fn org_footnote_goto(cx: &mut Context) {
 
 fn org_footnote_renumber(cx: &mut Context) {
     crate::roam::footnote_renumber(cx.editor);
+}
+
+/// Looks through everything the index holds.
+pub fn roam_index_picker(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    let rows = crate::roam::index_rows(editor);
+    if rows.is_empty() {
+        editor.set_status("The index is empty; run :roam-reindex");
+        return None;
+    }
+
+    let columns = [
+        ui::PickerColumn::new(
+            "kind",
+            |item: &crate::roam::IndexRow, _: &PathStyleConfig| item.kind.into(),
+        ),
+        ui::PickerColumn::new(
+            "what",
+            |item: &crate::roam::IndexRow, _: &PathStyleConfig| item.what.as_str().into(),
+        ),
+        ui::PickerColumn::new(
+            "where",
+            |item: &crate::roam::IndexRow, _: &PathStyleConfig| item.location.as_str().into(),
+        ),
+    ];
+
+    let picker = Picker::new(
+        columns,
+        1,
+        rows,
+        PathStyleConfig::new(&editor.theme),
+        |cx, item, action| {
+            if let Err(err) = cx.editor.open(&item.path, action) {
+                cx.editor
+                    .set_error(format!("Failed to open '{}': {}", item.path.display(), err));
+                return;
+            }
+            let doc = doc!(cx.editor);
+            if item.line < doc.text().len_lines() {
+                let pos = doc.text().line_to_char(item.line);
+                let view_id = view!(cx.editor).id;
+                doc_mut!(cx.editor).set_selection(view_id, Selection::point(pos));
+            }
+        },
+    );
+
+    Some(Box::new(overlaid(picker)))
+}
+
+fn roam_index(cx: &mut Context) {
+    if let Some(picker) = roam_index_picker(cx.editor) {
+        cx.push_layer(picker);
+    }
+}
+
+fn roam_state(cx: &mut Context) {
+    crate::roam::report_state(cx.editor);
 }
 
 fn roam_backlink_counts(cx: &mut Context) {

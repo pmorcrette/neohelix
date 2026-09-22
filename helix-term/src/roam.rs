@@ -365,14 +365,21 @@ pub fn follow_link(editor: &mut Editor) {
 
 /// Opens the file a node lives in, at the node.
 fn follow_node(editor: &mut Editor, id: helix_roam::Uuid) {
-    let found = editor
-        .roam
-        .read()
-        .get_node(&id)
-        .map(|node| (node.file_path.clone(), node.line));
+    let found = {
+        let graph = editor.roam.read();
+        graph
+            .get_node(&id)
+            .map(|node| (node.file_path.clone(), node.line))
+            // The index only knows the notes directory. A link into a file
+            // opened from elsewhere is still followable, because opening it
+            // left the id's location behind.
+            .or_else(|| graph.location(&id).map(|path| (path.to_path_buf(), 0)))
+    };
 
     let Some((path, line)) = found else {
-        editor.set_error(format!("No indexed node with id {id}"));
+        editor.set_error(format!(
+            "No node with id {id} in the index, and no file opened this session declares it"
+        ));
         return;
     };
 
@@ -2566,11 +2573,12 @@ fn nodes_by_headline(text: &str) -> Vec<(usize, helix_roam::Uuid)> {
 /// Toggling rather than always on: the count is worth seeing while writing
 /// about how notes connect, and noise the rest of the time.
 ///
-/// What is drawn is a snapshot, taken each time the counts are switched on.
-/// They do not follow the index: re-indexing is asynchronous, so a count that
-/// updated itself would need an event the editor does not raise, and reading
-/// the graph on every frame to find out costs a lock and a scan of the buffer
-/// sixty times a second. Switching them off and on again re-reads.
+/// What is drawn is a snapshot. `:roam-reindex` refreshes it, because that
+/// command already waits on the rebuild and gets the editor back afterwards.
+/// A save does not: re-indexing one file is spawned and forgotten, with no
+/// editor to return to. Reading the graph every frame instead would cost a
+/// lock and a scan of the buffer sixty times a second. Switching the counts
+/// off and on again re-reads them.
 pub fn toggle_backlink_counts(editor: &mut Editor) {
     if !doc!(editor).roam_counts.is_empty() {
         doc_mut!(editor).roam_counts.clear();
@@ -2612,4 +2620,134 @@ pub fn refresh_backlink_counts(editor: &mut Editor) {
     };
 
     doc_mut!(editor).roam_counts = counts;
+}
+
+// ── Index maintenance and inspection ──────────────────────────────────────
+
+/// A row of the index browser.
+pub struct IndexRow {
+    pub kind: &'static str,
+    pub what: String,
+    pub location: String,
+    pub path: PathBuf,
+    pub line: usize,
+}
+
+/// Everything the index holds, as rows to look through.
+///
+/// Nodes, the refs that reach them and the citations they make, in one list:
+/// telling a parser bug from a malformed file means seeing what was read, and
+/// three separate views would hide the case where one of them is empty.
+pub fn index_rows(editor: &Editor) -> Vec<IndexRow> {
+    let graph = editor.roam.read();
+    let mut rows = Vec::new();
+
+    for node in graph.nodes() {
+        let path = node.file_path.clone();
+        let location = format!(
+            "{}:{}",
+            helix_stdx::path::get_relative_path(&path).display(),
+            node.line + 1
+        );
+        let links = graph.get_forward_links(&node.id).len();
+        let backlinks = graph.get_backlinks(&node.id).len();
+
+        rows.push(IndexRow {
+            kind: "node",
+            what: format!("{} ({backlinks} in, {links} out)", node.title),
+            location,
+            path,
+            line: node.line,
+        });
+    }
+
+    for (key, node) in graph.refs() {
+        rows.push(IndexRow {
+            kind: "ref",
+            what: format!("{key} → {}", node.title),
+            location: helix_stdx::path::get_relative_path(&node.file_path)
+                .display()
+                .to_string(),
+            path: node.file_path.clone(),
+            line: node.line,
+        });
+    }
+
+    let keys: Vec<String> = graph.citation_keys().map(str::to_string).collect();
+    for key in keys {
+        for node in graph.cited_by(&key) {
+            rows.push(IndexRow {
+                kind: "cite",
+                what: format!("{key} ← {}", node.title),
+                location: helix_stdx::path::get_relative_path(&node.file_path)
+                    .display()
+                    .to_string(),
+                path: node.file_path.clone(),
+                line: node.line,
+            });
+        }
+    }
+
+    rows.sort_by(|a, b| a.kind.cmp(b.kind).then(a.what.cmp(&b.what)));
+    rows
+}
+
+/// Reports the fork's own state, so a bug report can carry it.
+pub fn report_state(editor: &mut Editor) {
+    let config = editor.config();
+    let directory = config.roam.directory();
+    let enabled = config.roam.enable;
+    let agenda = config.roam.agenda_files.len();
+
+    let (nodes, links, refs, locations, pending, citations) = {
+        let graph = editor.roam.read();
+        (
+            graph.node_count(),
+            graph
+                .nodes()
+                .map(|n| graph.get_forward_links(&n.id).len())
+                .sum::<usize>(),
+            graph.refs().count(),
+            graph.location_count(),
+            graph.pending_link_count(),
+            graph.citation_keys().count(),
+        )
+    };
+
+    let (files, unreadable) = helix_roam::scanner::collect_org_files(&directory);
+    let body = vec![
+        ("neohelix", env!("CARGO_PKG_VERSION").to_string()),
+        ("indexing", if enabled { "on" } else { "off" }.to_string()),
+        ("notes directory", directory.display().to_string()),
+        (
+            "org files there",
+            format!(
+                "{}{}",
+                files.len(),
+                if unreadable > 0 {
+                    format!(" ({unreadable} unreadable)")
+                } else {
+                    String::new()
+                }
+            ),
+        ),
+        ("nodes", nodes.to_string()),
+        ("links", links.to_string()),
+        ("refs", refs.to_string()),
+        ("citation keys", citations.to_string()),
+        ("ids outside the index", locations.to_string()),
+        // Links whose target has not been seen yet. A number that stays high
+        // after a rebuild means links pointing outside the notes directory.
+        ("unresolved links", pending.to_string()),
+        (
+            "agenda files",
+            if agenda == 0 {
+                "the whole notes directory".to_string()
+            } else {
+                format!("{agenda} configured")
+            },
+        ),
+    ];
+
+    editor.autoinfo = Some(helix_view::info::Info::new("Org-Roam state", &body));
 }

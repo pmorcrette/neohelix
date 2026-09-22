@@ -2360,6 +2360,8 @@ fold_command!(unfold_all, crate::commands::unfold_all);
 fold_command!(narrow_to_selection, crate::commands::narrow_to_selection);
 fold_command!(cycle_fold, crate::commands::cycle_fold);
 fold_command!(cycle_fold_all, crate::commands::cycle_fold_all);
+roam_buffer_command!(roam_state, crate::roam::report_state);
+roam_component_command!(roam_index, crate::commands::roam_index_picker);
 roam_buffer_command!(roam_backlink_counts, crate::roam::toggle_backlink_counts);
 roam_buffer_command!(roam_pin_node, crate::roam::pin_node);
 roam_buffer_command!(roam_unpin_node, crate::roam::unpin_node);
@@ -2568,10 +2570,48 @@ fn roam_reindex(
         return Ok(());
     }
 
+    if !cx.editor.config().roam.enable {
+        cx.editor.set_error("Org-Roam indexing is off");
+        return Ok(());
+    }
+
     let directory = cx.editor.config().roam.directory();
-    cx.editor
-        .set_status(format!("Re-indexing {}…", directory.display()));
-    crate::roam::start_initial_index(cx.editor);
+    let graph = cx.editor.roam.clone();
+    cx.editor.set_status(format!(
+        "Rebuilding the index from {}…",
+        directory.display()
+    ));
+
+    // Rebuilt rather than refreshed: this is the command for when an
+    // incremental update has gone wrong, so it must not trust what is there.
+    let callback = async move {
+        let outcome = helix_roam::scanner::scan_directory_async(graph, directory).await;
+        let call: job::Callback = Callback::Editor(Box::new(move |editor: &mut Editor| {
+            match outcome {
+                Ok(stats) => {
+                    // The counts drawn beside headlines were read from the
+                    // index that has just been replaced.
+                    if !doc!(editor).roam_counts.is_empty() {
+                        crate::roam::refresh_backlink_counts(editor);
+                    }
+                    editor.set_status(format!(
+                        "Rebuilt: {} nodes and {} links from {} files{}",
+                        stats.nodes,
+                        stats.links,
+                        stats.files,
+                        if stats.errors > 0 {
+                            format!(", {} unreadable", stats.errors)
+                        } else {
+                            String::new()
+                        }
+                    ));
+                }
+                Err(err) => editor.set_error(format!("Rebuilding the index failed: {err}")),
+            }
+        }));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
     Ok(())
 }
 
@@ -4526,6 +4566,28 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Open every fold in the buffer.",
         fun: unfold_all,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-index",
+        aliases: &["roam-browse"],
+        doc: "Look through everything the index holds.",
+        fun: roam_index,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-state",
+        aliases: &[],
+        doc: "Report the fork's Org-Roam state for a bug report.",
+        fun: roam_state,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

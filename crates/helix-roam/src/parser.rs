@@ -248,6 +248,20 @@ fn parse_priorities(value: &str) -> Option<Vec<char>> {
     (highest <= lowest).then(|| (highest..=lowest).collect())
 }
 
+/// Every `:ID:` the text declares, whatever it declares them on.
+///
+/// Cheaper and blunter than parsing the file into nodes: this answers "which
+/// ids live here", which is all an id-location cache needs to know.
+pub fn ids_in(text: &str) -> Vec<Uuid> {
+    text.lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            let rest = starts_with_ignore_case(trimmed, ":ID:").then(|| &trimmed[4..])?;
+            rest.trim().parse().ok()
+        })
+        .collect()
+}
+
 /// Reads `<2026-09-18 Fri 10:30>` or its inactive `[…]` form.
 ///
 /// Anything after the date — a day name, a repeater, a warning period — is

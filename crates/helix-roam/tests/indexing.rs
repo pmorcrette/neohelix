@@ -190,3 +190,73 @@ async fn async_scan_and_reindex_share_one_graph() {
     );
     assert_eq!(graph.read().node_count(), 3);
 }
+
+mod id_locations {
+    use helix_roam::{parser, Node, RoamGraph, Uuid};
+
+    fn uuid(last: u8) -> Uuid {
+        let mut bytes = [0u8; 16];
+        bytes[15] = last;
+        Uuid::from_bytes(bytes)
+    }
+
+    #[test]
+    fn every_id_a_file_declares_is_found() {
+        let text = "\
+:PROPERTIES:
+:ID:       00000000-0000-0000-0000-000000000001
+:END:
+#+title: Whatever
+
+* A heading
+  :PROPERTIES:
+  :id:       00000000-0000-0000-0000-000000000002
+  :END:
+Not an id: 00000000-0000-0000-0000-000000000003.
+";
+        // Both spellings of the key, and nothing that merely looks like one.
+        assert_eq!(parser::ids_in(text), [uuid(1), uuid(2)]);
+    }
+
+    #[test]
+    fn a_node_answers_for_its_own_location() {
+        let mut graph = RoamGraph::new();
+        graph.insert_node(Node::new(uuid(1), "Indexed", "/notes/a.org"));
+
+        assert_eq!(
+            graph.location(&uuid(1)),
+            Some(std::path::Path::new("/notes/a.org"))
+        );
+        // It is a node, so it is not what the location cache is for.
+        assert_eq!(graph.location_count(), 0);
+    }
+
+    #[test]
+    fn an_id_the_index_never_saw_is_still_reachable() {
+        let mut graph = RoamGraph::new();
+        graph.register_location(uuid(2), "/elsewhere/b.org");
+
+        assert_eq!(
+            graph.location(&uuid(2)),
+            Some(std::path::Path::new("/elsewhere/b.org"))
+        );
+        assert_eq!(graph.location_count(), 1);
+        assert_eq!(graph.location(&uuid(9)), None);
+    }
+
+    #[test]
+    fn re_reading_a_file_forgets_what_it_no_longer_declares() {
+        let mut graph = RoamGraph::new();
+        graph.register_location(uuid(2), "/notes/a.org");
+        graph.register_location(uuid(3), "/elsewhere/b.org");
+
+        graph.remove_nodes_in_file(std::path::Path::new("/notes/a.org"));
+
+        assert_eq!(graph.location(&uuid(2)), None);
+        // Another file's ids are none of its business.
+        assert_eq!(
+            graph.location(&uuid(3)),
+            Some(std::path::Path::new("/elsewhere/b.org"))
+        );
+    }
+}
