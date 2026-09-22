@@ -463,12 +463,23 @@ impl MappableCommand {
         org_table_next_cell, "Move to the next table cell",
         org_table_previous_cell, "Move to the previous table cell",
         fold, "Fold the innermost foldable range at the cursor",
+        narrow_to_selection, "Hide every line outside the selection",
         cycle_fold, "Step the range at the cursor through folded, children, open",
         cycle_fold_all, "Step the buffer through overview, contents, everything",
         unfold, "Open the fold at the cursor",
         toggle_fold, "Close the fold at the cursor, or open it",
         fold_all, "Fold everything the language marks as foldable",
         unfold_all, "Open every fold in the buffer",
+        org_next_heading, "Move to the next heading",
+        org_previous_heading, "Move to the previous heading",
+        org_next_sibling_heading, "Move to the next heading at the same level",
+        org_previous_sibling_heading, "Move to the previous heading at the same level",
+        org_parent_heading, "Move to the parent heading",
+        org_goto_heading, "Jump to a heading in this buffer by name",
+        org_outline_path, "Show the outline path of the entry at the cursor",
+        org_sparse_tree, "Hide everything but the entries matching a filter",
+        org_narrow, "Hide everything outside the subtree at the cursor",
+        org_widen, "Bring back everything a narrowing or sparse tree hid",
         org_copy_subtree, "Copy the subtree at the cursor",
         org_cut_subtree, "Cut the subtree at the cursor",
         org_paste_subtree, "Paste the copied subtree at the cursor's level",
@@ -4247,6 +4258,86 @@ fn agenda_picker(
     );
 
     Box::new(overlaid(picker))
+}
+
+/// Picks a heading in the current buffer by name.
+///
+/// The buffer rather than the graph: this is for finding your way around the
+/// file you are in, including its headings that carry no `:ID:` and so are
+/// not nodes at all.
+pub fn org_heading_picker(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    let headings = crate::roam::buffer_headings(editor);
+    if headings.is_empty() {
+        editor.set_status("This buffer has no headings");
+        return None;
+    }
+
+    let columns = [
+        ui::PickerColumn::new("heading", |item: &(usize, String), _: &PathStyleConfig| {
+            item.1.as_str().into()
+        }),
+        ui::PickerColumn::new("line", |item: &(usize, String), _: &PathStyleConfig| {
+            (item.0 + 1).to_string().into()
+        }),
+    ];
+
+    let picker = Picker::new(
+        columns,
+        0,
+        headings,
+        PathStyleConfig::new(&editor.theme),
+        |cx, item, _action| crate::roam::goto_heading_line(cx.editor, item.0),
+    );
+
+    Some(Box::new(overlaid(picker)))
+}
+
+/// Asks what a sparse tree should keep.
+pub fn org_sparse_tree_prompt() -> Box<dyn Component> {
+    property_prompt("Keep (TODO, :tag:, #A, /text): ", crate::roam::sparse_tree)
+}
+
+fn org_goto_heading(cx: &mut Context) {
+    if let Some(picker) = org_heading_picker(cx.editor) {
+        cx.push_layer(picker);
+    }
+}
+
+fn org_sparse_tree(cx: &mut Context) {
+    let prompt = org_sparse_tree_prompt();
+    cx.push_layer(prompt);
+}
+
+fn org_next_heading(cx: &mut Context) {
+    crate::roam::goto_next_heading(cx.editor);
+}
+
+fn org_previous_heading(cx: &mut Context) {
+    crate::roam::goto_previous_heading(cx.editor);
+}
+
+fn org_next_sibling_heading(cx: &mut Context) {
+    crate::roam::goto_next_sibling_heading(cx.editor);
+}
+
+fn org_previous_sibling_heading(cx: &mut Context) {
+    crate::roam::goto_previous_sibling_heading(cx.editor);
+}
+
+fn org_parent_heading(cx: &mut Context) {
+    crate::roam::goto_parent_heading(cx.editor);
+}
+
+fn org_outline_path(cx: &mut Context) {
+    crate::roam::show_outline_path(cx.editor);
+}
+
+fn org_narrow(cx: &mut Context) {
+    crate::roam::narrow_to_subtree(cx.editor);
+}
+
+fn org_widen(cx: &mut Context) {
+    crate::roam::widen(cx.editor);
 }
 
 fn org_agenda_restrict(cx: &mut Context) {
@@ -8418,6 +8509,52 @@ fn fold_all(cx: &mut Context) {
 /// Opens every fold in the buffer.
 fn unfold_all(cx: &mut Context) {
     doc_mut!(cx.editor).folds_mut().clear();
+}
+
+/// Hides every line outside the selection.
+///
+/// This is how narrowing reaches a block or an element without a command per
+/// kind: select one — `A-o` climbs the syntax tree until it holds what you
+/// mean — and narrow to what is selected. Whole lines, because a narrowing
+/// that cut a line in half would show a fragment and call it the element.
+fn narrow_to_selection(cx: &mut Context) {
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text();
+    let range = doc.selection(view.id).primary();
+
+    let first = text.char_to_line(range.from());
+    // `to()` is one past the selection, so on a range ending at a line break
+    // it names the line below. The line of the last character actually held
+    // is what the narrowing has to keep.
+    let last = text.char_to_line(range.to().saturating_sub(1).max(range.from()));
+    let lines = text.len_lines();
+    let len = text.len_chars();
+
+    let mut folds = Vec::new();
+    if first > 0 {
+        // Stop before the newline that ends the line above, so the first line
+        // kept starts on a line of its own rather than beside the marker.
+        folds.push(helix_core::fold::Fold::new(0, text.line_to_char(first) - 1));
+    }
+    if last + 1 < lines {
+        folds.push(helix_core::fold::Fold::new(
+            text.line_to_char(last + 1),
+            len,
+        ));
+    }
+
+    if folds.is_empty() {
+        cx.editor
+            .set_status("The selection is already the whole buffer");
+        return;
+    }
+
+    let doc = doc_mut!(cx.editor);
+    doc.folds_mut().clear();
+    for fold in folds {
+        doc.folds_mut().insert(fold);
+    }
+    cx.editor.set_status("Narrowed to the selection");
 }
 
 /// Every foldable range in the focused document, from its `folds.scm`.

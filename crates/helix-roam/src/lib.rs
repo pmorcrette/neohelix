@@ -15,6 +15,7 @@ pub mod hyperlink;
 mod link;
 pub mod list;
 mod node;
+pub mod outline;
 pub mod parser;
 pub mod query;
 pub mod restructure;

@@ -256,20 +256,58 @@ happened to an entry.
 ### Task 1.12: Sparse Trees, Narrowing and Structural Motion
 
 Org's way of reading a large file: hide everything that does not match, or
-narrow to one part of it. The fork has neither. Task 1.4 has since landed,
-so the folding these need exists; what is missing is choosing *which* ranges
-to fold from a query, and a narrowing that is not folding at all.
+narrow to one part of it. Both are built on Task 1.4's folding.
 
-- [ ] Sparse trees: show only the entries matching a regexp, a TODO state, a
+- [x] Sparse trees: show only the entries matching a regexp, a TODO state, a
       tag or a property query, with the rest folded away.
-- [ ] Narrow to a subtree, a block or an element, and widen again.
-- [ ] Structural motion by element: forward, backward, up and down, which is
+
+  `:org-sparse-tree` takes the agenda's own sigils — `:work:` a tag, `#A` a
+  priority, a bare word a TODO keyword — plus `/text` for the headline's
+  text. A match lights up the path down to it, so an entry three levels deep
+  appears with the headings that say where it is. Everything else goes,
+  bodies included, which is what makes a sparse tree a tree. A property
+  query is not there: the filter matches what a headline carries, and a
+  property lives in the drawer below it.
+
+- [x] Narrow to a subtree, a block or an element, and widen again.
+
+  `:org-narrow` takes the subtree; `:narrow-to-selection` takes whatever is
+  selected, which is how a block or an element is reached without a command
+  per kind — `A-o` climbs the syntax tree until it holds what you mean.
+  Widening clears every fold, so it is the same operation as `:unfold-all`
+  under the name Org uses.
+
+- [x] Structural motion by element: forward, backward, up and down, which is
       what makes editing Org feel structural rather than textual.
-- [ ] Heading motion: next and previous visible heading, next and previous at
+
+  Already upstream, and verified on an Org file rather than assumed: `A-o`
+  and `A-i` expand and shrink, `A-n` and `A-p` move between siblings, `A-b`
+  and `A-e` to a parent's ends. With the org grammar built, expanding from a
+  word climbs to the paragraph, then the subsection, then the section. The
+  fork adds nothing here; the grammar is what makes it structural.
+
+- [x] Heading motion: next and previous visible heading, next and previous at
       the same level, and up to the parent.
-- [ ] Jump to a heading in the current file by name.
-- [ ] Show the outline path of the entry at point, for when the headline has
+
+  Sibling motion stops at a shallower heading rather than running on to a
+  cousin further down the file, and going up lands on the parent, which is
+  not the same entry as the previous heading whenever the cursor is on a
+  first child.
+
+- [x] Jump to a heading in the current file by name.
+
+  Over the buffer rather than the graph: this is for finding your way around
+  the file you are in, headings with no `:ID:` included — they are not nodes,
+  and a picker over nodes would not show them.
+
+- [x] Show the outline path of the entry at point, for when the headline has
       scrolled off.
+
+*Narrowing and sparse trees replace the fold set rather than adding to it: a
+view of the file is a view, not a layer over the folds you had. The one thing
+the editor caught that the tests did not was an off-by-one — a selection's
+end is one past its last character, so on a range ending at a line break it
+names the line below, and narrowing to it kept a line nobody selected.*
 
 ### Task 1.13: Subtree Clipboard, Sorting and Dynamic Blocks
 

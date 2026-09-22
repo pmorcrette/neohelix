@@ -2357,8 +2357,27 @@ fold_command!(unfold, crate::commands::unfold);
 fold_command!(toggle_fold, crate::commands::toggle_fold);
 fold_command!(fold_all, crate::commands::fold_all);
 fold_command!(unfold_all, crate::commands::unfold_all);
+fold_command!(narrow_to_selection, crate::commands::narrow_to_selection);
 fold_command!(cycle_fold, crate::commands::cycle_fold);
 fold_command!(cycle_fold_all, crate::commands::cycle_fold_all);
+roam_buffer_command!(org_next_heading, crate::roam::goto_next_heading);
+roam_buffer_command!(org_previous_heading, crate::roam::goto_previous_heading);
+roam_buffer_command!(
+    org_next_sibling_heading,
+    crate::roam::goto_next_sibling_heading
+);
+roam_buffer_command!(
+    org_previous_sibling_heading,
+    crate::roam::goto_previous_sibling_heading
+);
+roam_buffer_command!(org_parent_heading, crate::roam::goto_parent_heading);
+roam_buffer_command!(org_outline_path, crate::roam::show_outline_path);
+roam_buffer_command!(org_narrow, crate::roam::narrow_to_subtree);
+roam_buffer_command!(org_widen, crate::roam::widen);
+roam_component_command!(org_goto_heading, crate::commands::org_heading_picker);
+roam_component_command!(org_sparse_tree, |_editor| Some(
+    crate::commands::org_sparse_tree_prompt()
+));
 roam_buffer_command!(org_copy_subtree, crate::roam::copy_subtree);
 roam_buffer_command!(org_cut_subtree, crate::roam::cut_subtree);
 roam_buffer_command!(org_paste_subtree, crate::roam::paste_subtree);
@@ -4409,6 +4428,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         },
     },
     TypableCommand {
+        name: "narrow-to-selection",
+        aliases: &["narrow"],
+        doc: "Hide every line outside the selection.",
+        fun: narrow_to_selection,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
         name: "cycle-fold",
         aliases: &[],
         doc: "Step the range at the cursor through folded, children, open.",
@@ -4479,6 +4509,116 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Open every fold in the buffer.",
         fun: unfold_all,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-next-heading",
+        aliases: &[],
+        doc: "Move to the next heading.",
+        fun: org_next_heading,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-previous-heading",
+        aliases: &[],
+        doc: "Move to the previous heading.",
+        fun: org_previous_heading,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-next-sibling-heading",
+        aliases: &[],
+        doc: "Move to the next heading at the same level.",
+        fun: org_next_sibling_heading,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-previous-sibling-heading",
+        aliases: &[],
+        doc: "Move to the previous heading at the same level.",
+        fun: org_previous_sibling_heading,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-parent-heading",
+        aliases: &["org-up-heading"],
+        doc: "Move to the parent heading.",
+        fun: org_parent_heading,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-goto-heading",
+        aliases: &["org-goto"],
+        doc: "Jump to a heading in this buffer by name.",
+        fun: org_goto_heading,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-outline-path",
+        aliases: &[],
+        doc: "Show the outline path of the entry at the cursor.",
+        fun: org_outline_path,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-sparse-tree",
+        aliases: &["org-match"],
+        doc: "Hide everything but the entries matching a filter.",
+        fun: org_sparse_tree,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-narrow",
+        aliases: &[],
+        doc: "Hide everything outside the subtree at the cursor.",
+        fun: org_narrow,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-widen",
+        aliases: &[],
+        doc: "Bring back everything a narrowing or sparse tree hid.",
+        fun: org_widen,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

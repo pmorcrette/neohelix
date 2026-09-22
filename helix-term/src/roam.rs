@@ -2060,3 +2060,136 @@ pub fn dblock_update_all(editor: &mut Editor) {
     }
     apply_to_buffer(editor, format!("Updated {done} blocks"), after);
 }
+
+// ── Outline navigation, sparse trees and narrowing ────────────────────────
+
+/// Moves the cursor to a heading found by `find`, reporting when there is none.
+fn goto_heading(
+    editor: &mut Editor,
+    what: &'static str,
+    find: impl Fn(&[helix_roam::outline::Entry], usize) -> Option<usize>,
+) {
+    let (text, line) = text_and_line(editor);
+    let entries = helix_roam::outline::headings(&text);
+
+    match find(&entries, line) {
+        Some(target) => {
+            let byte = doc!(editor).text().line_to_byte(target);
+            jump_to_byte(editor, byte);
+        }
+        None => editor.set_error(format!("No {what} heading")),
+    }
+}
+
+pub fn goto_next_heading(editor: &mut Editor) {
+    goto_heading(editor, "next", helix_roam::outline::next);
+}
+
+pub fn goto_previous_heading(editor: &mut Editor) {
+    goto_heading(editor, "previous", helix_roam::outline::previous);
+}
+
+pub fn goto_next_sibling_heading(editor: &mut Editor) {
+    goto_heading(editor, "next sibling", helix_roam::outline::next_sibling);
+}
+
+pub fn goto_previous_sibling_heading(editor: &mut Editor) {
+    goto_heading(
+        editor,
+        "previous sibling",
+        helix_roam::outline::previous_sibling,
+    );
+}
+
+pub fn goto_parent_heading(editor: &mut Editor) {
+    goto_heading(editor, "parent", helix_roam::outline::parent);
+}
+
+/// Shows the path from the top of the file down to the entry at the cursor.
+pub fn show_outline_path(editor: &mut Editor) {
+    let (text, line) = text_and_line(editor);
+    let entries = helix_roam::outline::headings(&text);
+    let path = helix_roam::outline::outline_path(&entries, line);
+
+    if path.is_empty() {
+        editor.set_status("Above every heading");
+        return;
+    }
+    editor.set_status(path.join(" / "));
+}
+
+/// Every headline in the buffer, for a picker to choose from.
+pub fn buffer_headings(editor: &Editor) -> Vec<(usize, String)> {
+    let text = doc!(editor).text().to_string();
+
+    helix_roam::outline::headings(&text)
+        .into_iter()
+        .map(|entry| {
+            // Indent by depth so the list reads as the outline it is.
+            let title = format!("{}{}", "  ".repeat(entry.level - 1), entry.title);
+            (entry.line, title)
+        })
+        .collect()
+}
+
+/// Puts the cursor on a heading chosen from the picker.
+pub fn goto_heading_line(editor: &mut Editor, line: usize) {
+    let byte = doc!(editor).text().line_to_byte(line);
+    jump_to_byte(editor, byte);
+}
+
+/// Replaces the buffer's folds with the ones `ranges` asks for.
+fn fold_ranges(editor: &mut Editor, ranges: Vec<(usize, usize)>) -> usize {
+    let doc = doc_mut!(editor);
+    doc.folds_mut().clear();
+
+    for (start, end) in &ranges {
+        doc.folds_mut()
+            .insert(helix_core::fold::Fold::new(*start, *end));
+    }
+    ranges.len()
+}
+
+/// Hides everything but the entries matching `input` and the path to them.
+pub fn sparse_tree(editor: &mut Editor, input: &str) {
+    let filter = helix_roam::outline::Filter::parse(input);
+    if filter.is_empty() {
+        editor.set_error("Give something to match: `TODO`, `:work:`, `#A` or `/text`");
+        return;
+    }
+
+    let text = doc!(editor).text().to_string();
+    let ranges = helix_roam::outline::sparse_tree(&text, &filter);
+    let hidden = fold_ranges(editor, ranges);
+
+    if hidden == 0 {
+        editor.set_status("Everything matches");
+        return;
+    }
+    editor.set_status(format!("Sparse tree: {hidden} ranges hidden"));
+}
+
+/// Hides everything outside the subtree at the cursor.
+pub fn narrow_to_subtree(editor: &mut Editor) {
+    let (text, line) = text_and_line(editor);
+    let ranges = helix_roam::outline::narrow(&text, line);
+
+    if ranges.is_empty() {
+        editor.set_error("No subtree at the cursor to narrow to");
+        return;
+    }
+    fold_ranges(editor, ranges);
+    editor.set_status("Narrowed to the subtree");
+}
+
+/// Brings back everything a narrowing or a sparse tree hid.
+pub fn widen(editor: &mut Editor) {
+    let doc = doc_mut!(editor);
+    if doc.folds().is_empty() {
+        editor.set_status("Nothing is hidden");
+        return;
+    }
+
+    doc.folds_mut().clear();
+    editor.set_status("Widened");
+}
