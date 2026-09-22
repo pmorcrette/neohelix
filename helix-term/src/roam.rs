@@ -2193,3 +2193,212 @@ pub fn widen(editor: &mut Editor) {
     doc.folds_mut().clear();
     editor.set_status("Widened");
 }
+
+// ── Emphasis, blocks, footnotes and citations ─────────────────────────────
+
+/// The cursor as a character index, which is what the markup layer counts in.
+fn cursor_char(editor: &Editor) -> usize {
+    let (view, doc) = current_ref!(editor);
+    doc.selection(view.id)
+        .primary()
+        .cursor(doc.text().slice(..))
+}
+
+/// The primary selection as character indices.
+fn selection_chars(editor: &Editor) -> (usize, usize) {
+    let (view, doc) = current_ref!(editor);
+    let range = doc.selection(view.id).primary();
+    (range.from(), range.to())
+}
+
+/// Wraps or unwraps the selection in an emphasis marker.
+pub fn toggle_emphasis(editor: &mut Editor, input: &str) {
+    let Some(kind) = helix_roam::markup::Emphasis::parse(input) else {
+        editor.set_error(format!(
+            "Emphasise one of: {}",
+            helix_roam::markup::Emphasis::names().join(", ")
+        ));
+        return;
+    };
+
+    let (from, to) = selection_chars(editor);
+    let text = doc!(editor).text().to_string();
+
+    match helix_roam::markup::toggle_emphasis(&text, from, to, kind) {
+        Some(after) => apply_to_buffer(editor, format!("Toggled {input}"), after),
+        None => editor.set_error("Select something to emphasise first"),
+    }
+}
+
+/// Inserts a structure block, wrapping the selection when there is one.
+pub fn insert_block(editor: &mut Editor, input: &str) {
+    let mut words = input.trim().splitn(2, char::is_whitespace);
+    let Some(name) = words.next().filter(|name| !name.is_empty()) else {
+        editor.set_error(format!(
+            "Name a block: {}",
+            helix_roam::markup::block_names().join(", ")
+        ));
+        return;
+    };
+    let argument = words.next();
+
+    let (from, to) = selection_chars(editor);
+    let text = doc!(editor).text().clone();
+    let first = text.char_to_line(from);
+    // A selection's end is one past its last character, so on a range ending
+    // at a line break it names the line below.
+    let last = text.char_to_line(to.saturating_sub(1).max(from));
+    let source = text.to_string();
+
+    // A cursor is a one-character selection in Helix, so "nothing selected"
+    // is a span of at most one character rather than an empty one.
+    let (after, line) = if to.saturating_sub(from) <= 1 {
+        helix_roam::markup::insert_block(&source, first, name, argument)
+    } else {
+        helix_roam::markup::wrap_block(&source, first, last, name, argument)
+    };
+
+    apply_and_go(editor, format!("Inserted a {name} block"), after, line);
+}
+
+/// Adds a footnote and puts the cursor where its text goes.
+pub fn footnote_new(editor: &mut Editor) {
+    let offset = cursor_char(editor);
+    let text = doc!(editor).text().to_string();
+    let (after, at) = helix_roam::markup::insert_footnote(&text, offset);
+
+    let before = doc!(editor).text().clone();
+    let rope = helix_core::Rope::from(after.as_str());
+    let transaction = helix_core::diff::compare_ropes(&before, &rope);
+    let view = view!(editor).id;
+    doc_mut!(editor).apply(&transaction, view);
+
+    let doc = doc_mut!(editor);
+    let at = at.min(doc.text().len_chars());
+    doc.set_selection(view, helix_core::Selection::point(at));
+    editor.set_status("Added a footnote");
+}
+
+/// Jumps between a footnote's reference and its definition.
+pub fn footnote_goto(editor: &mut Editor) {
+    let offset = cursor_char(editor);
+    let (text, line) = text_and_line(editor);
+
+    let Some(label) = helix_roam::markup::footnote_at(&text, offset) else {
+        editor.set_error("No footnote at the cursor");
+        return;
+    };
+
+    // Whichever end the cursor is not on.
+    let here = helix_roam::markup::footnote_definition(&text, &label);
+    let target = if here == Some(line) {
+        helix_roam::markup::footnote_reference(&text, &label)
+    } else {
+        here
+    };
+
+    match target {
+        Some(target) => {
+            let byte = doc!(editor).text().line_to_byte(target);
+            jump_to_byte(editor, byte);
+        }
+        None => editor.set_error(format!("[fn:{label}] has only one end")),
+    }
+}
+
+/// Renumbers the numeric footnotes in reference order.
+pub fn footnote_renumber(editor: &mut Editor) {
+    let text = doc!(editor).text().to_string();
+    let after = helix_roam::markup::renumber_footnotes(&text);
+    apply_to_buffer(editor, "Renumbered the footnotes".to_string(), after);
+}
+
+/// The bibliography files this buffer declares, resolved against it.
+fn bibliography_files(editor: &Editor) -> Vec<PathBuf> {
+    let doc = doc!(editor);
+    let settings = helix_roam::FileSettings::scan(&doc.text().to_string());
+    let beside = doc
+        .path()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| notes_directory(editor));
+
+    settings
+        .bibliography
+        .iter()
+        .map(|name| {
+            let path = Path::new(name.trim());
+            if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                beside.join(path)
+            }
+        })
+        .collect()
+}
+
+/// Every key the buffer could cite: its bibliographies', plus the ones the
+/// graph has already seen.
+///
+/// Both, because a notes directory often cites keys that no `.bib` in it
+/// declares — the bibliography lives with the paper, not with the notes.
+pub fn citation_keys(editor: &Editor) -> Vec<String> {
+    let mut keys: Vec<String> = bibliography_files(editor)
+        .into_iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .flat_map(|bib| helix_roam::markup::bib_keys(&bib))
+        .collect();
+
+    keys.extend(editor.roam.read().citation_keys().map(str::to_string));
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+/// Puts a `[cite:@key]` at the cursor.
+pub fn insert_citation(editor: &mut Editor, key: &str) {
+    let key = key.trim();
+    if key.is_empty() {
+        editor.set_error("Give a citation key");
+        return;
+    }
+
+    let offset = cursor_char(editor);
+    let text = doc!(editor).text().to_string();
+    let after = helix_roam::markup::insert_citation(&text, offset, key);
+    apply_to_buffer(editor, format!("Cited {key}"), after);
+}
+
+/// Opens the bibliography at the entry the cursor cites.
+pub fn follow_citation(editor: &mut Editor) {
+    let offset = cursor_char(editor);
+    let text = doc!(editor).text().to_string();
+
+    let Some(key) = helix_roam::markup::citation_at(&text, offset) else {
+        editor.set_error("No citation at the cursor");
+        return;
+    };
+
+    let needle = format!("{{{key}");
+    for path in bibliography_files(editor) {
+        let Ok(bib) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Some(line) = bib
+            .lines()
+            .position(|l| l.trim_start().starts_with('@') && l.contains(&needle))
+        else {
+            continue;
+        };
+
+        if let Err(err) = editor.open(&path, helix_view::editor::Action::Replace) {
+            editor.set_error(format!("Failed to open '{}': {err}", path.display()));
+            return;
+        }
+        let byte = doc!(editor).text().line_to_byte(line);
+        jump_to_byte(editor, byte);
+        editor.set_status(format!("Found {key}"));
+        return;
+    }
+
+    editor.set_error(format!("No bibliography here defines {key}"));
+}

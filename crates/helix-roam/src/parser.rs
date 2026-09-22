@@ -70,6 +70,8 @@ pub struct FileSettings {
     pub category: Option<String>,
     /// `#+ARCHIVE:`, where archiving sends a subtree.
     pub archive: Option<String>,
+    /// Bibliography files the file declares, for completing a citation over.
+    pub bibliography: Vec<String>,
     /// Tags offered by `#+TAGS:`, for completion rather than for parsing.
     pub declared_tags: Vec<String>,
     /// Drawer names declared through `#+DRAWERS:`.
@@ -95,6 +97,7 @@ impl Default for FileSettings {
             priorities: vec!['A', 'B', 'C'],
             category: None,
             archive: None,
+            bibliography: Vec::new(),
             declared_tags: Vec::new(),
             drawers: Vec::new(),
             startup: Vec::new(),
@@ -167,6 +170,8 @@ impl FileSettings {
                 }
                 "category" => settings.category = Some(value.to_string()),
                 "archive" => settings.archive = Some(value.to_string()),
+                // Org allows several, one keyword each.
+                "bibliography" => settings.bibliography.push(value.to_string()),
                 "tags" => settings.declared_tags.extend(parse_tag_declaration(value)),
                 "drawers" => settings
                     .drawers

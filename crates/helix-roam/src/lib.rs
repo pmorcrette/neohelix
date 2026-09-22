@@ -14,6 +14,7 @@ mod graph;
 pub mod hyperlink;
 mod link;
 pub mod list;
+pub mod markup;
 mod node;
 pub mod outline;
 pub mod parser;

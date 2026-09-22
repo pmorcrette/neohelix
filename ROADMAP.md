@@ -339,17 +339,51 @@ source is reachable again.*
 
 ### Task 1.14: Markup, Footnotes and Citations
 
-- [ ] Toggle emphasis on a region: bold, italic, underline, code, verbatim,
+- [x] Toggle emphasis on a region: bold, italic, underline, code, verbatim,
       strike-through.
-- [ ] Structure templates, so a source or quote block is inserted rather than
+
+  Whitespace at the edges of the selection stays outside the markers. Org
+  will not render a closing marker that follows a space, and selecting a word
+  takes its trailing space in most editors — including Helix — so wrapping
+  the selection as given produces markup that shows its own stars.
+
+- [x] Structure templates, so a source or quote block is inserted rather than
       typed.
-- [ ] Footnotes: create, jump between the reference and the definition, and
+
+  With nothing selected it inserts an empty block and puts the cursor inside
+  it; with a selection it wraps the lines. A cursor is a one-character
+  selection in Helix, so "nothing selected" has to mean a span of at most one
+  character rather than an empty one.
+
+- [x] Footnotes: create, jump between the reference and the definition, and
       renumber.
-- [ ] Citations (`[cite:@key]`): insert one with completion over a bibliography,
+
+  Renumbering follows the order the references appear in and leaves a named
+  footnote named: a name is a name, and renumbering it would be renaming it.
+  New definitions go at the end of the buffer, which is what a file without a
+  `* Footnotes` heading gets from Org too.
+
+- [x] Citations (`[cite:@key]`): insert one with completion over a bibliography,
       and follow it.
+
+  `#+BIBLIOGRAPHY:` is read here rather than in Task 1.21, which deferred it.
+  Completion offers the keys of the declared `.bib` files *and* the keys the
+  graph has already seen: a notes directory often cites keys that no `.bib`
+  beside it declares, because the bibliography lives with the paper. Only the
+  keys are read from BibTeX — a full parser is a different piece of work.
+
 - [ ] LaTeX fragment preview and pretty entities, both of which need an image
       or an overlay mechanism Helix does not currently have — worth checking
       before committing to them.
+
+  Checked, and the two answers differ. **Preview is out of reach**: it needs a
+  terminal graphics protocol, and Helix has none — the only `kitty` in the
+  tree is the keyboard protocol. Adding one is a `helix-tui` undertaking, not
+  Org work. **Pretty entities are within reach now**: since Task 1.4 a fold
+  hides a range and draws a marker in its place, so `\alpha` can fold to `α`.
+  What is missing is a marker *per fold*; today it is one string on
+  `TextFormat` for the whole buffer. That is a small, contained change to the
+  fold model, and it is the thing to do before this item rather than after.
 
 ### Task 1.15: Source Blocks as Code
 

@@ -2360,6 +2360,19 @@ fold_command!(unfold_all, crate::commands::unfold_all);
 fold_command!(narrow_to_selection, crate::commands::narrow_to_selection);
 fold_command!(cycle_fold, crate::commands::cycle_fold);
 fold_command!(cycle_fold_all, crate::commands::cycle_fold_all);
+roam_buffer_command!(org_footnote_new, crate::roam::footnote_new);
+roam_buffer_command!(org_footnote_goto, crate::roam::footnote_goto);
+roam_buffer_command!(org_footnote_renumber, crate::roam::footnote_renumber);
+roam_buffer_command!(org_cite_follow, crate::roam::follow_citation);
+roam_component_command!(org_emphasis, |_editor| Some(
+    crate::commands::org_emphasis_prompt()
+));
+roam_component_command!(org_insert_block, |_editor| Some(
+    crate::commands::org_block_prompt()
+));
+roam_component_command!(org_cite_insert, |editor| Some(
+    crate::commands::org_cite_prompt(editor)
+));
 roam_buffer_command!(org_next_heading, crate::roam::goto_next_heading);
 roam_buffer_command!(org_previous_heading, crate::roam::goto_previous_heading);
 roam_buffer_command!(
@@ -4509,6 +4522,83 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Open every fold in the buffer.",
         fun: unfold_all,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-emphasis",
+        aliases: &[],
+        doc: "Toggle an emphasis marker on the selection.",
+        fun: org_emphasis,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-insert-block",
+        aliases: &["org-block"],
+        doc: "Insert a structure block, wrapping the selection.",
+        fun: org_insert_block,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-footnote-new",
+        aliases: &[],
+        doc: "Add a footnote and go to where its text goes.",
+        fun: org_footnote_new,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-footnote-goto",
+        aliases: &[],
+        doc: "Jump between a footnote's reference and definition.",
+        fun: org_footnote_goto,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-footnote-renumber",
+        aliases: &[],
+        doc: "Renumber the numeric footnotes in reference order.",
+        fun: org_footnote_renumber,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-cite-insert",
+        aliases: &["org-cite"],
+        doc: "Insert a citation, completing over the bibliography.",
+        fun: org_cite_insert,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-cite-follow",
+        aliases: &[],
+        doc: "Open the bibliography at the cited entry.",
+        fun: org_cite_follow,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

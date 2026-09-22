@@ -470,6 +470,13 @@ impl MappableCommand {
         toggle_fold, "Close the fold at the cursor, or open it",
         fold_all, "Fold everything the language marks as foldable",
         unfold_all, "Open every fold in the buffer",
+        org_emphasis, "Toggle an emphasis marker on the selection",
+        org_insert_block, "Insert a structure block, wrapping the selection",
+        org_footnote_new, "Add a footnote and go to where its text goes",
+        org_footnote_goto, "Jump between a footnote's reference and definition",
+        org_footnote_renumber, "Renumber the numeric footnotes in reference order",
+        org_cite_insert, "Insert a citation, completing over the bibliography",
+        org_cite_follow, "Open the bibliography at the cited entry",
         org_next_heading, "Move to the next heading",
         org_previous_heading, "Move to the previous heading",
         org_next_sibling_heading, "Move to the next heading at the same level",
@@ -4338,6 +4345,104 @@ fn org_narrow(cx: &mut Context) {
 
 fn org_widen(cx: &mut Context) {
     crate::roam::widen(cx.editor);
+}
+
+/// Asks which emphasis to toggle, completing over the six.
+pub fn org_emphasis_prompt() -> Box<dyn Component> {
+    Box::new(ui::Prompt::new(
+        "Emphasis: ".into(),
+        None,
+        |_editor, input| {
+            helix_roam::markup::Emphasis::names()
+                .iter()
+                .filter(|name| name.starts_with(input))
+                .map(|name| (0.., (*name).into()))
+                .collect()
+        },
+        |cx, input, event| {
+            if event == PromptEvent::Validate {
+                crate::roam::toggle_emphasis(cx.editor, input);
+            }
+        },
+    ))
+}
+
+/// Asks which block to insert, completing over the ones Org defines.
+pub fn org_block_prompt() -> Box<dyn Component> {
+    Box::new(ui::Prompt::new(
+        "Block (name, or `src rust`): ".into(),
+        None,
+        |_editor, input| {
+            // Complete the name only, and only while it is still being typed:
+            // past the first space the user is writing the argument.
+            if input.contains(char::is_whitespace) {
+                return Vec::new();
+            }
+            helix_roam::markup::block_names()
+                .iter()
+                .filter(|name| name.starts_with(input))
+                .map(|name| (0.., (*name).into()))
+                .collect()
+        },
+        |cx, input, event| {
+            if event == PromptEvent::Validate {
+                crate::roam::insert_block(cx.editor, input);
+            }
+        },
+    ))
+}
+
+/// Asks for a citation key, completing over the bibliographies and the graph.
+pub fn org_cite_prompt(editor: &Editor) -> Box<dyn Component> {
+    let keys = crate::roam::citation_keys(editor);
+
+    Box::new(ui::Prompt::new(
+        "Cite: ".into(),
+        None,
+        move |_editor, input| {
+            let input = input.to_lowercase();
+            keys.iter()
+                .filter(|key| key.to_lowercase().starts_with(&input))
+                .map(|key| (0.., key.to_string().into()))
+                .collect()
+        },
+        |cx, input, event| {
+            if event == PromptEvent::Validate {
+                crate::roam::insert_citation(cx.editor, input);
+            }
+        },
+    ))
+}
+
+fn org_emphasis(cx: &mut Context) {
+    let prompt = org_emphasis_prompt();
+    cx.push_layer(prompt);
+}
+
+fn org_insert_block(cx: &mut Context) {
+    let prompt = org_block_prompt();
+    cx.push_layer(prompt);
+}
+
+fn org_cite_insert(cx: &mut Context) {
+    let prompt = org_cite_prompt(cx.editor);
+    cx.push_layer(prompt);
+}
+
+fn org_cite_follow(cx: &mut Context) {
+    crate::roam::follow_citation(cx.editor);
+}
+
+fn org_footnote_new(cx: &mut Context) {
+    crate::roam::footnote_new(cx.editor);
+}
+
+fn org_footnote_goto(cx: &mut Context) {
+    crate::roam::footnote_goto(cx.editor);
+}
+
+fn org_footnote_renumber(cx: &mut Context) {
+    crate::roam::footnote_renumber(cx.editor);
 }
 
 fn org_agenda_restrict(cx: &mut Context) {
