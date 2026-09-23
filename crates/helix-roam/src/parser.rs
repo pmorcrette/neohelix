@@ -78,6 +78,9 @@ pub struct FileSettings {
     pub drawers: Vec<String>,
     /// `#+STARTUP:` options, in the order given.
     pub startup: Vec<String>,
+    /// What entering or leaving a keyword records, from `TODO(t!)` and
+    /// `DONE(d@/!)`. Only keywords that ask for something appear.
+    pub todo_logging: Vec<(String, crate::logging::KeywordLog)>,
     /// `#+PROPERTY:` defaults, which every entry in the file inherits.
     pub properties: Vec<(String, String)>,
     /// `#+LINK:` abbreviations, as `(name, expansion)`.
@@ -101,6 +104,7 @@ impl Default for FileSettings {
             declared_tags: Vec::new(),
             drawers: Vec::new(),
             startup: Vec::new(),
+            todo_logging: Vec::new(),
             properties: Vec::new(),
             link_abbreviations: Vec::new(),
         }
@@ -127,6 +131,15 @@ impl FileSettings {
             keyword: word.to_string(),
             done,
         })
+    }
+
+    /// What entering or leaving `keyword` records.
+    pub fn keyword_log(&self, keyword: &str) -> crate::logging::KeywordLog {
+        self.todo_logging
+            .iter()
+            .find(|(name, _)| name == keyword)
+            .map(|(_, log)| *log)
+            .unwrap_or_default()
     }
 
     /// Reads every setting a file declares.
@@ -160,6 +173,7 @@ impl FileSettings {
                         settings.done_keywords.clear();
                         declared_todo = true;
                     }
+                    settings.todo_logging.extend(parse_todo_logging(value));
                     settings.todo_keywords.extend(active);
                     settings.done_keywords.extend(done);
                 }
@@ -218,6 +232,19 @@ fn parse_todo_sequence(value: &str) -> (Vec<String>, Vec<String>) {
     };
 
     (active, done)
+}
+
+/// The logging a sequence asks for: `WAIT(w@/!)` takes a note on entering
+/// `WAIT` and records the time on leaving it.
+fn parse_todo_logging(value: &str) -> Vec<(String, crate::logging::KeywordLog)> {
+    value
+        .split_whitespace()
+        .filter_map(|word| {
+            let (name, rest) = word.split_once('(')?;
+            let log = crate::logging::KeywordLog::parse(rest.strip_suffix(')')?);
+            (!name.is_empty() && log != Default::default()).then(|| (name.to_string(), log))
+        })
+        .collect()
 }
 
 /// Drops the `(t)` fast-access keys Org allows after a keyword or a tag.

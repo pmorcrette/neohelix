@@ -262,8 +262,9 @@ pub fn extract_subtree(text: &str, line: usize, new_id: Uuid) -> Result<Extracti
     if existing_id(&subtree).is_none() {
         // A node needs an id before it can be linked to, and the drawer sits
         // directly under its headline.
+        let below = below_planning(&subtree, 0);
         subtree.splice(
-            1..1,
+            below..below,
             [
                 ":PROPERTIES:".to_string(),
                 format!(":ID:       {id}"),
@@ -383,8 +384,19 @@ pub fn cycle_todo(
     settings: &FileSettings,
     forward: bool,
 ) -> Result<String, Error> {
-    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    let (start, _, level) = subtree_range(&lines, line).ok_or(Error::NoSubtree)?;
+    let (_, next) = todo_step(text, line, settings, forward)?;
+    set_todo(text, line, settings, next.as_deref())
+}
+
+/// The state of the headline at `line`, and the one cycling moves it to.
+pub fn todo_step(
+    text: &str,
+    line: usize,
+    settings: &FileSettings,
+    forward: bool,
+) -> Result<(Option<String>, Option<String>), Error> {
+    let lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let (start, _, _) = subtree_range(&lines, line).ok_or(Error::NoSubtree)?;
 
     // The cycle: every keyword, then nothing.
     let mut states: Vec<Option<&str>> = settings
@@ -395,13 +407,7 @@ pub fn cycle_todo(
         .collect();
     states.push(None);
 
-    let rest = headline_text(&lines[start]);
-    let current = rest
-        .split_once(char::is_whitespace)
-        .map(|(first, _)| first)
-        .unwrap_or(rest);
-    let current = settings.is_todo_keyword(current).then_some(current);
-
+    let current = current_todo(headline_text(&lines[start]), settings);
     let at = states
         .iter()
         .position(|state| *state == current)
@@ -412,13 +418,36 @@ pub fn cycle_todo(
         states[(at + states.len() - 1) % states.len()]
     };
 
+    Ok((current.map(str::to_string), next.map(str::to_string)))
+}
+
+/// The TODO keyword a headline's text starts with, if the file declares it.
+fn current_todo<'a>(rest: &'a str, settings: &FileSettings) -> Option<&'a str> {
+    let first = rest
+        .split_once(char::is_whitespace)
+        .map(|(first, _)| first)
+        .unwrap_or(rest);
+    settings.is_todo_keyword(first).then_some(first)
+}
+
+/// Puts the headline at `line` in `state`, or in no state at all.
+pub fn set_todo(
+    text: &str,
+    line: usize,
+    settings: &FileSettings,
+    state: Option<&str>,
+) -> Result<String, Error> {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let (start, _, level) = subtree_range(&lines, line).ok_or(Error::NoSubtree)?;
+
+    let rest = headline_text(&lines[start]);
     // Rebuild the headline: stars, new state, then what was already there.
-    let without_state = match current {
+    let without_state = match current_todo(rest, settings) {
         Some(keyword) => rest[keyword.len()..].trim_start(),
         None => rest,
     };
     let stars = "*".repeat(level);
-    lines[start] = match next {
+    lines[start] = match state {
         Some(state) => format!("{stars} {state} {without_state}")
             .trim_end()
             .to_string(),
@@ -528,13 +557,18 @@ pub fn change_priority(
 pub enum Planning {
     Scheduled,
     Deadline,
+    /// When the entry was marked done, which Org writes itself.
+    Closed,
 }
 
 impl Planning {
+    const ALL: [Planning; 3] = [Planning::Closed, Planning::Deadline, Planning::Scheduled];
+
     fn label(self) -> &'static str {
         match self {
             Planning::Scheduled => "SCHEDULED:",
             Planning::Deadline => "DEADLINE:",
+            Planning::Closed => "CLOSED:",
         }
     }
 }
@@ -557,9 +591,11 @@ pub fn set_planning(
         .then(|| start + 1)
         .filter(|at| is_planning_line(&lines[*at]));
 
+    // Every part is carried over, not only the two a user sets: rebuilding
+    // from SCHEDULED and DEADLINE alone silently dropped a CLOSED stamp.
     let mut parts: Vec<(Planning, String)> = Vec::new();
     if let Some(at) = planning_at {
-        for other in [Planning::Scheduled, Planning::Deadline] {
+        for other in Planning::ALL {
             if other != which {
                 if let Some(existing) = planning_part(&lines[at], other) {
                     parts.push((other, existing));
@@ -570,11 +606,8 @@ pub fn set_planning(
     if let Some(stamp) = stamp {
         parts.push((which, stamp.to_string()));
     }
-    // Org writes DEADLINE before SCHEDULED.
-    parts.sort_by_key(|(which, _)| match which {
-        Planning::Deadline => 0,
-        Planning::Scheduled => 1,
-    });
+    // Org writes CLOSED first, then DEADLINE before SCHEDULED.
+    parts.sort_by_key(|(which, _)| Planning::ALL.iter().position(|other| other == which));
 
     let rendered = parts
         .iter()
@@ -594,8 +627,33 @@ pub fn set_planning(
     Ok(rejoin(&lines, text))
 }
 
+/// The stamp the entry at `line` carries for `which`, as written.
+pub fn planning_value(text: &str, line: usize, which: Planning) -> Option<String> {
+    let lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let (start, end, _) = subtree_range(&lines, line)?;
+
+    let at = start + 1;
+    (at < end && is_planning_line(&lines[at]))
+        .then(|| planning_part(&lines[at], which))
+        .flatten()
+}
+
+/// The first line after the headline at `headline` and its planning line.
+///
+/// Org requires the planning line to follow the headline directly, so this is
+/// the earliest a drawer may go. Inserting one straight under the headline
+/// pushes `SCHEDULED:` down into the body, where it stops being planning.
+pub(crate) fn below_planning(lines: &[String], headline: usize) -> usize {
+    let next = headline + 1;
+    if lines.get(next).is_some_and(|line| is_planning_line(line)) {
+        next + 1
+    } else {
+        next
+    }
+}
+
 /// Whether a line is a planning line rather than body text.
-fn is_planning_line(line: &str) -> bool {
+pub(crate) fn is_planning_line(line: &str) -> bool {
     let trimmed = line.trim_start();
     ["SCHEDULED:", "DEADLINE:", "CLOSED:"]
         .iter()
@@ -743,6 +801,36 @@ pub fn set_property(text: &str, line: usize, property: &str, value: &str) -> Res
     Ok(rejoin(&lines, text))
 }
 
+/// Sets a property, giving the entry a drawer first if it has none.
+///
+/// For values the editor records on its own, like `LAST_REPEAT`: refusing
+/// because the user never made a drawer would lose the record.
+pub fn put_property(text: &str, line: usize, property: &str, value: &str) -> String {
+    if let Ok(done) = set_property(text, line, property, value) {
+        return done;
+    }
+
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    let at = line.min(lines.len() - 1);
+    let headline = lines[..=at]
+        .iter()
+        .rposition(|l| headline_level(l).is_some());
+    let insert_at = headline.map_or(0, |at| below_planning(&lines, at));
+    lines.splice(
+        insert_at..insert_at,
+        [
+            ":PROPERTIES:".to_string(),
+            format!(":{property}: {value}"),
+            ":END:".to_string(),
+        ],
+    );
+
+    rejoin(&lines, text)
+}
+
 /// Removes a property from the entry at `line`.
 ///
 /// Returns `None` when it was not there, so the caller can say so rather than
@@ -836,7 +924,7 @@ pub fn insert_drawer(text: &str, line: usize, name: &str) -> String {
     let after = match headline {
         Some(headline_at) => match drawer_range(&lines, headline_at + 1) {
             Some((_, end)) => end + 1,
-            None => headline_at + 1,
+            None => below_planning(&lines, headline_at),
         },
         None => 0,
     };
@@ -855,18 +943,38 @@ pub fn insert_drawer(text: &str, line: usize, name: &str) -> String {
 /// The drawer is created when there is none. Entries go at the top, newest
 /// first, which is how Org writes them.
 pub fn log_entry(text: &str, line: usize, entry: &str) -> String {
+    log_entry_into(text, line, entry, true)
+}
+
+/// Records `entry` on the entry at `line`, in a `:LOGBOOK:` or not.
+///
+/// Without the drawer, which is what `#+STARTUP: nologdrawer` asks for, the
+/// entry goes where the drawer would have: after the planning line and the
+/// property drawer, at the top of the body.
+pub fn log_entry_into(text: &str, line: usize, entry: &str, into_drawer: bool) -> String {
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
     let at = line.min(lines.len().saturating_sub(1));
     let headline = lines[..=at]
         .iter()
         .rposition(|l| headline_level(l).is_some());
 
-    // The logbook sits after the headline's property drawer, if it has one.
+    // The logbook sits after the planning line and the property drawer.
     let search_from = headline.map_or(0, |at| at + 1);
     let after_properties = match drawer_range(&lines, search_from) {
         Some((_, end)) => end + 1,
-        None => search_from,
+        None => headline.map_or(0, |at| below_planning(&lines, at)),
     };
+
+    if !into_drawer {
+        lines.splice(
+            after_properties..after_properties,
+            entry.lines().map(str::to_string),
+        );
+        return rejoin(&lines, text);
+    }
 
     let existing = lines[after_properties..]
         .iter()
@@ -880,16 +988,14 @@ pub fn log_entry(text: &str, line: usize, entry: &str) -> String {
         });
 
     match existing {
-        Some(at) => lines.insert(at + 1, entry.to_string()),
+        Some(at) => {
+            lines.splice(at + 1..at + 1, entry.lines().map(str::to_string));
+        }
         None => {
-            lines.splice(
-                after_properties..after_properties,
-                [
-                    ":LOGBOOK:".to_string(),
-                    entry.to_string(),
-                    ":END:".to_string(),
-                ],
-            );
+            let mut drawer = vec![":LOGBOOK:".to_string()];
+            drawer.extend(entry.lines().map(str::to_string));
+            drawer.push(":END:".to_string());
+            lines.splice(after_properties..after_properties, drawer);
         }
     }
 
@@ -1102,6 +1208,12 @@ pub fn edit_property(
 /// Start and end (exclusive, not counting `:END:`) of the drawer opening at or
 /// just after `from`.
 fn drawer_range(lines: &[String], from: usize) -> Option<(usize, usize)> {
+    // A planning line comes between a headline and its drawer.
+    let from = if lines.get(from).is_some_and(|line| is_planning_line(line)) {
+        from + 1
+    } else {
+        from
+    };
     let start = lines[from..]
         .iter()
         .position(|l| l.trim().eq_ignore_ascii_case(":PROPERTIES:"))
@@ -1217,7 +1329,7 @@ pub fn ensure_id(text: &str, line: usize, new_id: Uuid) -> Result<IdOutcome, Err
 
     // The drawer goes directly under the headline, or at the very top for the
     // preamble node.
-    let insert_at = headline.map_or(0, |at| at + 1);
+    let insert_at = headline.map_or(0, |at| below_planning(&lines, at));
     let scope: Vec<String> = match headline {
         Some(at) => lines[at..].to_vec(),
         None => {

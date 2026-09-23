@@ -351,6 +351,14 @@ impl View {
     }
 
     pub fn ensure_cursor_in_view(&self, doc: &mut Document, scrolloff: usize) {
+        // A cursor never stays inside folded text: a search, a jump or a
+        // positioned open that lands there opens the fold instead of leaving
+        // the cursor somewhere nothing is drawn. Checked here because every
+        // command's effect on the cursor passes through this call.
+        let text = doc.text().slice(..);
+        let cursor = doc.selection(self.id).primary().cursor(text);
+        doc.folds_mut().reveal(cursor);
+
         if let Some(offset) = self.offset_coords_to_in_view_center::<false>(doc, scrolloff) {
             doc.set_view_offset(self.id, offset);
         }

@@ -204,6 +204,10 @@ impl Application {
                             })
                             .collect();
                         doc.set_selection(view_id, selection);
+                        let scrolloff = editor.config().scrolloff;
+                        let view = view!(editor, view_id);
+                        let doc = doc_mut!(editor, &doc_id);
+                        view.ensure_cursor_in_view(doc, scrolloff);
                     }
                 }
 

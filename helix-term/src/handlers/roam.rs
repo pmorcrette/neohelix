@@ -1,4 +1,5 @@
-//! Remembering where `:ID:`s live, so a link can leave the notes directory.
+//! What opening an Org file does: remember where its `:ID:`s live, and fold
+//! it the way its `#+STARTUP:` asks.
 //!
 //! The index knows the files it scanned. An `id:` link into a file outside
 //! the notes directory resolves to nothing, however real its target is. Every
@@ -40,9 +41,27 @@ fn remember_ids(editor: &mut Editor, id: DocumentId) {
     }
 }
 
+/// Folds a newly opened Org file the way its `#+STARTUP:` asks.
+///
+/// Not gated on the Roam index being enabled: this is Org, not Org-Roam, and
+/// a file saying `#+STARTUP: overview` means it with or without a graph.
+fn fold_on_open(editor: &mut Editor, id: DocumentId) {
+    let Some(doc) = editor.documents.get_mut(&id) else {
+        return;
+    };
+    let is_org = doc
+        .path()
+        .and_then(|path| path.extension())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("org"));
+    if is_org {
+        crate::roam::apply_startup_folds(doc);
+    }
+}
+
 pub(super) fn register_hooks() {
     register_hook!(move |event: &mut DocumentDidOpen<'_>| {
         remember_ids(event.editor, event.doc);
+        fold_on_open(event.editor, event.doc);
         Ok(())
     });
 }

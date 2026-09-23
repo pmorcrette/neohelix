@@ -157,6 +157,15 @@ impl Folds {
         Some(self.folds.remove(at))
     }
 
+    /// Opens the fold hiding `char_idx`, if one does, and returns it.
+    ///
+    /// A position on a fold's marker is not hidden — that is where folding
+    /// leaves the cursor — so only a position strictly inside opens anything.
+    pub fn reveal(&mut self, char_idx: usize) -> Option<Fold> {
+        self.at(char_idx).filter(|fold| char_idx > fold.start)?;
+        self.remove_at(char_idx)
+    }
+
     /// Moves every fold across an edit.
     ///
     /// A fold's start is associated with the character before it and its end
@@ -410,6 +419,15 @@ mod tests {
 
     fn ranges(folds: &Folds) -> Vec<(usize, usize)> {
         folds.iter().map(|fold| (fold.start, fold.end)).collect()
+    }
+
+    #[test]
+    fn revealing_opens_only_a_fold_that_hides_the_position() {
+        let mut folded = folds(&[(10, 20), (30, 40)]);
+        assert_eq!(folded.reveal(10), None, "the marker is not hidden");
+        assert_eq!(folded.reveal(25), None);
+        assert_eq!(folded.reveal(15), Some(Fold::new(10, 20)));
+        assert_eq!(ranges(&folded), [(30, 40)]);
     }
 
     #[test]

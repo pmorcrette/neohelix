@@ -93,6 +93,19 @@ and every command that counts lines.
 
 - [x] Feed it from `folds.scm`, so every language gets it and not just Org.
 
+  A cursor never stays inside folded text. Until Task 1.21 made files open
+  folded, nothing put it there except the fold commands, which move it onto
+  the marker. Opening `notes.org:12`, a search, or following a link to a
+  second-level node in a file that opens in overview all can, and left the
+  cursor somewhere nothing is drawn. The rule is enforced in
+  `View::ensure_cursor_in_view`, which every command's effect on the cursor
+  passes through: the fold hiding the cursor opens, as Vim's `zv` does. A
+  cursor on a marker is not hidden, so folding from a headline does not
+  undo itself — and the commands that fold without the `z` prefix (sparse
+  trees, narrowing, `:org-startup-visibility`) now move the cursor onto the
+  marker the way the `z` commands always did, or the next redraw would reopen
+  what they just closed.
+
 *Three things the editor caught that the library tests did not. A fold is
 asked for from the headline above it, which is **before** the first hidden
 character, so a fold that could only be found at its exact start could be
@@ -245,11 +258,12 @@ happened to an entry.
 - [x] Effort estimates, and incrementing one.
 - [x] Property inheritance, which changes what a query over the graph returns
       and so belongs with the indexer rather than only the UI.
-- [ ] Insert a drawer, and fold drawers by default the way Org does.
-      Inserting is built. Folding is no longer blocked — Task 1.4 landed, and
-      `folds.scm` already marks `(property_drawer)` and `(drawer)` — but
-      *by default* means folding them when a file opens, which needs the
-      `#+STARTUP:` options of Task 1.21 to say so.
+- [x] Insert a drawer, and fold drawers by default the way Org does.
+
+  Done with Task 1.21's `#+STARTUP:`. "By default" turned out to mean less
+  than it sounds: since Org 9.4 a file that declares nothing opens with
+  everything showing, drawers included. Drawers close on opening under every
+  other visibility option unless the file says `showdrawers`.
 - [x] Logging: record state changes and timestamps into `:LOGBOOK:`, and add a
       dated note to an entry.
 
@@ -548,12 +562,61 @@ produces a wrong index that nothing reports.
 - [x] `#+CATEGORY:` and `#+ARCHIVE:`, needed by Tasks 1.7 and 1.5 respectively.
 - [x] `#+DRAWERS:` for custom drawer names, so a drawer the file declares is
       not parsed as content.
-- [ ] `#+STARTUP:` folding and visibility options (`overview`, `content`,
+- [x] `#+STARTUP:` folding and visibility options (`overview`, `content`,
       `showeverything`, `hidedrawers`, `hideblocks`, …), which is how a file
       says how it wants to open. Task 1.4 built what these drive; the parser
       already collects them, and nothing applies them yet.
-- [ ] `#+STARTUP:` logging options (`logdone`, `logdrawer`, `logrepeat`, …),
+
+  Applied when a file is first opened, and again on `:org-startup-visibility`
+  (Org's `C-u C-u TAB`). Read: `overview`/`fold`, `content`, `showall`/
+  `nofold`, `show2levels` to `show5levels`, `showeverything`, the drawer and
+  block pairs, the per-entry `:VISIBILITY:` property, and archived subtrees
+  staying closed. The ranges are computed from the text, the way a sparse
+  tree's are, and come out identical to what folding by hand produces — so
+  `z` tab on a headline the file opened folded carries on cycling from there,
+  which the editor confirmed.
+
+- [x] `#+STARTUP:` logging options (`logdone`, `logdrawer`, `logrepeat`, …),
       which Task 1.11 needs to know what to record.
+
+  Cycling a state recorded nothing before this: no `CLOSED:`, no log line —
+  and a task with a repeater marked done simply **stayed done**, which is the
+  one thing a repeater exists to prevent. Now, as in Org's `org-todo`:
+  leaving a done state drops `CLOSED:`; `logdone` adds it and `lognotedone`
+  asks for a closing note; a keyword's own `!` or `@` in `#+TODO:`
+  (`WAIT(w@/!)`) logs entering or leaving it; and a repeating entry marked
+  done moves every active repeating timestamp on (`+`, `++` and `.+` each as
+  Org defines them), goes back to its first TODO keyword or its
+  `REPEAT_TO_STATE`, and records `LAST_REPEAT` and a state line instead of
+  closing. `logreschedule` and `logredeadline` log changing a date that was
+  already set. A note is asked for in a prompt after the change is made;
+  escaping it records nothing and keeps the change, as aborting does in Org.
+
+  One default differs on purpose: log lines go into `:LOGBOOK:` unless the
+  file says `nologdrawer`, where Org writes into the body. The fork's logging
+  commands have always used the drawer, and moving where notes land under a
+  user's feet would be worse than the difference.
+
+  Not read: `logstatesreversed` (entries are always newest first),
+  `lognoteclock-out` (no clocking until Task 1.9), `logrefile`, the
+  per-entry `LOGGING` property, and a `#+TODO:` with several sequences
+  resetting a repeat to the head of its *own* sequence — the settings keep
+  one flat keyword list, so it goes to the first keyword of the file.
+
+  The log headings (`State %-12s from %-12S %t`, `CLOSING NOTE %t`,
+  `Rescheduled from %S on %t`, old dates quoted as inactive) and the order of
+  the startup steps are written from memory of Org's `org-log-note-headings`
+  and `org-cycle-set-startup-visibility`: the sources are unreachable from
+  this environment, as they were for Task 1.13.
+
+  Building this found three bugs in code already marked done, all from
+  assuming the property drawer comes straight after the headline, when Org
+  puts the planning line there. On any scheduled entry, the property drawer
+  was invisible to every property command (`:EFFORT:` reported "no drawer");
+  a new `:LOGBOOK:`, `:ID:` drawer or custom drawer was inserted *above*
+  `SCHEDULED:`, which stops being a planning line once it is not directly
+  under the headline; and setting `DEADLINE:` silently dropped a `CLOSED:`
+  stamp on the same line. Each has a regression test.
 - [ ] The export and citation keywords — `#+OPTIONS:`, `#+INCLUDE:`,
       `#+MACRO:`, `#+BIBLIOGRAPHY:`, `#+CITE_EXPORT:` — belong with Tasks 1.9
       and 1.14 rather than here.
@@ -621,6 +684,11 @@ exist. Tracing the compositor stack showed the prompt being pushed 10 ms after
 the key that asked for it, and the keys arriving 2 ms apart although the
 harness had spaced them 900 ms. Reading while typing made the same sequence
 pass.*
+
+*A second one, cheaper: an Escape followed by another key must go out as two
+writes. Written together, `\x1b:` is Alt-`:` to a terminal, so "escape the
+prompt, then `:w`" silently became neither — the file was never saved, and
+the run looked like a command that had changed nothing.*
 
 ---
 

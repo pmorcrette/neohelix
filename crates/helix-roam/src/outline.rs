@@ -195,7 +195,7 @@ impl Filter {
 }
 
 /// Character offset of the start of each line, with the text's length last.
-fn line_starts(text: &str) -> Vec<usize> {
+pub(crate) fn line_starts(text: &str) -> Vec<usize> {
     let mut starts = vec![0];
     let mut chars = 0;
 
@@ -217,7 +217,7 @@ fn line_starts(text: &str) -> Vec<usize> {
 /// A run that follows a visible line starts at that line's newline, so it
 /// collapses onto it the way a folded subtree collapses onto its headline. A
 /// run at the very top has no line to collapse onto and gets one of its own.
-fn ranges_for(hidden: &[bool], starts: &[usize]) -> Vec<(usize, usize)> {
+pub(crate) fn ranges_for(hidden: &[bool], starts: &[usize]) -> Vec<(usize, usize)> {
     let mut ranges = Vec::new();
     let mut at = 0;
 

@@ -2393,6 +2393,7 @@ roam_buffer_command!(org_parent_heading, crate::roam::goto_parent_heading);
 roam_buffer_command!(org_outline_path, crate::roam::show_outline_path);
 roam_buffer_command!(org_narrow, crate::roam::narrow_to_subtree);
 roam_buffer_command!(org_widen, crate::roam::widen);
+roam_buffer_command!(org_startup_visibility, crate::roam::startup_visibility);
 roam_component_command!(org_goto_heading, crate::commands::org_heading_picker);
 roam_component_command!(org_sparse_tree, |_editor| Some(
     crate::commands::org_sparse_tree_prompt()
@@ -4819,6 +4820,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Bring back everything a narrowing or sparse tree hid.",
         fun: org_widen,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-startup-visibility",
+        aliases: &[],
+        doc: "Fold the buffer the way its #+STARTUP: says it opens.",
+        fun: org_startup_visibility,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

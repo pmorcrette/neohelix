@@ -493,6 +493,7 @@ impl MappableCommand {
         org_sparse_tree, "Hide everything but the entries matching a filter",
         org_narrow, "Hide everything outside the subtree at the cursor",
         org_widen, "Bring back everything a narrowing or sparse tree hid",
+        org_startup_visibility, "Fold the buffer the way its #+STARTUP: says it opens",
         org_copy_subtree, "Copy the subtree at the cursor",
         org_cut_subtree, "Cut the subtree at the cursor",
         org_paste_subtree, "Paste the copied subtree at the cursor's level",
@@ -4351,6 +4352,10 @@ fn org_narrow(cx: &mut Context) {
 
 fn org_widen(cx: &mut Context) {
     crate::roam::widen(cx.editor);
+}
+
+fn org_startup_visibility(cx: &mut Context) {
+    crate::roam::startup_visibility(cx.editor);
 }
 
 /// Asks which emphasis to toggle, completing over the six.
@@ -8614,7 +8619,7 @@ fn foldable_at_cursor(cx: &mut Context) -> Option<helix_core::fold::Fold> {
 ///
 /// A cursor inside folded text is a cursor nobody can see, and the next
 /// keystroke would edit a line that is not on screen.
-fn reveal_cursors(editor: &mut Editor) {
+pub(crate) fn reveal_cursors(editor: &mut Editor) {
     let (view, doc) = current!(editor);
     let text = doc.text().slice(..);
     let folds = doc.folds().clone();

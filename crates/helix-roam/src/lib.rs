@@ -14,6 +14,7 @@ mod graph;
 pub mod hyperlink;
 mod link;
 pub mod list;
+pub mod logging;
 pub mod markup;
 mod node;
 pub mod outline;
@@ -22,6 +23,7 @@ pub mod query;
 pub mod restructure;
 pub mod scanner;
 pub mod sort;
+pub mod startup;
 pub mod table;
 pub mod unlinked;
 

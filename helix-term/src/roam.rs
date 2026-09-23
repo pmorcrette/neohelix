@@ -1297,11 +1297,11 @@ pub fn log_state_change(editor: &mut Editor, input: &str) {
 
     let stamp =
         helix_roam::date::log_stamp(helix_roam::Date::today(), helix_roam::date::Time::now());
-    let entry = if from.is_empty() {
-        format!("- State \"{to}\" from {stamp}")
-    } else {
-        format!("- State \"{to}\" from \"{from}\" {stamp}")
-    };
+    let from = (!from.is_empty()).then_some(from);
+    let entry = format!(
+        "- {}",
+        helix_roam::logging::state_heading(Some(to), from, &stamp)
+    );
 
     let (text, line) = text_and_line(editor);
     let after = helix_roam::restructure::log_entry(&text, line, &entry);
@@ -1396,12 +1396,72 @@ pub fn move_subtree_down(editor: &mut Editor) {
 /// Moves the headline to the next state its file declares.
 fn cycle_todo(editor: &mut Editor, forward: bool) {
     let settings = file_settings(editor);
+    let startup = helix_roam::startup::Startup::of(&settings);
     let (text, line) = text_and_line(editor);
 
-    match helix_roam::restructure::cycle_todo(&text, line, &settings, forward) {
-        Ok(after) => apply_to_buffer(editor, "Cycled the state".to_string(), after),
+    let (_, next) = match helix_roam::restructure::todo_step(&text, line, &settings, forward) {
+        Ok(step) => step,
+        Err(err) => {
+            editor.set_error(err.to_string());
+            return;
+        }
+    };
+    let changed =
+        helix_roam::logging::change_state(&text, line, &settings, &startup, next.as_deref(), now());
+
+    match changed {
+        Ok(change) => {
+            let done = match (change.repeated, &change.state) {
+                (true, state) => format!(
+                    "Repeated: back to {}, dates moved on",
+                    state.as_deref().unwrap_or("no state")
+                ),
+                (false, Some(state)) => format!("State {state}"),
+                (false, None) => "Cleared the state".to_string(),
+            };
+            apply_to_buffer(editor, done, change.text);
+            if let Some(pending) = change.note {
+                ask_for_note(pending);
+            }
+        }
         Err(err) => editor.set_error(err.to_string()),
     }
+}
+
+/// The date and time a log line records.
+fn now() -> (helix_roam::Date, helix_roam::date::Time) {
+    (helix_roam::Date::today(), helix_roam::date::Time::now())
+}
+
+/// Asks for the note a state change or a reschedule is waiting on.
+///
+/// Queued rather than pushed: the change that wants a note is often itself
+/// the result of a prompt, which has no compositor to push onto. Escaping the
+/// prompt records nothing, as aborting the note does in Org; the change it
+/// followed stays made.
+fn ask_for_note(pending: helix_roam::logging::PendingNote) {
+    let label = if pending.heading.starts_with("CLOSING NOTE") {
+        "Closing note: "
+    } else {
+        "Note: "
+    };
+
+    crate::job::dispatch_blocking(move |_editor, compositor| {
+        let prompt = crate::ui::Prompt::new(
+            label.into(),
+            None,
+            |_editor, _input| Vec::new(),
+            move |cx, input, event| {
+                if event != crate::ui::PromptEvent::Validate {
+                    return;
+                }
+                let text = doc!(cx.editor).text().to_string();
+                let after = helix_roam::logging::write_note(&text, &pending, input);
+                apply_to_buffer(cx.editor, "Noted".to_string(), after);
+            },
+        );
+        compositor.push(Box::new(prompt));
+    });
 }
 
 pub fn todo_next(editor: &mut Editor) {
@@ -1467,16 +1527,22 @@ fn set_planning(editor: &mut Editor, which: helix_roam::restructure::Planning, i
         }
     };
 
+    let settings = file_settings(editor);
+    let startup = helix_roam::startup::Startup::of(&settings);
     let (text, line) = text_and_line(editor);
-    match helix_roam::restructure::set_planning(&text, line, which, stamp.as_deref()) {
-        Ok(after) => apply_to_buffer(
-            editor,
-            match &stamp {
-                Some(stamp) => format!("Set {stamp}"),
-                None => "Cleared it".to_string(),
-            },
-            after,
-        ),
+    match helix_roam::logging::replan(&text, line, which, stamp.as_deref(), &startup, now()) {
+        Ok(replanned) => {
+            let done = match (&stamp, replanned.logged) {
+                (Some(stamp), false) => format!("Set {stamp}"),
+                (Some(stamp), true) => format!("Set {stamp}, and logged the change"),
+                (None, false) => "Cleared it".to_string(),
+                (None, true) => "Cleared it, and logged the change".to_string(),
+            };
+            apply_to_buffer(editor, done, replanned.text);
+            if let Some(pending) = replanned.note {
+                ask_for_note(pending);
+            }
+        }
         Err(err) => editor.set_error(err.to_string()),
     }
 }
@@ -2154,6 +2220,8 @@ fn fold_ranges(editor: &mut Editor, ranges: Vec<(usize, usize)>) -> usize {
         doc.folds_mut()
             .insert(helix_core::fold::Fold::new(*start, *end));
     }
+    // Out of what was just hidden, or the next redraw would open it again.
+    crate::commands::reveal_cursors(editor);
     ranges.len()
 }
 
@@ -2187,6 +2255,37 @@ pub fn narrow_to_subtree(editor: &mut Editor) {
     }
     fold_ranges(editor, ranges);
     editor.set_status("Narrowed to the subtree");
+}
+
+/// The folds `#+STARTUP:` asks for, replacing whatever is folded now.
+///
+/// Returns how many ranges it hid. Used when a file opens and when the user
+/// asks to get back to how the file opened, which is Org's `C-u C-u TAB`.
+pub fn apply_startup_folds(doc: &mut helix_view::Document) -> usize {
+    let text = doc.text().to_string();
+    let settings = helix_roam::FileSettings::scan(&text);
+    let startup = helix_roam::startup::Startup::of(&settings);
+    let ranges = helix_roam::startup::opening_ranges(&text, &startup);
+
+    let folds = doc.folds_mut();
+    folds.clear();
+    for (start, end) in &ranges {
+        folds.insert(helix_core::fold::Fold::new(*start, *end));
+    }
+    ranges.len()
+}
+
+/// Puts the buffer back the way `#+STARTUP:` says it opens.
+pub fn startup_visibility(editor: &mut Editor) {
+    let hidden = apply_startup_folds(doc_mut!(editor));
+    crate::commands::reveal_cursors(editor);
+    if hidden == 0 {
+        editor.set_status("This file opens with everything showing");
+    } else {
+        editor.set_status(format!(
+            "Back to how the file opens: {hidden} ranges hidden"
+        ));
+    }
 }
 
 /// Brings back everything a narrowing or a sparse tree hid.

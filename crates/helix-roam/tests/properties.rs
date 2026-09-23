@@ -235,3 +235,79 @@ fn a_query_matches_an_inherited_value() {
     // A query that ignored the file-wide default would find nothing here.
     assert_eq!(graph.query(&query).len(), 1);
 }
+
+/// Org requires the planning line directly under the headline, so every
+/// drawer comes after it. Each of these used to assume the drawer came first.
+mod under_a_planning_line {
+    use helix_roam::restructure::{
+        ensure_id, insert_drawer, log_entry, property_value, set_planning, set_property, IdOutcome,
+        Planning,
+    };
+    use helix_roam::Uuid;
+
+    const PLANNED: &str = "\
+* DONE A task
+CLOSED: [2026-09-20 Sun 10:00] SCHEDULED: <2026-09-20 Sun>
+:PROPERTIES:
+:EFFORT: 1:00
+:END:
+Body.
+";
+
+    #[test]
+    fn the_property_drawer_is_still_found() {
+        assert_eq!(
+            property_value(PLANNED, 0, "EFFORT").as_deref(),
+            Some("1:00")
+        );
+        let out = set_property(PLANNED, 0, "EFFORT", "2:00").unwrap();
+        assert!(out.contains(":EFFORT: 2:00"), "{out}");
+    }
+
+    #[test]
+    fn setting_one_planning_stamp_keeps_the_others() {
+        let out = set_planning(PLANNED, 0, Planning::Deadline, Some("<2026-09-30 Wed>")).unwrap();
+        assert!(
+            out.contains(
+                "CLOSED: [2026-09-20 Sun 10:00] DEADLINE: <2026-09-30 Wed> SCHEDULED: <2026-09-20 Sun>"
+            ),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn the_logbook_goes_below_the_planning_line_and_the_properties() {
+        let out = log_entry(PLANNED, 0, "- note");
+        assert_eq!(
+            out,
+            "* DONE A task\nCLOSED: [2026-09-20 Sun 10:00] SCHEDULED: <2026-09-20 Sun>\n\
+             :PROPERTIES:\n:EFFORT: 1:00\n:END:\n:LOGBOOK:\n- note\n:END:\nBody.\n"
+        );
+    }
+
+    #[test]
+    fn new_drawers_go_below_the_planning_line() {
+        let planned = "* TODO A task\nSCHEDULED: <2026-09-20 Sun>\nBody.\n";
+
+        let out = insert_drawer(planned, 0, "notes");
+        assert!(
+            out.starts_with("* TODO A task\nSCHEDULED: <2026-09-20 Sun>\n:NOTES:"),
+            "{out}"
+        );
+
+        let out = log_entry(planned, 0, "- note");
+        assert!(
+            out.starts_with("* TODO A task\nSCHEDULED: <2026-09-20 Sun>\n:LOGBOOK:"),
+            "{out}"
+        );
+
+        let id: Uuid = "6ba7b810-9dad-11d1-80b4-00c04fd430c8".parse().unwrap();
+        let IdOutcome::Created { text, .. } = ensure_id(planned, 0, id).unwrap() else {
+            panic!("the entry had no id");
+        };
+        assert!(
+            text.starts_with("* TODO A task\nSCHEDULED: <2026-09-20 Sun>\n:PROPERTIES:"),
+            "{text}"
+        );
+    }
+}
