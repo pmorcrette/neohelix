@@ -1585,14 +1585,53 @@ blame, the file's diff, log (through the rename) and staging.
 The `DiffView` renders with fixed settings. Magit puts these on a transient
 (`d`, `D`) because the right answer changes with the diff you are reading.
 
-- [ ] Context lines, adjustable while reading.
-- [ ] Whitespace handling (`-w`, `--ignore-space-change`), which is the
+- [x] Context lines, adjustable while reading.
+- [x] Whitespace handling (`-w`, `--ignore-space-change`), which is the
       difference between a readable diff and an unreadable one after a
       reindent.
-- [ ] Diff algorithm (`--histogram`, `--patience`).
-- [ ] Word-level diff, and `--stat` as a summary view.
-- [ ] Diff against an arbitrary revision or between two, rather than only
+- [x] Diff algorithm (`--histogram`, `--patience`).
+- [x] Word-level diff, and `--stat` as a summary view.
+- [x] Diff against an arbitrary revision or between two, rather than only
       worktree-against-index and index-against-`HEAD`.
+
+*Done.* Every diff view — status, a file's diff, a commit, a range — carries
+its own `DiffOptions` (context, whitespace, algorithm, word marking, summary),
+shown in its title when they differ from the defaults. In a view, `+` / `-`
+widen and narrow the context and `0` puts it back to 3, as in Magit's diff
+buffers; `D` opens the diff settings menu showing the view's settings as they
+are, and `g` there applies them to the open diffs.
+
+- The status buffer's diffs are computed in-process, so the options reach
+  that computation: context and algorithm directly (histogram, Myers, minimal;
+  patience, which only git has, is shown as histogram, its refinement), and
+  whitespace by comparing lines through the setting's key while printing them
+  as they are — context and deleted lines from the old side, added lines from
+  the new. A reindented line is then context, printed as the index has it, so
+  staging from a diff that ignores whitespace stages exactly the changes shown
+  and keeps the index's indentation (tested against a real repository).
+  Unstaging or discarding from such a diff can meet a line whose whitespace
+  differs from what the view shows; the patch is then refused rather than
+  applied wrongly.
+- Commits and ranges come from `git show` / `git diff` with the same options
+  as arguments, `--diff-algorithm=patience` included.
+- Word marking pairs each run of deleted lines with the run of added lines
+  after it, line by line, and marks the words that differ (imara-diff over
+  words, with changes that only whitespace separates joined). The marks
+  toggle reverse video rather than setting it, because in a theme whose popups
+  are reversed already — base16, which Helix falls back to without true colour
+  — setting it showed nothing; that is how it was found.
+- The summary shows each file's size of change as a `+++---` bar scaled to
+  the largest, and no hunks.
+- `d` opens the diff menu: between two revisions, the working tree against a
+  revision, or one commit, with the revisions completed and the first filled
+  from the commit under the cursor. The range view is the commit view's: `a` /
+  `v` apply or reverse a change from it in the working tree.
+
+Checked in the editor: a reindent plus one real change shown plain, with `-b`
+(only the real change), with no context, as a summary, staged under `-b`
+(only the real change reached the index); a range between two revisions; a
+commit with `-w`; word marking, whose escape sequences were checked in the
+terminal output since the harness's text rendering cannot show them.
 
 ### Task 2.13: Repository Entry Points and Arbitrary Commands
 

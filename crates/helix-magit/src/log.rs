@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::command::GitCommand;
-use crate::diff::{parse_unified_diff, FileDiff};
+use crate::diff::{parse_unified_diff, DiffOptions, FileDiff};
 
 /// How many commits a log shows before asking for more.
 pub const DEFAULT_LIMIT: usize = 256;
@@ -241,8 +241,17 @@ pub fn parse_show(text: &str) -> Option<CommitDetails> {
 
 /// Reads one commit — or a stash, which is a commit too.
 pub fn show(workdir: &Path, rev: &str) -> Result<CommitDetails, String> {
+    show_with(workdir, rev, &DiffOptions::default())
+}
+
+/// [`show`] with the diff shaped by `options`.
+pub fn show_with(
+    workdir: &Path,
+    rev: &str,
+    options: &DiffOptions,
+) -> Result<CommitDetails, String> {
     LogFilter::valid_range(rev)?;
-    let args = [
+    let mut args: Vec<String> = [
         "show",
         "--color=never",
         "--no-ext-diff",
@@ -250,16 +259,50 @@ pub fn show(workdir: &Path, rev: &str) -> Result<CommitDetails, String> {
         "--date=format:%Y-%m-%d %H:%M",
         "--patch",
         SHOW_FORMAT,
-        rev,
-        "--",
-    ];
-    let output = GitCommand::new(workdir, args.iter().map(|arg| arg.to_string()).collect())
+    ]
+    .iter()
+    .map(|arg| arg.to_string())
+    .collect();
+    args.extend(options.git_args());
+    args.push(rev.to_string());
+    args.push("--".into());
+    let output = GitCommand::new(workdir, args)
         .run()
         .map_err(|err| err.to_string())?;
     if !output.success {
         return Err(output.summary());
     }
     parse_show(&output.stdout).ok_or_else(|| format!("could not read {rev}"))
+}
+
+/// The diff between two revisions, or between one and the working tree
+/// when `to` is `None`.
+pub fn diff_range(
+    workdir: &Path,
+    from: &str,
+    to: Option<&str>,
+    options: &DiffOptions,
+) -> Result<Vec<FileDiff>, String> {
+    LogFilter::valid_range(from)?;
+    if let Some(to) = to {
+        LogFilter::valid_range(to)?;
+    }
+    let mut args: Vec<String> = ["diff", "--color=never", "--no-ext-diff"]
+        .iter()
+        .map(|arg| arg.to_string())
+        .collect();
+    args.extend(options.git_args());
+    args.push(from.to_string());
+    args.extend(to.map(str::to_string));
+    args.push("--".into());
+    let output = GitCommand::new(workdir, args)
+        .run()
+        .map_err(|err| err.to_string())?;
+    if output.success {
+        Ok(parse_unified_diff(&output.stdout))
+    } else {
+        Err(output.summary())
+    }
 }
 
 #[cfg(test)]

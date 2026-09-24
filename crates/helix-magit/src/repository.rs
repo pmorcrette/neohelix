@@ -8,7 +8,7 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use imara_diff::{Algorithm, InternedInput, Token};
+use imara_diff::{Algorithm, InternedInput};
 
 use crate::diff::{FileDiff, FileStatus};
 use crate::patch::Selection;
@@ -76,6 +76,8 @@ fn conflict_state([base, ours, theirs]: [bool; 3]) -> &'static str {
 pub struct Repository {
     inner: gix::Repository,
     workdir: PathBuf,
+    /// How the diffs this repository computes are shaped.
+    options: crate::diff::DiffOptions,
 }
 
 impl std::fmt::Debug for Repository {
@@ -91,7 +93,17 @@ impl Repository {
     pub fn discover(path: &Path) -> Result<Self> {
         let inner = gix::discover(path).map_err(|_| Error::NotARepository(path.to_path_buf()))?;
         let workdir = inner.workdir().ok_or(Error::NoWorkTree)?.to_path_buf();
-        Ok(Self { inner, workdir })
+        Ok(Self {
+            inner,
+            workdir,
+            options: crate::diff::DiffOptions::default(),
+        })
+    }
+
+    /// Computes diffs with `options`: context, whitespace, algorithm.
+    pub fn with_diff_options(mut self, options: crate::diff::DiffOptions) -> Self {
+        self.options = options;
+        self
     }
 
     /// The working tree root.
@@ -269,7 +281,7 @@ impl Repository {
 
         let old = String::from_utf8_lossy(old).into_owned();
         let new = String::from_utf8_lossy(new).into_owned();
-        let body = unified_diff(&old, &new);
+        let body = unified_diff_with(&old, &new, &self.options);
         if body.is_empty() {
             return None;
         }
@@ -689,11 +701,58 @@ fn is_binary(content: &[u8]) -> bool {
 /// three lines into the file is unusable. Emitting them directly also lets the
 /// `\ No newline at end of file` marker survive, which that printer drops.
 pub fn unified_diff(old: &str, new: &str) -> String {
-    const CONTEXT: u32 = 3;
+    unified_diff_with(old, new, &crate::diff::DiffOptions::default())
+}
 
-    let input = InternedInput::new(old, new);
-    let diff = imara_diff::Diff::compute(Algorithm::Histogram, &input);
-    let (before, after) = (&input.before, &input.after);
+/// A file's lines, each with its terminator, as the diff sees them.
+struct Lines(Vec<String>);
+
+impl imara_diff::TokenSource for Lines {
+    type Token = String;
+    type Tokenizer = std::vec::IntoIter<String>;
+
+    fn tokenize(&self) -> Self::Tokenizer {
+        self.0.clone().into_iter()
+    }
+
+    fn estimate_tokens(&self) -> u32 {
+        self.0.len() as u32
+    }
+}
+
+fn split_lines(text: &str) -> Vec<&str> {
+    text.split_inclusive('\n').collect()
+}
+
+/// [`unified_diff`] with the context, whitespace handling and algorithm of
+/// `options`.
+///
+/// Lines are compared by the key the whitespace setting gives them, but
+/// printed as they are: context and deleted lines from the old side,
+/// added lines from the new. A line whose only change is whitespace the
+/// setting ignores is context, printed as the old side has it — so a hunk
+/// staged from such a diff stages only the changes it shows.
+pub fn unified_diff_with(old: &str, new: &str, options: &crate::diff::DiffOptions) -> String {
+    use crate::diff::{DiffAlgorithm, Whitespace};
+
+    let context = options.context;
+    let before_lines = split_lines(old);
+    let after_lines = split_lines(new);
+    let key = |line: &&str| match options.whitespace {
+        Whitespace::Exact => line.to_string(),
+        _ => options.comparable(line),
+    };
+    let input = InternedInput::new(
+        Lines(before_lines.iter().map(key).collect()),
+        Lines(after_lines.iter().map(key).collect()),
+    );
+    let algorithm = match options.algorithm {
+        DiffAlgorithm::Myers => Algorithm::Myers,
+        DiffAlgorithm::Minimal => Algorithm::MyersMinimal,
+        DiffAlgorithm::Histogram | DiffAlgorithm::Patience => Algorithm::Histogram,
+    };
+    let diff = imara_diff::Diff::compute(algorithm, &input);
+    let (before, after) = (input.before.len() as u32, input.after.len() as u32);
 
     let mut out = String::new();
     let hunks: Vec<_> = diff.hunks().collect();
@@ -704,16 +763,16 @@ pub fn unified_diff(old: &str, new: &str) -> String {
         // context, so git merges them into one; so do we.
         let mut end = index + 1;
         while end < hunks.len()
-            && hunks[end].before.start <= hunks[end - 1].before.end + 2 * CONTEXT
+            && hunks[end].before.start <= hunks[end - 1].before.end + 2 * context
         {
             end += 1;
         }
         let group = &hunks[index..end];
 
-        let before_start = group[0].before.start.saturating_sub(CONTEXT);
-        let before_end = (group[group.len() - 1].before.end + CONTEXT).min(before.len() as u32);
-        let after_start = group[0].after.start.saturating_sub(CONTEXT);
-        let after_end = (group[group.len() - 1].after.end + CONTEXT).min(after.len() as u32);
+        let before_start = group[0].before.start.saturating_sub(context);
+        let before_end = (group[group.len() - 1].before.end + context).min(before);
+        let after_start = group[0].after.start.saturating_sub(context);
+        let after_end = (group[group.len() - 1].after.end + context).min(after);
 
         let _ = writeln!(
             out,
@@ -724,31 +783,27 @@ pub fn unified_diff(old: &str, new: &str) -> String {
 
         let mut pos = before_start;
         for hunk in group {
-            emit_tokens(
+            emit_lines(
                 &mut out,
-                &input,
                 ' ',
-                &before[pos as usize..hunk.before.start as usize],
+                &before_lines[pos as usize..hunk.before.start as usize],
             );
-            emit_tokens(
+            emit_lines(
                 &mut out,
-                &input,
                 '-',
-                &before[hunk.before.start as usize..hunk.before.end as usize],
+                &before_lines[hunk.before.start as usize..hunk.before.end as usize],
             );
-            emit_tokens(
+            emit_lines(
                 &mut out,
-                &input,
                 '+',
-                &after[hunk.after.start as usize..hunk.after.end as usize],
+                &after_lines[hunk.after.start as usize..hunk.after.end as usize],
             );
             pos = hunk.before.end;
         }
-        emit_tokens(
+        emit_lines(
             &mut out,
-            &input,
             ' ',
-            &before[pos as usize..before_end as usize],
+            &before_lines[pos as usize..before_end as usize],
         );
 
         index = end;
@@ -769,10 +824,9 @@ fn format_range(start: u32, count: u32) -> String {
     }
 }
 
-/// Writes each token with its prefix, marking a missing trailing newline.
-fn emit_tokens(out: &mut String, input: &InternedInput<&str>, prefix: char, tokens: &[Token]) {
-    for &token in tokens {
-        let text = input.interner[token];
+/// Writes each line with its prefix, marking a missing trailing newline.
+fn emit_lines(out: &mut String, prefix: char, lines: &[&str]) {
+    for text in lines {
         let _ = write!(out, "{prefix}{text}");
         if !text.ends_with('\n') {
             let _ = writeln!(out);

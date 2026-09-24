@@ -6,6 +6,7 @@
 //! so a selection can be turned back into a patch.
 
 use std::fmt::{self, Write as _};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 /// Which side of the diff a line belongs to.
@@ -186,6 +187,249 @@ impl FileDiff {
             (added + a, removed + r)
         })
     }
+}
+
+/// How much whitespace matters when lines are compared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Whitespace {
+    #[default]
+    Exact,
+    /// `--ignore-space-change`: runs of whitespace are one space, and
+    /// whitespace at the end of a line does not count.
+    IgnoreChange,
+    /// `--ignore-all-space`.
+    IgnoreAll,
+}
+
+/// Which diff algorithm lines up the two sides.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiffAlgorithm {
+    #[default]
+    Histogram,
+    Myers,
+    Minimal,
+    /// Only git has it: diffs computed in-process use histogram instead,
+    /// which is patience's refinement.
+    Patience,
+}
+
+impl DiffAlgorithm {
+    pub fn name(self) -> &'static str {
+        match self {
+            DiffAlgorithm::Histogram => "histogram",
+            DiffAlgorithm::Myers => "myers",
+            DiffAlgorithm::Minimal => "minimal",
+            DiffAlgorithm::Patience => "patience",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim() {
+            "histogram" => Some(DiffAlgorithm::Histogram),
+            "myers" | "default" => Some(DiffAlgorithm::Myers),
+            "minimal" => Some(DiffAlgorithm::Minimal),
+            "patience" => Some(DiffAlgorithm::Patience),
+            _ => None,
+        }
+    }
+}
+
+/// How a diff is computed and shown: Magit's diff arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffOptions {
+    /// Lines of context around each change.
+    pub context: u32,
+    pub whitespace: Whitespace,
+    pub algorithm: DiffAlgorithm,
+    /// Mark the words that changed inside changed lines.
+    pub word_diff: bool,
+    /// Show each file's size of change instead of its hunks.
+    pub stat: bool,
+}
+
+impl Default for DiffOptions {
+    fn default() -> Self {
+        Self {
+            context: 3,
+            whitespace: Whitespace::Exact,
+            algorithm: DiffAlgorithm::Histogram,
+            word_diff: false,
+            stat: false,
+        }
+    }
+}
+
+impl DiffOptions {
+    /// The arguments that make `git diff` / `git show` compute the same
+    /// diff; word marking and the summary are the view's own.
+    pub fn git_args(&self) -> Vec<String> {
+        let mut args = vec![
+            format!("--unified={}", self.context),
+            format!("--diff-algorithm={}", self.algorithm.name()),
+        ];
+        match self.whitespace {
+            Whitespace::Exact => {}
+            Whitespace::IgnoreChange => args.push("--ignore-space-change".into()),
+            Whitespace::IgnoreAll => args.push("--ignore-all-space".into()),
+        }
+        args
+    }
+
+    /// Options from the diff menu's arguments; anything not given keeps its
+    /// default.
+    pub fn from_args(args: &[String]) -> Self {
+        let mut options = Self::default();
+        for arg in args {
+            if let Some(context) = arg.strip_prefix("--unified=") {
+                if let Ok(context) = context.trim().parse() {
+                    options.context = context;
+                }
+            } else if let Some(name) = arg.strip_prefix("--diff-algorithm=") {
+                if let Some(algorithm) = DiffAlgorithm::parse(name) {
+                    options.algorithm = algorithm;
+                }
+            } else if arg == "--ignore-all-space" {
+                options.whitespace = Whitespace::IgnoreAll;
+            } else if arg == "--ignore-space-change" && options.whitespace == Whitespace::Exact {
+                options.whitespace = Whitespace::IgnoreChange;
+            } else if arg == "--word-diff" {
+                options.word_diff = true;
+            } else if arg == "--stat" {
+                options.stat = true;
+            }
+        }
+        options
+    }
+
+    /// What differs from the defaults, for a view's title.
+    pub fn describe(&self) -> String {
+        let default = Self::default();
+        let mut parts = Vec::new();
+        if self.context != default.context {
+            parts.push(format!("-U{}", self.context));
+        }
+        match self.whitespace {
+            Whitespace::Exact => {}
+            Whitespace::IgnoreChange => parts.push("-b".to_string()),
+            Whitespace::IgnoreAll => parts.push("-w".to_string()),
+        }
+        if self.algorithm != default.algorithm {
+            parts.push(self.algorithm.name().to_string());
+        }
+        if self.word_diff {
+            parts.push("words".to_string());
+        }
+        if self.stat {
+            parts.push("stat".to_string());
+        }
+        parts.join(" ")
+    }
+
+    /// The key a line is compared by, as the whitespace setting sees it.
+    pub fn comparable(&self, line: &str) -> String {
+        match self.whitespace {
+            Whitespace::Exact => line.to_string(),
+            Whitespace::IgnoreChange => line.split_whitespace().collect::<Vec<_>>().join(" "),
+            Whitespace::IgnoreAll => line.chars().filter(|c| !c.is_whitespace()).collect(),
+        }
+    }
+}
+
+/// The byte ranges of the words that differ between a deleted line and the
+/// added line that replaced it: `(in old, in new)`.
+pub fn word_changes(old: &str, new: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
+    use imara_diff::{Algorithm, Diff, InternedInput};
+
+    let old_words = words(old);
+    let new_words = words(new);
+    let mut input: InternedInput<&str> = InternedInput::default();
+    input.update_before(old_words.iter().map(|range| &old[range.clone()]));
+    input.update_after(new_words.iter().map(|range| &new[range.clone()]));
+    let diff = Diff::compute(Algorithm::Myers, &input);
+
+    let span = |ranges: &[Range<usize>], tokens: Range<u32>| -> Option<Range<usize>> {
+        if tokens.is_empty() {
+            return None;
+        }
+        Some(ranges[tokens.start as usize].start..ranges[tokens.end as usize - 1].end)
+    };
+    let mut in_old = Vec::new();
+    let mut in_new = Vec::new();
+    for hunk in diff.hunks() {
+        in_old.extend(span(&old_words, hunk.before));
+        in_new.extend(span(&new_words, hunk.after));
+    }
+    (
+        merge_across_spaces(old, in_old),
+        merge_across_spaces(new, in_new),
+    )
+}
+
+/// Joins changed ranges that only whitespace separates, so `+ 1` reads as
+/// one change rather than two.
+fn merge_across_spaces(text: &str, ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
+    let mut out: Vec<Range<usize>> = Vec::new();
+    for range in ranges {
+        match out.last_mut() {
+            Some(last) if text[last.end..range.start].trim().is_empty() => last.end = range.end,
+            _ => out.push(range),
+        }
+    }
+    out
+}
+
+/// A line cut into words, runs of spaces and single other characters.
+fn words(line: &str) -> Vec<Range<usize>> {
+    let mut out = Vec::new();
+    let mut chars = line.char_indices().peekable();
+    while let Some((start, c)) = chars.next() {
+        let same = |next: char| {
+            (c.is_alphanumeric() || c == '_') && (next.is_alphanumeric() || next == '_')
+                || c.is_whitespace() && next.is_whitespace()
+        };
+        let mut end = start + c.len_utf8();
+        while let Some(&(at, next)) = chars.peek() {
+            if !same(next) {
+                break;
+            }
+            end = at + next.len_utf8();
+            chars.next();
+        }
+        out.push(start..end);
+    }
+    out
+}
+
+/// For each changed line of a hunk that has a counterpart, the ranges of
+/// the words that changed. A run of deletions followed by a run of
+/// additions is paired line by line, as far as both go; the rest have no
+/// counterpart and are changed whole.
+pub fn refine(hunk: &DiffHunk) -> std::collections::HashMap<usize, Vec<Range<usize>>> {
+    let mut out = std::collections::HashMap::new();
+    let lines = &hunk.lines;
+    let mut at = 0;
+    while at < lines.len() {
+        if lines[at].kind != DiffLineKind::Deletion {
+            at += 1;
+            continue;
+        }
+        let deletions = at;
+        while at < lines.len() && lines[at].kind == DiffLineKind::Deletion {
+            at += 1;
+        }
+        let additions = at;
+        while at < lines.len() && lines[at].kind == DiffLineKind::Addition {
+            at += 1;
+        }
+        let pairs = (additions - deletions).min(at - additions);
+        for offset in 0..pairs {
+            let (old, new) = (deletions + offset, additions + offset);
+            let (in_old, in_new) = word_changes(&lines[old].content, &lines[new].content);
+            out.insert(old, in_old);
+            out.insert(new, in_new);
+        }
+    }
+    out
 }
 
 /// Parses `git diff` output into one [`FileDiff`] per file.
@@ -666,5 +910,62 @@ diff --git a/a.txt b/a.txt
     fn unparseable_input_yields_no_files() {
         assert!(parse_unified_diff("").is_empty());
         assert!(parse_unified_diff("not a diff at all\njust text\n").is_empty());
+    }
+
+    #[test]
+    fn options_come_from_the_menu_and_go_to_git() {
+        let options = DiffOptions::from_args(&[
+            "--unified=7".into(),
+            "--ignore-space-change".into(),
+            "--diff-algorithm=patience".into(),
+            "--word-diff".into(),
+        ]);
+        assert_eq!(options.context, 7);
+        assert_eq!(options.whitespace, Whitespace::IgnoreChange);
+        assert_eq!(options.algorithm, DiffAlgorithm::Patience);
+        assert!(options.word_diff);
+        assert_eq!(
+            options.git_args(),
+            [
+                "--unified=7",
+                "--diff-algorithm=patience",
+                "--ignore-space-change"
+            ]
+        );
+        assert_eq!(options.describe(), "-U7 -b patience words");
+        assert_eq!(DiffOptions::default().describe(), "");
+    }
+
+    #[test]
+    fn changed_words_are_found_within_a_pair_of_lines() {
+        let (old, new) = word_changes("let total = count + 1;", "let total = count * 2;");
+        let old_text = "let total = count + 1;";
+        let new_text = "let total = count * 2;";
+        let pick = |text: &str, ranges: &[Range<usize>]| -> Vec<String> {
+            ranges
+                .iter()
+                .map(|range| text[range.clone()].to_string())
+                .collect()
+        };
+        assert_eq!(pick(old_text, &old), ["+ 1"]);
+        assert_eq!(pick(new_text, &new), ["* 2"]);
+    }
+
+    #[test]
+    fn deletions_pair_with_the_additions_after_them() {
+        let file = &parse_unified_diff(
+            "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,3 +1,3 @@\n ctx\n-old one\n-gone\n+new one\n",
+        )[0];
+        let refined = refine(&file.hunks[0]);
+        // "old one" pairs with "new one"; "gone" has no partner.
+        assert_eq!(
+            refined.get(&1).map(Vec::as_slice),
+            Some(std::slice::from_ref(&(0..3)))
+        );
+        assert_eq!(
+            refined.get(&3).map(Vec::as_slice),
+            Some(std::slice::from_ref(&(0..3)))
+        );
+        assert_eq!(refined.get(&2), None);
     }
 }

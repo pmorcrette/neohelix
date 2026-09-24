@@ -287,7 +287,11 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
         | MagitCommand::ConflictShowBase
         | MagitCommand::FileDiff
         | MagitCommand::FileLog
-        | MagitCommand::FileBlame => return None,
+        | MagitCommand::FileBlame
+        | MagitCommand::ApplyDiffSettings
+        | MagitCommand::DiffRange
+        | MagitCommand::DiffWorktree
+        | MagitCommand::DiffCommit => return None,
 
         MagitCommand::FileStage => Plan::new(["add", "--", "{0}"], "Stage the file")
             .asking([Ask::required(AskKind::Path, "Stage file")]),

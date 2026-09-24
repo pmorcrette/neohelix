@@ -402,3 +402,61 @@ fn unstaging_one_line_of_a_hunk_keeps_the_rest_staged() {
 
     assert_eq!(index_content(dir.path(), "f.txt"), "one\nTWO\n");
 }
+
+#[test]
+fn a_diff_ignoring_whitespace_stages_only_what_it_shows() {
+    use helix_magit::diff::{DiffOptions, Whitespace};
+
+    let dir = fixture_or_skip!("fn a() {\n    one();\n    two();\n}\n");
+    // A reindent and one real change.
+    fs::write(
+        dir.path().join("f.txt"),
+        "fn a() {\n  one();\n    TWO();\n}\n",
+    )
+    .unwrap();
+
+    let options = DiffOptions {
+        whitespace: Whitespace::IgnoreChange,
+        ..DiffOptions::default()
+    };
+    let repo = Repository::discover(dir.path())
+        .unwrap()
+        .with_diff_options(options);
+    let diffs = repo.worktree_diff().unwrap();
+    let changed: Vec<&str> = diffs[0].hunks[0]
+        .changed_lines()
+        .map(|line| line.content.as_str())
+        .collect();
+    assert_eq!(
+        changed,
+        ["    two();", "    TWO();"],
+        "the reindent is context"
+    );
+
+    repo.stage(&diffs[0], &Selection::File).unwrap();
+    // The index takes the real change and keeps its own indentation.
+    assert_eq!(
+        index_content(dir.path(), "f.txt"),
+        "fn a() {\n    one();\n    TWO();\n}\n"
+    );
+}
+
+#[test]
+fn context_is_adjustable() {
+    use helix_magit::diff::DiffOptions;
+
+    let dir = fixture_or_skip!("a\nb\nc\nd\ne\nf\ng\n");
+    fs::write(dir.path().join("f.txt"), "a\nb\nc\nD\ne\nf\ng\n").unwrap();
+    let none = DiffOptions {
+        context: 0,
+        ..DiffOptions::default()
+    };
+    let repo = Repository::discover(dir.path())
+        .unwrap()
+        .with_diff_options(none);
+    let diffs = repo.worktree_diff().unwrap();
+    assert_eq!(diffs[0].hunks[0].lines.len(), 2);
+    // Staged with no context at all, it still lands in the right place.
+    repo.stage(&diffs[0], &Selection::File).unwrap();
+    assert_eq!(index_content(dir.path(), "f.txt"), "a\nb\nc\nD\ne\nf\ng\n");
+}

@@ -215,3 +215,59 @@ fn a_file_s_log_follows_it_through_a_rename_and_blame_names_each_line() {
     let lines = helix_magit::blame::blame(work, Path::new("b.txt"), Some("HEAD~2")).unwrap();
     assert_eq!(lines.len(), 1);
 }
+
+#[test]
+fn a_commit_and_a_range_are_diffed_with_the_options_asked_for() {
+    use helix_magit::diff::{DiffOptions, Whitespace};
+    use helix_magit::log::{diff_range, show_with};
+
+    let Some(dir) = fixture() else { return };
+    let work = dir.path();
+    fs::write(
+        work.join("a.txt"),
+        "one\n  two\nthree\nfour\nfive\nsix\nseven\n",
+    )
+    .unwrap();
+    git(work, &["commit", "-q", "-am", "Lines"]).unwrap();
+    // Reindent only.
+    fs::write(
+        work.join("a.txt"),
+        "one\ntwo\nthree\nfour\nfive\nsix\nseven\n",
+    )
+    .unwrap();
+    git(work, &["commit", "-q", "-am", "Reindent"]).unwrap();
+
+    let plain = show_with(work, "HEAD", &DiffOptions::default()).unwrap();
+    assert_eq!(plain.files.len(), 1);
+    let ignoring = DiffOptions {
+        whitespace: Whitespace::IgnoreAll,
+        ..DiffOptions::default()
+    };
+    // Nothing but whitespace changed: nothing to show.
+    let blank = show_with(work, "HEAD", &ignoring).unwrap();
+    assert!(
+        blank.files.iter().all(|file| file.hunks.is_empty()),
+        "{:?}",
+        blank.files
+    );
+
+    let wide = DiffOptions {
+        context: 10,
+        ..DiffOptions::default()
+    };
+    let hunk = &show_with(work, "HEAD", &wide).unwrap().files[0].hunks[0];
+    assert_eq!(
+        hunk.lines.len(),
+        8,
+        "all seven lines, the changed one twice"
+    );
+
+    // Between two revisions, and against the working tree.
+    let range = diff_range(work, "HEAD~2", Some("HEAD"), &DiffOptions::default()).unwrap();
+    assert_eq!(range.len(), 1);
+    fs::write(work.join("new.txt"), "x\n").unwrap();
+    git(work, &["add", "new.txt"]).unwrap();
+    let against_tree = diff_range(work, "HEAD", None, &DiffOptions::default()).unwrap();
+    assert_eq!(against_tree[0].path, PathBuf::from("new.txt"));
+    assert!(diff_range(work, "--output=x", None, &DiffOptions::default()).is_err());
+}

@@ -122,6 +122,8 @@ impl TransientOverlay {
             MenuKind::Ignore => return String::new(),
             MenuKind::BranchConfig | MenuKind::RemoteConfig => "git config",
             MenuKind::Resolve | MenuKind::File => return String::new(),
+            MenuKind::Diff => "git diff",
+            MenuKind::DiffSettings => "diff settings:",
         };
 
         if args.is_empty() {
@@ -404,6 +406,31 @@ impl TransientOverlay {
                     }
                 })))
             }
+            MagitCommand::ApplyDiffSettings => {
+                let options = helix_magit::diff::DiffOptions::from_args(&self.menu.args());
+                EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                    compositor.remove(TransientOverlay::ID);
+                    for id in [DiffView::COMMIT_ID, DiffView::RANGE_ID, DiffView::ID] {
+                        if let Some(view) = compositor.find_id::<DiffView>(id) {
+                            view.set_options(options.clone());
+                        }
+                    }
+                })))
+            }
+            MagitCommand::DiffRange | MagitCommand::DiffWorktree | MagitCommand::DiffCommit => {
+                let workdir = self.workdir.clone();
+                let start = self
+                    .target
+                    .clone()
+                    .filter(|(_, kind)| *kind != AskKind::Path)
+                    .map(|(value, _)| value);
+                EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                    compositor.remove(TransientOverlay::ID);
+                    compositor.push(Box::new(crate::ui::diff_view::diff_prompt(
+                        command, workdir, start, cx.editor,
+                    )));
+                })))
+            }
             MagitCommand::Shortlog => {
                 let workdir = self.workdir.clone();
                 let args = self.menu.args();
@@ -587,6 +614,10 @@ mod tests {
                         | MagitCommand::FileDiff
                         | MagitCommand::FileLog
                         | MagitCommand::FileBlame
+                        | MagitCommand::ApplyDiffSettings
+                        | MagitCommand::DiffRange
+                        | MagitCommand::DiffWorktree
+                        | MagitCommand::DiffCommit
                 ) || helix_magit::resolve(action.command, &[]).is_some();
                 assert!(handled, "{kind:?} binds '{}' to nothing", action.key);
             }

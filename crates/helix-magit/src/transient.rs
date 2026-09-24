@@ -156,6 +156,14 @@ pub enum MagitCommand {
     FileLog,
     FileBlame,
 
+    /// Apply the diff menu's arguments to the open diffs.
+    ApplyDiffSettings,
+    /// Diffs the editor opens: between two revisions, a revision against
+    /// the working tree, or one commit.
+    DiffRange,
+    DiffWorktree,
+    DiffCommit,
+
     /// Views the editor opens rather than commands it runs: every branch
     /// and tag against HEAD, the commits one branch has that another does
     /// not, and what the commands run so far printed.
@@ -204,10 +212,13 @@ pub enum MenuKind {
     Resolve,
     /// The file being edited, opened from the editor with `<space>M`.
     File,
+    /// Which diff to show (`d`), and how to show diffs (`D`).
+    Diff,
+    DiffSettings,
 }
 
 impl MenuKind {
-    pub const ALL: [MenuKind; 26] = [
+    pub const ALL: [MenuKind; 28] = [
         MenuKind::Main,
         MenuKind::Commit,
         MenuKind::Push,
@@ -234,6 +245,8 @@ impl MenuKind {
         MenuKind::RemoteConfig,
         MenuKind::Resolve,
         MenuKind::File,
+        MenuKind::Diff,
+        MenuKind::DiffSettings,
     ];
 
     /// The key that opens this menu, in the main menu and the status
@@ -263,6 +276,8 @@ impl MenuKind {
             MenuKind::Subtree => 'O',
             MenuKind::Notes => 'T',
             MenuKind::Ignore => 'i',
+            MenuKind::Diff => 'd',
+            MenuKind::DiffSettings => 'D',
             MenuKind::BranchConfig
             | MenuKind::RemoteConfig
             | MenuKind::Resolve
@@ -306,6 +321,8 @@ impl MenuKind {
             MenuKind::RemoteConfig => remote_config_menu(),
             MenuKind::Resolve => resolve_menu(),
             MenuKind::File => file_menu(),
+            MenuKind::Diff => diff_menu(),
+            MenuKind::DiffSettings => diff_settings_menu(&crate::diff::DiffOptions::default()),
         }
     }
 }
@@ -650,6 +667,8 @@ pub fn main_menu() -> TransientMenu {
         ]),
         TransientGroup::new("Inspect").with_actions([
             open(MenuKind::Log, "Log"),
+            open(MenuKind::Diff, "Diff"),
+            open(MenuKind::DiffSettings, "Diff settings"),
             TransientAction::new('y', "Show refs", MagitCommand::ShowRefs),
             TransientAction::new('Y', "Cherries", MagitCommand::ShowCherries),
             open(MenuKind::Bisect, "Bisect"),
@@ -1056,6 +1075,69 @@ pub fn file_menu() -> TransientMenu {
             TransientAction::new('g', "Status", MagitCommand::Status),
             TransientAction::new('?', "Magit…", MagitCommand::OpenMenu(MenuKind::Main)),
         ]),
+    ])
+}
+
+pub fn diff_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::Diff, "Diff").with_groups([TransientGroup::new("Diff")
+        .with_actions([
+            TransientAction::new('r', "Between two revisions", MagitCommand::DiffRange),
+            TransientAction::new(
+                'w',
+                "Working tree against a revision",
+                MagitCommand::DiffWorktree,
+            ),
+            TransientAction::new('c', "A commit", MagitCommand::DiffCommit),
+        ])])
+}
+
+/// The diff settings, showing `options` as they are now.
+pub fn diff_settings_menu(options: &crate::diff::DiffOptions) -> TransientMenu {
+    use crate::diff::Whitespace;
+    let on = |switch: TransientSwitch, enabled: bool| -> TransientArgument {
+        if enabled { switch.on() } else { switch }.into()
+    };
+    let valued = |key, flag: &str, description: &str, value: String| -> TransientArgument {
+        let mut option = TransientOption::new(key, flag, description);
+        option.value = Some(value);
+        option.into()
+    };
+    TransientMenu::new(MenuKind::DiffSettings, "Diff settings").with_groups([
+        TransientGroup::new("Arguments").with_arguments([
+            valued(
+                'U',
+                "--unified=",
+                "Context lines",
+                options.context.to_string(),
+            ),
+            on(
+                TransientSwitch::new('b', "--ignore-space-change", "Ignore changes in whitespace"),
+                options.whitespace == Whitespace::IgnoreChange,
+            ),
+            on(
+                TransientSwitch::new('w', "--ignore-all-space", "Ignore all whitespace"),
+                options.whitespace == Whitespace::IgnoreAll,
+            ),
+            valued(
+                'A',
+                "--diff-algorithm=",
+                "histogram, myers, minimal, patience",
+                options.algorithm.name().to_string(),
+            ),
+            on(
+                TransientSwitch::new('W', "--word-diff", "Mark the changed words"),
+                options.word_diff,
+            ),
+            on(
+                TransientSwitch::new('s', "--stat", "Summary: files and sizes only"),
+                options.stat,
+            ),
+        ]),
+        TransientGroup::new("Diff").with_actions([TransientAction::new(
+            'g',
+            "Apply to the open diffs",
+            MagitCommand::ApplyDiffSettings,
+        )]),
     ])
 }
 

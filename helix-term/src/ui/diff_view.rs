@@ -6,8 +6,10 @@
 //! keypress act on" and "what is on screen" one and the same question.
 
 use std::collections::HashMap;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
+use helix_magit::diff::DiffOptions;
 use helix_magit::diff::{DiffLineKind, FileDiff};
 use helix_magit::status::Overview;
 use helix_magit::{AskKind, Plan, Repository, Selection, Unmerged};
@@ -373,6 +375,11 @@ pub struct DiffView {
     commit: Option<String>,
     /// What the view lists.
     kind: ViewKind,
+    /// How the diffs are computed and shown.
+    options: DiffOptions,
+    /// With word marking on: the changed words of each changed line that
+    /// has a counterpart, by section, file, hunk and line.
+    word_ranges: HashMap<(usize, usize, usize, usize), Vec<Range<usize>>>,
 }
 
 /// The views built on the status buffer's rendering.
@@ -381,6 +388,11 @@ enum ViewKind {
     Status,
     /// The status of one file: its unstaged and staged changes.
     File(PathBuf),
+    /// Between two revisions, or a revision and the working tree.
+    Range {
+        from: String,
+        to: Option<String>,
+    },
     Commit,
     Refs,
     Cherries {
@@ -397,7 +409,11 @@ impl DiffView {
     /// Shows a commit — or a stash — with the status buffer's rendering:
     /// its message above, its files, hunks and lines below.
     pub fn commit(workdir: &Path, rev: &str) -> Result<Self, String> {
-        let details = helix_magit::log::show(workdir, rev)?;
+        Self::commit_with(workdir, rev, DiffOptions::default())
+    }
+
+    fn commit_with(workdir: &Path, rev: &str, options: DiffOptions) -> Result<Self, String> {
+        let details = helix_magit::log::show_with(workdir, rev, &options)?;
         let mut header = vec![
             HeaderLine {
                 label: "Commit:",
@@ -447,6 +463,8 @@ impl DiffView {
             error: None,
             commit: Some(details.hash),
             kind: ViewKind::Commit,
+            options,
+            word_ranges: HashMap::new(),
         };
         view.replace_sections(vec![Section {
             kind: SectionKind::Commit,
@@ -458,9 +476,88 @@ impl DiffView {
         Ok(view)
     }
 
-    /// The refs view and the cherries view.
+    /// The refs view, the cherries view and a range's diff.
     pub const REFS_ID: &'static str = "magit-refs";
     pub const CHERRIES_ID: &'static str = "magit-cherries";
+    pub const RANGE_ID: &'static str = "magit-range";
+
+    /// The diff between `from` and `to`, or between `from` and the working
+    /// tree: Magit's `d r`.
+    pub fn range(workdir: &Path, from: String, to: Option<String>) -> Self {
+        let title = format!("Diff {from}..{}", to.as_deref().unwrap_or("working tree"));
+        let mut view = Self::empty(workdir, title, ViewKind::Range { from, to });
+        view.read_range();
+        view
+    }
+
+    fn read_range(&mut self) {
+        let ViewKind::Range { from, to } = &self.kind else {
+            return;
+        };
+        match helix_magit::log::diff_range(&self.workdir, from, to.as_deref(), &self.options) {
+            Ok(files) => {
+                self.error = None;
+                self.header = vec![HeaderLine {
+                    label: "Diff:",
+                    parts: vec![(
+                        format!("{from} → {}", to.as_deref().unwrap_or("the working tree")),
+                        Tone::Emphasis,
+                    )],
+                }];
+                self.replace_sections(vec![Section {
+                    kind: SectionKind::Commit,
+                    title: "Changes".to_string(),
+                    files,
+                    items: Vec::new(),
+                    folded: false,
+                }]);
+            }
+            Err(err) => self.error = Some(err),
+        }
+    }
+
+    /// The repository, with this view's diff options.
+    fn repository(&self) -> Result<Repository, helix_magit::repository::Error> {
+        Ok(Repository::discover(&self.workdir)?.with_diff_options(self.options.clone()))
+    }
+
+    /// Changes how the diffs are computed and shown, and reads them again.
+    pub fn set_options(&mut self, options: DiffOptions) {
+        self.options = options;
+        match &self.kind {
+            ViewKind::Commit => {
+                let Some(hash) = self.commit.clone() else {
+                    return;
+                };
+                match Self::commit_with(&self.workdir, &hash, self.options.clone()) {
+                    Ok(view) => {
+                        let (cursor, scroll, head) = (self.cursor, self.scroll, self.head.clone());
+                        *self = view;
+                        self.head = head;
+                        self.cursor = cursor.min(self.rows.len().saturating_sub(1));
+                        self.scroll = scroll;
+                    }
+                    Err(err) => self.error = Some(err),
+                }
+            }
+            _ => match self.repository() {
+                Ok(repository) => {
+                    if let Err(err) = self.reload(&repository) {
+                        self.error = Some(err.to_string());
+                    }
+                }
+                Err(err) => self.error = Some(err.to_string()),
+            },
+        }
+        self.rebuild_rows();
+    }
+
+    /// `+` / `-`: more or less context, read again.
+    fn change_context(&mut self, delta: i32) {
+        let mut options = self.options.clone();
+        options.context = (options.context as i32 + delta).clamp(0, 1000) as u32;
+        self.set_options(options);
+    }
 
     fn view_id(&self) -> &'static str {
         match self.kind {
@@ -468,6 +565,7 @@ impl DiffView {
             ViewKind::Status | ViewKind::File(_) => Self::ID,
             ViewKind::Commit => Self::COMMIT_ID,
             ViewKind::Refs => Self::REFS_ID,
+            ViewKind::Range { .. } => Self::RANGE_ID,
             ViewKind::Cherries { .. } => Self::CHERRIES_ID,
         }
     }
@@ -484,6 +582,8 @@ impl DiffView {
             error: None,
             commit: None,
             kind,
+            options: DiffOptions::default(),
+            word_ranges: HashMap::new(),
         }
     }
 
@@ -584,7 +684,7 @@ impl DiffView {
 
     /// Opens the status of the repository containing `path`.
     pub fn new(path: &Path) -> Result<Self, helix_magit::repository::Error> {
-        let repository = Repository::discover(path)?;
+        let repository = Repository::discover(path)?.with_diff_options(DiffOptions::default());
         let mut view = Self {
             workdir: repository.workdir().to_path_buf(),
             header: Vec::new(),
@@ -596,6 +696,8 @@ impl DiffView {
             error: None,
             commit: None,
             kind: ViewKind::Status,
+            options: DiffOptions::default(),
+            word_ranges: HashMap::new(),
         };
         view.reload(&repository)?;
         Ok(view)
@@ -619,7 +721,7 @@ impl DiffView {
     /// Used after a git command runs: the index, HEAD or the working tree may
     /// all have moved, and the view has no other way to know.
     pub fn refresh(&mut self, editor: &mut Editor) {
-        match Repository::discover(&self.workdir) {
+        match self.repository() {
             Ok(repository) => {
                 if let Err(err) = self.reload(&repository) {
                     editor.set_error(err.to_string());
@@ -645,6 +747,10 @@ impl DiffView {
             }
             ViewKind::Cherries { .. } => {
                 self.read_cherries();
+                return Ok(());
+            }
+            ViewKind::Range { .. } => {
+                self.read_range();
                 return Ok(());
             }
         }
@@ -740,7 +846,8 @@ impl DiffView {
                     section: section_index,
                     file: file_index,
                 });
-                if file.folded {
+                // The summary shows each file's size of change, no hunks.
+                if file.folded || self.options.stat {
                     continue;
                 }
 
@@ -768,6 +875,19 @@ impl DiffView {
 
         self.rows = rows;
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
+
+        self.word_ranges.clear();
+        if self.options.word_diff && !self.options.stat {
+            for (s, section) in self.sections.iter().enumerate() {
+                for (f, file) in section.files.iter().enumerate() {
+                    for (h, hunk) in file.hunks.iter().enumerate() {
+                        for (line, ranges) in helix_magit::diff::refine(hunk) {
+                            self.word_ranges.insert((s, f, h, line), ranges);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn current_row(&self) -> Option<Row> {
@@ -943,7 +1063,7 @@ impl DiffView {
     /// Throws away what the confirmation agreed to, then refreshes.
     fn discard(&mut self, target: Discard, editor: &mut Editor) {
         self.error = None;
-        let repository = match Repository::discover(&self.workdir) {
+        let repository = match self.repository() {
             Ok(repository) => repository,
             Err(err) => {
                 self.error = Some(err.to_string());
@@ -982,7 +1102,7 @@ impl DiffView {
     /// `S` and `U`: every tracked change staged, or everything unstaged.
     fn apply_all(&mut self, stage: bool) {
         self.error = None;
-        let repository = match Repository::discover(&self.workdir) {
+        let repository = match self.repository() {
             Ok(repository) => repository,
             Err(err) => {
                 self.error = Some(err.to_string());
@@ -1029,7 +1149,7 @@ impl DiffView {
             self.error = Some("Unstaged changes cannot be reversed — use x to discard".to_string());
             return;
         }
-        let outcome = Repository::discover(&self.workdir).and_then(|repository| {
+        let outcome = self.repository().and_then(|repository| {
             repository.reverse(&file, &selection)?;
             self.reload(&repository)
         });
@@ -1050,7 +1170,8 @@ impl DiffView {
             self.error = Some("Move to a file, hunk or line first".to_string());
             return;
         };
-        let outcome = Repository::discover(&self.workdir)
+        let outcome = self
+            .repository()
             .and_then(|repository| repository.apply_to_worktree(&file, &selection, reverse));
         self.error = Some(match outcome {
             Ok(()) if reverse => "Reversed in the working tree".to_string(),
@@ -1252,7 +1373,7 @@ impl DiffView {
             return;
         };
 
-        let repository = match Repository::discover(&self.workdir) {
+        let repository = match self.repository() {
             Ok(repository) => repository,
             Err(err) => {
                 self.error = Some(err.to_string());
@@ -1276,6 +1397,20 @@ impl DiffView {
         if let Err(err) = self.reload(&repository) {
             self.error = Some(err.to_string());
         }
+    }
+
+    /// The most lines any one file shown here changes, which the summary's
+    /// bars are scaled to.
+    fn largest_change(&self) -> usize {
+        self.sections
+            .iter()
+            .flat_map(|section| &section.files)
+            .map(|file| {
+                let (added, removed) = file.stats();
+                added + removed
+            })
+            .max()
+            .unwrap_or(0)
     }
 
     /// Keeps the cursor inside the visible window.
@@ -1302,6 +1437,12 @@ impl Component for DiffView {
         let popup_style = cx.editor.theme.get("ui.popup");
         surface.clear_with(area, popup_style);
 
+        let settings = self.options.describe();
+        let settings = if settings.is_empty() {
+            String::new()
+        } else {
+            format!(" [{settings}]")
+        };
         let title = match (&self.error, &self.kind) {
             (Some(error), _) => format!("Magit: {error}"),
             (None, ViewKind::Commit) => format!("Commit {}", self.head),
@@ -1309,6 +1450,7 @@ impl Component for DiffView {
             (None, ViewKind::File(_)) => self.head.clone(),
             (None, _) => self.head.clone(),
         };
+        let title = format!("{title}{settings}");
         let block = Block::bordered().title(title).border_style(popup_style);
         let inner = block.inner(area);
         block.render(area, surface);
@@ -1480,6 +1622,27 @@ impl Component for DiffView {
             }
             (KeyCode::Char('s'), KeyModifiers::NONE) => self.apply(true),
             (KeyCode::Char('u'), KeyModifiers::NONE) => self.apply(false),
+            // Magit's diff buffer keys: more or less context, and back.
+            (KeyCode::Char('+'), _) => self.change_context(1),
+            (KeyCode::Char('-'), _) => self.change_context(-1),
+            (KeyCode::Char('0'), _) => {
+                let options = DiffOptions {
+                    context: DiffOptions::default().context,
+                    ..self.options.clone()
+                };
+                self.set_options(options);
+            }
+            // The settings menu shows this view's settings as they are.
+            (KeyCode::Char('D'), _) => {
+                let overlay = TransientOverlay::new(
+                    helix_magit::transient::diff_settings_menu(&self.options),
+                    self.head.clone(),
+                    self.workdir.clone(),
+                );
+                return EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                    compositor.push(Box::new(overlay));
+                })));
+            }
             (KeyCode::Char('y'), KeyModifiers::NONE) => {
                 let view = DiffView::refs(&self.workdir);
                 return EventResult::Consumed(Some(Box::new(move |compositor, _| {
@@ -1519,6 +1682,97 @@ impl Component for DiffView {
 
     fn id(&self) -> Option<&'static str> {
         Some(self.view_id())
+    }
+}
+
+/// Asks for the revisions a diff from the diff menu needs, then opens it:
+/// from and to for a range, one for the working tree against it or for a
+/// commit. `start` fills the first question, from what the menu was
+/// opened on.
+pub fn diff_prompt(
+    command: MagitCommand,
+    workdir: PathBuf,
+    start: Option<String>,
+    editor: &Editor,
+) -> crate::ui::Prompt {
+    let label = match command {
+        MagitCommand::DiffRange => "Diff from: ",
+        MagitCommand::DiffWorktree => "Working tree against: ",
+        _ => "Show commit: ",
+    };
+    let names = helix_magit::refs::names(&workdir, AskKind::Revision);
+    let complete = move |_: &Editor, input: &str| -> Vec<crate::ui::prompt::Completion> {
+        names
+            .iter()
+            .filter(|name| name.contains(input))
+            .map(|name| (0.., name.clone().into()))
+            .collect()
+    };
+    let prompt = crate::ui::Prompt::new(
+        label.into(),
+        None,
+        complete.clone(),
+        move |cx, input, event| {
+            if event != crate::ui::PromptEvent::Validate {
+                return;
+            }
+            let rev = input.trim().to_string();
+            if let Err(err) = helix_magit::log::LogFilter::valid_range(&rev) {
+                cx.editor.set_error(err);
+                return;
+            }
+            let workdir = workdir.clone();
+            let complete = complete.clone();
+            cx.jobs.callback(async move {
+                Ok(crate::job::Callback::EditorCompositor(Box::new(
+                    move |editor: &mut Editor, compositor: &mut Compositor| match command {
+                        MagitCommand::DiffRange => {
+                            compositor.push(Box::new(crate::ui::Prompt::new(
+                                "Diff to (empty for the working tree): ".into(),
+                                None,
+                                complete,
+                                move |cx, input, event| {
+                                    if event != crate::ui::PromptEvent::Validate {
+                                        return;
+                                    }
+                                    let to = input.trim().to_string();
+                                    if !to.is_empty() {
+                                        if let Err(err) =
+                                            helix_magit::log::LogFilter::valid_range(&to)
+                                        {
+                                            cx.editor.set_error(err);
+                                            return;
+                                        }
+                                    }
+                                    let (workdir, from) = (workdir.clone(), rev.clone());
+                                    cx.jobs.callback(async move {
+                                        Ok(crate::job::Callback::EditorCompositor(Box::new(
+                                            move |_: &mut Editor, compositor: &mut Compositor| {
+                                                let to = (!to.is_empty()).then_some(to);
+                                                compositor.push(Box::new(DiffView::range(
+                                                    &workdir, from, to,
+                                                )));
+                                            },
+                                        )))
+                                    });
+                                },
+                            )));
+                        }
+                        MagitCommand::DiffWorktree => {
+                            compositor.push(Box::new(DiffView::range(&workdir, rev, None)));
+                        }
+                        _ => match DiffView::commit(&workdir, &rev) {
+                            Ok(view) => compositor.push(Box::new(view)),
+                            Err(err) => editor.set_error(err),
+                        },
+                    },
+                )))
+            });
+        },
+    );
+    match start {
+        Some(start) => prompt.with_line(start, editor),
+        None => prompt,
     }
 }
 
@@ -1646,13 +1900,21 @@ impl<'a> RowRenderer<'a> {
                     return;
                 };
                 let (added, removed) = file.stats();
-                let text = format!(
+                let mut text = format!(
                     "{} {} {}  +{added} -{removed}{}",
-                    fold_marker(file.folded),
+                    if view.options.stat {
+                        ' '
+                    } else {
+                        fold_marker(file.folded)
+                    },
                     file.status.code(),
                     file.path.display(),
                     if file.binary { "  (binary)" } else { "" }
                 );
+                if view.options.stat {
+                    text.push_str("  ");
+                    text.push_str(&stat_bar(added, removed, view.largest_change()));
+                }
                 self.put(surface, cell, &text, self.theme.get("ui.text"), focused);
             }
             Row::Hunk { hunk, .. } => {
@@ -1718,6 +1980,42 @@ impl<'a> RowRenderer<'a> {
                     base,
                     &file.path,
                 );
+
+                // The words that changed, reversed over the line's colours.
+                if let Row::Line {
+                    section,
+                    file: file_index,
+                    hunk: hunk_index,
+                    line: line_index,
+                } = row
+                {
+                    if let Some(ranges) = view
+                        .word_ranges
+                        .get(&(section, file_index, hunk_index, line_index))
+                    {
+                        use helix_core::unicode::width::UnicodeWidthStr;
+                        let start_x = x + 1;
+                        let end_x = start_x + available.saturating_sub(1) as u16;
+                        for range in ranges {
+                            let (Some(before), Some(changed)) = (
+                                line.content.get(..range.start),
+                                line.content.get(range.clone()),
+                            ) else {
+                                continue;
+                            };
+                            let from = start_x.saturating_add(before.width() as u16);
+                            let to = from.saturating_add(changed.width() as u16).min(end_x);
+                            // Toggled rather than set: a theme whose popups are
+                            // reversed already would hide a plain `REVERSED`.
+                            for column in from..to {
+                                let cell = &mut surface[(column, y)];
+                                cell.modifier
+                                    .toggle(helix_view::graphics::Modifier::REVERSED);
+                                cell.modifier.insert(helix_view::graphics::Modifier::BOLD);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1842,6 +2140,21 @@ impl<'a> RowRenderer<'a> {
     }
 }
 
+/// `++++---`, scaled so the file with the most changed lines fills
+/// [`STAT_WIDTH`].
+fn stat_bar(added: usize, removed: usize, largest: usize) -> String {
+    const STAT_WIDTH: usize = 40;
+    let scale = |count: usize| {
+        if largest <= STAT_WIDTH {
+            count
+        } else {
+            // At least one mark for any change at all.
+            (count * STAT_WIDTH).div_ceil(largest)
+        }
+    };
+    format!("{}{}", "+".repeat(scale(added)), "-".repeat(scale(removed)))
+}
+
 fn fold_marker(folded: bool) -> char {
     if folded {
         '▸'
@@ -1914,6 +2227,8 @@ mod tests {
             error: None,
             commit: None,
             kind: ViewKind::Status,
+            options: DiffOptions::default(),
+            word_ranges: HashMap::new(),
         };
         view.replace_sections(build_sections(
             unmerged, untracked, unstaged, staged, overview,
@@ -2385,5 +2700,39 @@ mod tests {
         );
         view.cursor = 0;
         assert_eq!(view.unmerged_at_cursor(), None);
+    }
+
+    #[test]
+    fn word_marking_and_the_summary_follow_the_options() {
+        let edit = parsed(
+            "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n ctx\n-let x = 1;\n+let x = 2;\n",
+        );
+        let mut view = make_view(vec![edit], Vec::new());
+        assert!(view.word_ranges.is_empty(), "off by default");
+
+        view.options.word_diff = true;
+        view.rebuild_rows();
+        // Section 2 (unstaged), file 0, hunk 0: the `1` and the `2`.
+        assert_eq!(
+            view.word_ranges.get(&(2, 0, 0, 1)).map(Vec::as_slice),
+            Some(std::slice::from_ref(&(8..9)))
+        );
+        assert_eq!(
+            view.word_ranges.get(&(2, 0, 0, 2)).map(Vec::as_slice),
+            Some(std::slice::from_ref(&(8..9)))
+        );
+
+        view.options.stat = true;
+        view.rebuild_rows();
+        assert!(
+            !view.rows.iter().any(|row| matches!(row, Row::Hunk { .. })),
+            "the summary shows no hunks"
+        );
+        assert_eq!(stat_bar(1, 1, 2), "+-");
+        // Scaled down, but any change still gets a mark.
+        assert_eq!(
+            stat_bar(1, 99, 100),
+            "+----------------------------------------"
+        );
     }
 }
