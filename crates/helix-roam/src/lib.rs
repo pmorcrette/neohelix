@@ -11,6 +11,7 @@ pub mod clip;
 pub mod clock;
 pub mod date;
 pub mod dynamic;
+pub mod export;
 mod graph;
 pub mod hyperlink;
 mod link;

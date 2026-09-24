@@ -3372,3 +3372,76 @@ pub fn clock_report(editor: &mut Editor) {
         None => editor.set_error("Could not write the clock report"),
     }
 }
+
+// ── Export ────────────────────────────────────────────────────────────────
+
+/// Resolves `id:` links through the graph, as the export needs them.
+struct GraphLinks<'a>(&'a helix_roam::RoamGraph);
+
+impl helix_roam::export::Resolve for GraphLinks<'_> {
+    fn id(&self, id: &helix_roam::Uuid) -> Option<helix_roam::export::IdTarget> {
+        let node = self.0.get_node(id)?;
+        // A file node is the file itself; a headline node is an anchor in it,
+        // computed the way the exporter computes that headline's own.
+        let anchor = (node.level > 0).then(|| {
+            let custom = node
+                .properties
+                .iter()
+                .find(|(key, _)| key == "custom_id")
+                .map(|(_, value)| value.as_str());
+            helix_roam::export::anchor_for(&node.title, custom)
+        });
+        Some(helix_roam::export::IdTarget {
+            file: node.file_path.clone(),
+            anchor,
+            title: node.title.clone(),
+        })
+    }
+}
+
+/// Exports the buffer next to its file, as `name.md`, `name.html` or
+/// `name.tex`.
+pub fn export(editor: &mut Editor, backend: helix_roam::export::Backend) {
+    let doc = doc!(editor);
+    let Some(source) = doc.path().map(Path::to_path_buf) else {
+        editor.set_error("Save the buffer first: the export is written next to it");
+        return;
+    };
+    let text = doc.text().to_string();
+
+    let exported = {
+        let graph = editor.roam.read();
+        helix_roam::export::export(&text, &source, backend, &GraphLinks(&graph))
+    };
+    let target = source.with_extension(backend.extension());
+    if let Err(err) = std::fs::write(&target, &exported.content) {
+        editor.set_error(format!("Could not write {}: {err}", target.display()));
+        return;
+    }
+
+    let name = target
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_default();
+    match exported.warnings.as_slice() {
+        [] => editor.set_status(format!("Exported to {name}")),
+        [one] => editor.set_status(format!("Exported to {name}; {one}")),
+        many => editor.set_status(format!(
+            "Exported to {name}; {} links could not be resolved, first: {}",
+            many.len(),
+            many[0]
+        )),
+    }
+}
+
+pub fn export_markdown(editor: &mut Editor) {
+    export(editor, helix_roam::export::Backend::Markdown);
+}
+
+pub fn export_html(editor: &mut Editor) {
+    export(editor, helix_roam::export::Backend::Html);
+}
+
+pub fn export_latex(editor: &mut Editor) {
+    export(editor, helix_roam::export::Backend::Latex);
+}

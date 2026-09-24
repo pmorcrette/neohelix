@@ -504,6 +504,9 @@ impl MappableCommand {
         org_clock_cancel, "Discard the running clock",
         org_clock_goto, "Jump to the entry with the running clock",
         org_clock_report, "Insert or refresh a clock report table",
+        org_export_markdown, "Export the buffer to Markdown next to its file",
+        org_export_html, "Export the buffer to HTML next to its file",
+        org_export_latex, "Export the buffer to LaTeX next to its file",
         org_copy_subtree, "Copy the subtree at the cursor",
         org_cut_subtree, "Cut the subtree at the cursor",
         org_paste_subtree, "Paste the copied subtree at the cursor's level",
@@ -4406,6 +4409,18 @@ fn org_clock_goto(cx: &mut Context) {
 
 fn org_clock_report(cx: &mut Context) {
     crate::roam::clock_report(cx.editor);
+}
+
+fn org_export_markdown(cx: &mut Context) {
+    crate::roam::export_markdown(cx.editor);
+}
+
+fn org_export_html(cx: &mut Context) {
+    crate::roam::export_html(cx.editor);
+}
+
+fn org_export_latex(cx: &mut Context) {
+    crate::roam::export_latex(cx.editor);
 }
 
 /// Asks which emphasis to toggle, completing over the six.

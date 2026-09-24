@@ -217,7 +217,45 @@ The far horizon: large, self-contained, and none of it needed for the notes
 workflow the fork is built around. Listed so the gap is explicit rather than
 forgotten.
 
-- [ ] Export to HTML, Markdown and LaTeX.
+- [x] Export to HTML, Markdown and LaTeX.
+
+  `:org-export md|html|latex` writes `name.md`, `name.html` or `name.tex`
+  next to the file, from the buffer as it is. The three formats share one
+  reader, which covers what notes are written with:
+  - headlines, with their TODO keyword, priority and tags;
+  - paragraphs and Org's emphasis rules (so `2*3*4` and `a/b/c` stay text);
+  - links, including bare URLs and images;
+  - plain, ordered, description and checkbox lists, nested;
+  - tables with a header row;
+  - source, example, quote, verse, center and export blocks;
+  - fixed-width lines, rules and footnotes, inline ones included.
+
+  It reads `#+OPTIONS:` for `toc`, `num`, `todo`, `tags` and `pri`, and
+  `#+TITLE:`, `#+AUTHOR:`, `#+DATE:` and `#+EXCLUDE_TAGS:`. Subtrees tagged
+  `:noexport:` or marked `COMMENT` are left out, as are drawers, planning
+  lines and comments. A source block's `:exports` decides whether its code
+  and its `#+RESULTS:` go out; by default only the code does, as in Org.
+
+  `id:` links are what make this worth having on a notes directory; see Task
+  1.20. On the test notes, `[[id:…][Ownership]]` came out as
+  `[Ownership](rust.md#ownership)` and `rust.html#ownership`. A link whose
+  node is not in the index keeps its text, drops the link, and is named in
+  the status message. In Markdown, a heading whose shown text would give a
+  renderer a different anchor (a TODO keyword, a `:CUSTOM_ID:`) carries an
+  explicit `<a id>`, so the anchors links use always exist. In LaTeX, links
+  to other files point at their `.pdf`.
+
+  Checked: the exported HTML of a document using every construct has
+  balanced tags. Not checked: that the LaTeX compiles and that the Markdown
+  renders as intended, since neither `pdflatex` nor `pandoc` is installed
+  here.
+
+  Not read: macros, `#+INCLUDE:`, entities and sub/superscripts,
+  `#+CAPTION:` and `#+ATTR_*:`, inline images' sizing, LaTeX fragments,
+  `<<targets>>` as anchors, timestamps (exported as their text), and export
+  of a subtree alone. Headlines deeper than a format has levels for
+  (5 in LaTeX, 6 in HTML) are flattened to the deepest one rather than
+  turned into lists as Org does.
 - [ ] Source block execution (Babel), which is an arbitrary-code-execution
       surface and needs a trust decision before a single line is written.
 - [x] Clocking: clock in and out, `:LOGBOOK:` drawers, and time reports.
@@ -610,9 +648,16 @@ Two extensions upstream ships that the fork has no equivalent of.
       chosen depth — and open it. Upstream shells out to Graphviz; doing the
       same avoids a layout engine in-process, at the cost of a dependency the
       fork can detect and report rather than require.
-- [ ] Export: resolve `id:` links to something meaningful in the exported
+- [x] Export: resolve `id:` links to something meaningful in the exported
       output rather than leaving a raw UUID. This is a prerequisite for
       Task 1.9's export being useful on a notes directory at all.
+
+  Built with Task 1.9's export. An `id:` link becomes a link to the exported
+  file of the node's Org file, relative to the one being exported, and to
+  the node's anchor when the node is a headline. The anchor is its
+  `:CUSTOM_ID:` or its title as a GitHub-style slug, computed the same way
+  on both sides so that it exists in the target. A link without a
+  description shows the node's title rather than its UUID.
 
 ### Task 1.21: In-Buffer Settings
 

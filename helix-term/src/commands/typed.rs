@@ -2404,6 +2404,18 @@ roam_buffer_command!(org_clock_out, crate::roam::clock_out);
 roam_buffer_command!(org_clock_cancel, crate::roam::clock_cancel);
 roam_buffer_command!(org_clock_goto, crate::roam::clock_goto);
 roam_buffer_command!(org_clock_report, crate::roam::clock_report);
+
+/// `:org-export md|html|latex`.
+fn org_export(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let name = args.first().unwrap_or("html");
+    let backend = helix_roam::export::Backend::parse(name)
+        .ok_or_else(|| anyhow!("unknown export format {name:?}; use md, html or latex"))?;
+    crate::roam::export(cx.editor, backend);
+    Ok(())
+}
 roam_component_command!(org_goto_heading, crate::commands::org_heading_picker);
 roam_component_command!(org_sparse_tree, |_editor| Some(
     crate::commands::org_sparse_tree_prompt()
@@ -4954,6 +4966,23 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-export",
+        aliases: &[],
+        doc: "Export the buffer next to its file: md, html (the default) or latex.",
+        fun: org_export,
+        completer: CommandCompleter::positional(&[|_editor, input| {
+            ["md", "html", "latex"]
+                .iter()
+                .filter(|name| name.starts_with(input))
+                .map(|name| ((0..), (*name).into()))
+                .collect()
+        }]),
+        signature: Signature {
+            positionals: (0, Some(1)),
             ..Signature::DEFAULT
         },
     },

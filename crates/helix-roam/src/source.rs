@@ -259,7 +259,7 @@ pub fn replace_body(text: &str, block: &SourceBlock, code: &str) -> String {
 
 /// Takes one comma off a line Org escaped: `,*`, `,#+`, and `,,*` for a
 /// line that really started with a comma.
-fn unescape(line: &str) -> String {
+pub(crate) fn unescape(line: &str) -> String {
     let indent = leading_whitespace(line);
     let rest = &line[indent.len()..];
     let commas = rest.len() - rest.trim_start_matches(',').len();
@@ -288,7 +288,7 @@ fn leading_whitespace(line: &str) -> &str {
 }
 
 /// The indentation every non-blank line shares, in bytes of whitespace.
-fn common_indent(lines: &[&str]) -> usize {
+pub(crate) fn common_indent(lines: &[&str]) -> usize {
     lines
         .iter()
         .filter(|line| !line.trim().is_empty())
