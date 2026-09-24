@@ -796,6 +796,11 @@ pub(crate) fn parse_headline(line: &str, settings: &FileSettings) -> Option<Head
     if !rest.is_empty() && !rest.starts_with([' ', '\t']) {
         return None;
     }
+    // An inline task's closing `*************** END` is not a headline
+    // called "END".
+    if stars >= crate::restructure::INLINE_TASK_LEVEL && rest.trim() == "END" {
+        return None;
+    }
 
     let mut title = rest.trim();
     let mut tags = Vec::new();

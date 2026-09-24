@@ -511,6 +511,7 @@ impl MappableCommand {
         org_columns, "Show or hide the column view of the buffer, from its #+COLUMNS:",
         org_attach, "Copy a file into the attachment directory of the entry",
         org_attach_open, "Pick one of the files attached to the entry",
+        org_inline_task, "Insert an inline task below the cursor",
         roam_graph, "Draw the whole Org-Roam graph with Graphviz",
         roam_graph_neighbourhood, "Draw the nodes within two links of the node at the cursor",
         org_copy_subtree, "Copy the subtree at the cursor",
@@ -4485,6 +4486,10 @@ fn org_attach(cx: &mut Context) {
         },
     );
     cx.push_layer(Box::new(prompt));
+}
+
+fn org_inline_task(cx: &mut Context) {
+    prompt_for_property(cx, "Inline task: ", crate::roam::insert_inline_task);
 }
 
 fn roam_graph(cx: &mut Context) {

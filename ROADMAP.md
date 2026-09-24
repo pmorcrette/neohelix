@@ -679,7 +679,30 @@ applications and mean nothing here; these are the ones that do.
   `Blocked by the earlier "One"` under `:ORDERED:`. Not read: the rest of
   `org-edna`'s language (triggers, `children`, conditions), and greying
   out blocked entries in the agenda.
-- [ ] Inline tasks: a task that does not break the outline it sits in.
+- [x] Inline tasks: a task that does not break the outline it sits in.
+
+  A headline of 15 stars or more is an inline task (Org's
+  `org-inlinetask-min-level`), optionally closed by a line of the same
+  stars and `END`.
+  - *To the outline, it is not a headline.* The text after it still belongs
+    to the entry above, so subtrees, folding on open, sparse trees, the
+    heading list, column view, clock attribution and TODO dependencies all
+    pass over it, and the `END` line is never read as a headline called
+    "END".
+  - *To what edits the entry at the cursor, it is its own entry,* from its
+    line to its `END`: cycling a state or setting a priority there changes
+    the inline task. After the `END`, the entry is the headline above
+    again. This is one function (`entry_start`), which replaced twelve
+    hand-written "headline above the cursor" lookups.
+  - *Export* draws it apart from the body, as Org's exporters do: a
+    `<div class="inlinetask">` with the task in bold.
+
+  `:org-inline-task` inserts one with its `END` line, and no keyword, as
+  Org's `org-inlinetask-default-state` does. Checked in the editor:
+  inserting and cycling it, and a `#+STARTUP: content` file keeping it
+  hidden in its entry's body. Not handled: `z` folding follows the
+  tree-sitter grammar's sections, and that grammar knows nothing of inline
+  tasks, so it folds one as a section of its own.
 - [ ] Encrypted subtrees.
 - [ ] A protocol handler, so a browser or another program can capture into the
       notes directory. Org-Roam users lean on this heavily.

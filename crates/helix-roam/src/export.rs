@@ -350,6 +350,31 @@ impl Reader<'_> {
                 continue;
             }
 
+            // Inline tasks: a task inside the body, drawn apart from it as
+            // Org's exporters do, and not a section.
+            if crate::restructure::inline_task_level(line).is_some() {
+                flush!();
+                let end = crate::restructure::inline_task_end(lines, at);
+                let body_end =
+                    if end > at + 1 && lines[end - 1].trim_start_matches('*').trim() == "END" {
+                        end - 1
+                    } else {
+                        end
+                    };
+                if let Some(parsed) = crate::parser::parse_headline(line, self.settings) {
+                    let mut heading = Vec::new();
+                    if let Some(state) = parsed.todo {
+                        heading.push(Inline::Text(format!("{} ", state.keyword)));
+                    }
+                    heading.extend(self.inlines(&parsed.title));
+                    let mut inner = vec![Element::Paragraph(vec![Inline::Bold(heading)])];
+                    inner.extend(self.elements(&lines[at + 1..body_end], false));
+                    out.push(Element::Special("inlinetask".to_string(), inner));
+                }
+                at = end;
+                continue;
+            }
+
             // Drawers, anywhere.
             if let Some(end) = drawer_end(lines, at) {
                 flush!();

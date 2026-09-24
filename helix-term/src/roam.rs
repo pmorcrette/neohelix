@@ -4027,3 +4027,29 @@ pub fn graph(editor: &mut Editor, depth: Option<usize>) {
         .await;
     });
 }
+
+// ── Inline tasks ──────────────────────────────────────────────────────────
+
+/// Inserts an inline task below the cursor's line, with its `END` line.
+///
+/// Without a keyword, as Org's `org-inlinetask-default-state` leaves it: the
+/// state is set by cycling it like any other task.
+pub fn insert_inline_task(editor: &mut Editor, title: &str) {
+    let title = title.trim();
+    if title.is_empty() {
+        return;
+    }
+    let (text, line) = text_and_line(editor);
+    let stars = "*".repeat(helix_roam::restructure::INLINE_TASK_LEVEL);
+    let mut lines: Vec<&str> = text.lines().collect();
+    let at = (line + 1).min(lines.len());
+    let task = format!("{stars} {title}");
+    let end = format!("{stars} END");
+    lines.splice(at..at, [task.as_str(), end.as_str()]);
+
+    let mut after = lines.join("\n");
+    if text.ends_with('\n') || text.is_empty() {
+        after.push('\n');
+    }
+    apply_and_go(editor, "Inserted an inline task".to_string(), after, at);
+}

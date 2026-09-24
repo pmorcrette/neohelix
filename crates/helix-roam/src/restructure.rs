@@ -65,6 +65,12 @@ impl std::error::Error for Error {}
 
 /// Number of leading stars, when the line is a headline.
 pub(crate) fn headline_level(line: &str) -> Option<usize> {
+    star_level(line).filter(|level| *level < INLINE_TASK_LEVEL)
+}
+
+/// Stars at the start of a line followed by a blank: a headline's, or an
+/// inline task's.
+fn star_level(line: &str) -> Option<usize> {
     let stars = line.bytes().take_while(|&b| b == b'*').count();
     if stars == 0 {
         return None;
@@ -72,6 +78,55 @@ pub(crate) fn headline_level(line: &str) -> Option<usize> {
     // `**bold**` is not a headline: the stars must be followed by a space.
     let rest = &line[stars..];
     (rest.is_empty() || rest.starts_with([' ', '\t'])).then_some(stars)
+}
+
+/// Stars from which a headline is an inline task instead
+/// (`org-inlinetask-min-level`).
+///
+/// An inline task is a task inside an entry's body that does not end the
+/// entry: the text after it still belongs to the headline above. So it is
+/// not a headline to anything that walks the outline — [`headline_level`]
+/// says no — but it is its own entry to what edits the one at the cursor.
+pub const INLINE_TASK_LEVEL: usize = 15;
+
+/// The stars of an inline task's first line, not of its `END` line.
+pub(crate) fn inline_task_level(line: &str) -> Option<usize> {
+    let level = star_level(line).filter(|level| *level >= INLINE_TASK_LEVEL)?;
+    (line[level..].trim() != "END").then_some(level)
+}
+
+/// The line after an inline task: after its `END` line, or right after the
+/// task when it has none.
+pub(crate) fn inline_task_end<S: AsRef<str>>(lines: &[S], start: usize) -> usize {
+    for (at, line) in lines.iter().enumerate().skip(start + 1) {
+        let line = line.as_ref();
+        if headline_level(line).is_some() || inline_task_level(line).is_some() {
+            break;
+        }
+        if star_level(line).is_some_and(|level| level >= INLINE_TASK_LEVEL) {
+            return at + 1;
+        }
+    }
+    start + 1
+}
+
+/// The first line of the entry `at` is in: an inline task containing it, or
+/// else the headline at or above it.
+pub(crate) fn entry_start<S: AsRef<str>>(lines: &[S], at: usize) -> Option<usize> {
+    if lines.is_empty() {
+        return None;
+    }
+    let at = at.min(lines.len() - 1);
+    for line in (0..=at).rev() {
+        let text = lines[line].as_ref();
+        if headline_level(text).is_some() {
+            return Some(line);
+        }
+        if inline_task_level(text).is_some() && at < inline_task_end(lines, line) {
+            return Some(line);
+        }
+    }
+    None
 }
 
 /// The text of a headline line after its stars.
@@ -238,10 +293,8 @@ pub fn extract_subtree(text: &str, line: usize, new_id: Uuid) -> Result<Extracti
     let lines: Vec<String> = text.lines().map(str::to_string).collect();
 
     // The headline at or above the cursor.
-    let start = lines[..=line.min(lines.len().saturating_sub(1))]
-        .iter()
-        .rposition(|l| headline_level(l).is_some())
-        .ok_or(Error::NoSubtree)?;
+    let start =
+        entry_start(&lines, line.min(lines.len().saturating_sub(1))).ok_or(Error::NoSubtree)?;
     let level = headline_level(&lines[start]).ok_or(Error::NoSubtree)?;
 
     let end = lines[start + 1..]
@@ -682,9 +735,10 @@ fn planning_part(line: &str, which: Planning) -> Option<String> {
 /// question, so it is answered in one place.
 pub(crate) fn subtree_range(lines: &[String], line: usize) -> Option<(usize, usize, usize)> {
     let at = line.min(lines.len().saturating_sub(1));
-    let start = lines[..=at]
-        .iter()
-        .rposition(|l| headline_level(l).is_some())?;
+    let start = entry_start(lines, at)?;
+    if let Some(level) = inline_task_level(&lines[start]) {
+        return Some((start, inline_task_end(lines, start), level));
+    }
     let level = headline_level(&lines[start])?;
 
     let end = lines[start + 1..]
@@ -815,9 +869,7 @@ pub fn put_property(text: &str, line: usize, property: &str, value: &str) -> Str
         lines.push(String::new());
     }
     let at = line.min(lines.len() - 1);
-    let headline = lines[..=at]
-        .iter()
-        .rposition(|l| headline_level(l).is_some());
+    let headline = entry_start(&lines, at);
     let insert_at = headline.map_or(0, |at| below_planning(&lines, at));
     lines.splice(
         insert_at..insert_at,
@@ -893,9 +945,7 @@ pub fn property_keys(text: &str) -> Vec<String> {
 /// The drawer of the entry containing `line`.
 fn locate_drawer(lines: &[String], line: usize) -> Result<(usize, usize), Error> {
     let at = line.min(lines.len().saturating_sub(1));
-    let headline = lines[..=at]
-        .iter()
-        .rposition(|l| headline_level(l).is_some());
+    let headline = entry_start(lines, at);
     drawer_range(lines, headline.map_or(0, |at| at + 1)).ok_or(Error::NoDrawer)
 }
 
@@ -918,9 +968,7 @@ pub fn insert_drawer(text: &str, line: usize, name: &str) -> String {
     let at = line.min(lines.len().saturating_sub(1));
 
     // After the headline and its property drawer, if it has one.
-    let headline = lines[..=at]
-        .iter()
-        .rposition(|l| headline_level(l).is_some());
+    let headline = entry_start(&lines, at);
     let after = match headline {
         Some(headline_at) => match drawer_range(&lines, headline_at + 1) {
             Some((_, end)) => end + 1,
@@ -957,9 +1005,7 @@ pub fn log_entry_into(text: &str, line: usize, entry: &str, into_drawer: bool) -
         lines.push(String::new());
     }
     let at = line.min(lines.len().saturating_sub(1));
-    let headline = lines[..=at]
-        .iter()
-        .rposition(|l| headline_level(l).is_some());
+    let headline = entry_start(&lines, at);
 
     // The logbook sits after the planning line and the property drawer.
     let search_from = headline.map_or(0, |at| at + 1);
@@ -1010,9 +1056,7 @@ pub fn log_entry_into(text: &str, line: usize, entry: &str, into_drawer: bool) -
 pub fn rename_entry(text: &str, line: usize, new_title: &str) -> Result<String, Error> {
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
     let at = line.min(lines.len().saturating_sub(1));
-    let headline = lines[..=at]
-        .iter()
-        .rposition(|l| headline_level(l).is_some());
+    let headline = entry_start(&lines, at);
 
     match headline {
         Some(at) => {
@@ -1060,9 +1104,7 @@ pub fn retitle_links(text: &str, id: Uuid, old_title: &str, new_title: &str) -> 
 pub fn edit_tag(text: &str, line: usize, tag: &str, add: bool) -> Result<Option<String>, Error> {
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
     let at = line.min(lines.len().saturating_sub(1));
-    let headline = lines[..=at]
-        .iter()
-        .rposition(|l| headline_level(l).is_some());
+    let headline = entry_start(&lines, at);
 
     let (mut tags, target) = match headline {
         Some(at) => {
@@ -1148,9 +1190,7 @@ pub fn edit_property(
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
     let at = line.min(lines.len().saturating_sub(1));
 
-    let headline = lines[..=at]
-        .iter()
-        .rposition(|l| headline_level(l).is_some());
+    let headline = entry_start(&lines, at);
     let search_from = headline.map_or(0, |at| at + 1);
 
     let Some((drawer_start, drawer_end)) = drawer_range(&lines, search_from) else {
@@ -1282,9 +1322,7 @@ pub fn entry_at(text: &str, line: usize) -> Option<(Uuid, String)> {
     let lines: Vec<String> = text.lines().map(str::to_string).collect();
     let at = line.min(lines.len().saturating_sub(1));
 
-    let headline = lines[..=at]
-        .iter()
-        .rposition(|l| headline_level(l).is_some());
+    let headline = entry_start(&lines, at);
 
     let (scope, title) = match headline {
         Some(start) => {
@@ -1323,9 +1361,7 @@ pub enum IdOutcome {
 pub fn ensure_id(text: &str, line: usize, new_id: Uuid) -> Result<IdOutcome, Error> {
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
 
-    let headline = lines[..=line.min(lines.len().saturating_sub(1))]
-        .iter()
-        .rposition(|l| headline_level(l).is_some());
+    let headline = entry_start(&lines, line.min(lines.len().saturating_sub(1)));
 
     // The drawer goes directly under the headline, or at the very top for the
     // preamble node.
@@ -1391,10 +1427,11 @@ pub fn refile_subtree(
 ) -> Result<Refiling, Error> {
     let source_lines: Vec<String> = source.lines().map(str::to_string).collect();
 
-    let start = source_lines[..=line.min(source_lines.len().saturating_sub(1))]
-        .iter()
-        .rposition(|l| headline_level(l).is_some())
-        .ok_or(Error::NoSubtree)?;
+    let start = entry_start(
+        &source_lines,
+        line.min(source_lines.len().saturating_sub(1)),
+    )
+    .ok_or(Error::NoSubtree)?;
     let level = headline_level(&source_lines[start]).ok_or(Error::NoSubtree)?;
     let end = source_lines[start + 1..]
         .iter()

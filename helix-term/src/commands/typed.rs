@@ -2406,6 +2406,9 @@ roam_buffer_command!(org_clock_goto, crate::roam::clock_goto);
 roam_buffer_command!(org_clock_report, crate::roam::clock_report);
 roam_buffer_command!(org_babel_execute, crate::roam::babel_execute);
 roam_buffer_command!(org_columns, crate::roam::toggle_columns);
+roam_component_command!(org_inline_task, |_editor| Some(
+    crate::commands::property_prompt("Inline task: ", crate::roam::insert_inline_task)
+));
 
 /// `:roam-graph [depth]`: the whole graph, or the neighbourhood of the node
 /// at the cursor.
@@ -5035,6 +5038,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Show or hide the column view of the buffer, from its #+COLUMNS:.",
         fun: org_columns,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-inline-task",
+        aliases: &[],
+        doc: "Insert an inline task, with its END line, below the cursor.",
+        fun: org_inline_task,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

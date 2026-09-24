@@ -29,6 +29,9 @@ pub fn headings(text: &str) -> Vec<Entry> {
     text.lines()
         .enumerate()
         .filter_map(|(line, raw)| {
+            // Inline tasks are tasks, not headings: they do not divide the
+            // outline, so they are not in it.
+            crate::restructure::headline_level(raw)?;
             let headline = parse_headline(raw, &settings)?;
             Some(Entry {
                 line,
