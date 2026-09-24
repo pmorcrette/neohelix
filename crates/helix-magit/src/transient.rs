@@ -40,6 +40,17 @@ pub enum MagitCommand {
     RebaseContinue,
     RebaseSkip,
 
+    /// The log of HEAD, of every reference, or of a revision asked for.
+    /// The editor opens a log buffer for these; nothing is run.
+    LogCurrent,
+    LogAll,
+    LogOther,
+
+    ResetMixed,
+    ResetSoft,
+    ResetHard,
+    ResetKeep,
+
     /// Open or refresh the status buffer.
     Status,
     /// Refresh the status buffer.
@@ -57,9 +68,22 @@ pub enum MenuKind {
     Pull,
     Branch,
     Rebase,
+    Log,
+    Reset,
 }
 
 impl MenuKind {
+    pub const ALL: [MenuKind; 8] = [
+        MenuKind::Main,
+        MenuKind::Commit,
+        MenuKind::Push,
+        MenuKind::Pull,
+        MenuKind::Branch,
+        MenuKind::Rebase,
+        MenuKind::Log,
+        MenuKind::Reset,
+    ];
+
     /// Builds the menu for this kind.
     pub fn menu(self) -> TransientMenu {
         match self {
@@ -69,6 +93,8 @@ impl MenuKind {
             MenuKind::Pull => pull_menu(),
             MenuKind::Branch => branch_menu(),
             MenuKind::Rebase => rebase_menu(),
+            MenuKind::Log => log_menu(),
+            MenuKind::Reset => reset_menu(),
         }
     }
 }
@@ -327,6 +353,22 @@ impl TransientMenu {
         TransientEvent::Unhandled
     }
 
+    /// The description of the option `key` names when it is off: turning it
+    /// on needs a value, which the editor asks for.
+    pub fn option_awaiting_value(&self, key: char) -> Option<&str> {
+        self.groups
+            .iter()
+            .flat_map(|group| &group.arguments)
+            .find_map(|argument| match argument {
+                TransientArgument::Option(option)
+                    if option.key == key && option.value.is_none() =>
+                {
+                    Some(option.description.as_str())
+                }
+                _ => None,
+            })
+    }
+
     /// Every active argument, in the order the menu lists them.
     ///
     /// This is what gets appended to the git command an action runs.
@@ -371,6 +413,8 @@ pub fn main_menu() -> TransientMenu {
             TransientAction::new('c', "Commit", MagitCommand::OpenMenu(MenuKind::Commit)),
             TransientAction::new('b', "Branch", MagitCommand::OpenMenu(MenuKind::Branch)),
             TransientAction::new('r', "Rebase", MagitCommand::OpenMenu(MenuKind::Rebase)),
+            TransientAction::new('l', "Log", MagitCommand::OpenMenu(MenuKind::Log)),
+            TransientAction::new('X', "Reset", MagitCommand::OpenMenu(MenuKind::Reset)),
         ]),
         TransientGroup::new("Remote").with_actions([
             TransientAction::new('P', "Push", MagitCommand::OpenMenu(MenuKind::Push)),
@@ -481,6 +525,33 @@ pub fn rebase_menu() -> TransientMenu {
     ])
 }
 
+pub fn log_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::Log, "Log").with_groups([
+        TransientGroup::new("Limit").with_arguments([
+            option('A', "--author=", "Author matches"),
+            option('G', "--grep=", "Message matches"),
+            option('F', crate::log::PATH_FLAG, "Touches file"),
+        ]),
+        TransientGroup::new("Log").with_actions([
+            TransientAction::new('l', "Current", MagitCommand::LogCurrent),
+            TransientAction::new('a', "All references", MagitCommand::LogAll),
+            TransientAction::new('o', "Other", MagitCommand::LogOther),
+        ]),
+    ])
+}
+
+pub fn reset_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::Reset, "Reset").with_groups([TransientGroup::new(
+        "Reset HEAD and",
+    )
+    .with_actions([
+        TransientAction::new('m', "the index (mixed)", MagitCommand::ResetMixed),
+        TransientAction::new('s', "nothing else (soft)", MagitCommand::ResetSoft),
+        TransientAction::new('h', "index and worktree (hard)", MagitCommand::ResetHard),
+        TransientAction::new('k', "keeping local changes (keep)", MagitCommand::ResetKeep),
+    ])])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -587,14 +658,7 @@ mod tests {
 
     #[test]
     fn every_menu_kind_builds_and_is_reachable() {
-        for kind in [
-            MenuKind::Main,
-            MenuKind::Commit,
-            MenuKind::Push,
-            MenuKind::Pull,
-            MenuKind::Branch,
-            MenuKind::Rebase,
-        ] {
+        for kind in MenuKind::ALL {
             let menu = kind.menu();
             assert_eq!(menu.kind, kind);
             assert!(!menu.title.is_empty());
@@ -609,14 +673,7 @@ mod tests {
     /// A duplicate key inside one category would silently shadow an entry.
     #[test]
     fn keys_are_unique_within_arguments_and_within_actions() {
-        for kind in [
-            MenuKind::Main,
-            MenuKind::Commit,
-            MenuKind::Push,
-            MenuKind::Pull,
-            MenuKind::Branch,
-            MenuKind::Rebase,
-        ] {
+        for kind in MenuKind::ALL {
             let menu = kind.menu();
 
             let mut argument_keys = HashSet::new();

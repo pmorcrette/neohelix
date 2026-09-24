@@ -29,10 +29,11 @@ pub fn execute(compositor: &mut Compositor, cx: &mut Context, plan: Plan, workdi
         Requirement::BranchName => ask_for(compositor, plan, workdir, "Branch: "),
         Requirement::Remote => ask_for(compositor, plan, workdir, "Remote: "),
         Requirement::CommitMessage { amend } => {
-            // The status buffer covers the editor; the message must be seen.
-            compositor.remove(DiffView::ID);
+            // The views cover the editor; the message must be seen.
+            close_views(compositor);
             compose(cx, plan, workdir, amend)
         }
+        Requirement::Revision => ask_for(compositor, plan, workdir, "Reset to: "),
         Requirement::TodoList => start_rebase(compositor, cx, plan, workdir),
     }
 }
@@ -131,8 +132,8 @@ fn capture_todo(cx: &mut Context, plan: Plan, workdir: PathBuf) {
                 {
                     return editor.set_error(format!("could not open the todo-list: {err}"));
                 }
-                // The status buffer covers the editor; the list must be seen.
-                compositor.remove(DiffView::ID);
+                // The views cover the editor; the list must be seen.
+                close_views(compositor);
                 editor.pending_rebase = Some(helix_view::editor::PendingRebase {
                     todo_path,
                     args: plan.args,
@@ -346,38 +347,12 @@ fn run(cx: &mut Context, plan: Plan, workdir: PathBuf) {
     });
 }
 
-/// Shows what `git <args>` prints — a commit, a stash — in a scratch buffer
-/// highlighted as a diff.
-///
-/// The status buffer is an overlay over the whole editor, so the caller
-/// closes it first; `SPC g` (or `:magit`) brings it back.
-pub fn show(cx: &mut Context, workdir: PathBuf, args: Vec<String>) {
-    let line = format!("git {}", args.join(" "));
-    let command = GitCommand::new(workdir, args);
-    cx.editor.set_status(format!("Running {line}…"));
-
-    cx.jobs.callback(async move {
-        let outcome = tokio::task::spawn_blocking(move || command.run()).await;
-
-        Ok(Callback::EditorCompositor(Box::new(
-            move |editor: &mut Editor, _: &mut Compositor| match outcome {
-                Ok(Ok(output)) if output.success => {
-                    open_scratch(editor, &output.stdout, "diff");
-                    editor.set_status(line);
-                }
-                Ok(Ok(output)) => editor.set_error(format!("{line}: {}", output.summary())),
-                Ok(Err(err)) => editor.set_error(format!("{line}: {err}")),
-                Err(err) => editor.set_error(format!("{line}: {err}")),
-            },
-        )))
-    });
-}
-
-/// A new scratch buffer holding `text`, highlighted as `language`.
-fn open_scratch(editor: &mut Editor, text: &str, language: &str) {
-    let doc_id = editor.new_scratch_with_text(helix_view::editor::Action::Replace, text);
-    let loader = editor.syn_loader.load();
-    let _ = helix_view::doc_mut!(editor, &doc_id).set_language_by_language_id(language, &loader);
+/// Closes the status, log and commit views, which cover the whole editor,
+/// before something in the editor itself has to be seen.
+pub fn close_views(compositor: &mut Compositor) {
+    compositor.remove(DiffView::COMMIT_ID);
+    compositor.remove(crate::ui::log_view::LogView::ID);
+    compositor.remove(DiffView::ID);
 }
 
 /// Shows the outcome and brings the status buffer back in step.
@@ -392,6 +367,11 @@ fn report(editor: &mut Editor, compositor: &mut Compositor, line: &str, output: 
     // The index, HEAD or the working tree may all have moved.
     if let Some(view) = compositor.find_id::<DiffView>(DiffView::ID) {
         view.refresh(editor);
+    }
+    if let Some(log) =
+        compositor.find_id::<crate::ui::log_view::LogView>(crate::ui::log_view::LogView::ID)
+    {
+        log.reload();
     }
 }
 

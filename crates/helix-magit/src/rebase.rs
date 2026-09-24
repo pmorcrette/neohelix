@@ -55,6 +55,28 @@ pub fn install_editor(edited: &Path) -> String {
     format!("cp {}", shell_quote(edited))
 }
 
+/// Where an interactive rebase that should include `commit` starts: its
+/// parent, or `--root` when it has none.
+pub fn base_for(workdir: &Path, commit: &str) -> String {
+    let parent = format!("{commit}^");
+    let has_parent = GitCommand::new(
+        workdir,
+        vec![
+            "rev-parse".into(),
+            "--verify".into(),
+            "--quiet".into(),
+            parent.clone(),
+        ],
+    )
+    .run()
+    .is_ok_and(|output| output.success);
+    if has_parent {
+        parent
+    } else {
+        "--root".to_string()
+    }
+}
+
 /// HEAD's full hash, to check nothing moved between the two runs.
 pub fn head(workdir: &Path) -> Option<String> {
     let output = GitCommand::new(workdir, vec!["rev-parse".into(), "HEAD".into()])

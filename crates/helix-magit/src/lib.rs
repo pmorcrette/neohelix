@@ -6,6 +6,7 @@
 
 pub mod command;
 pub mod diff;
+pub mod log;
 pub mod patch;
 pub mod rebase;
 pub mod repository;

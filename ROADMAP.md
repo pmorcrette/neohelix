@@ -1354,12 +1354,42 @@ menus show them that way.
 
 Magit's second buffer, and the one the fork has no equivalent of at all.
 
-- [ ] A log buffer: a commit list with the graph, refs and dates.
-- [ ] Show a commit: its message and its diff, reusing the `DiffView` rendering
+- [x] A log buffer: a commit list with the graph, refs and dates.
+- [x] Show a commit: its message and its diff, reusing the `DiffView` rendering
       rather than a second implementation.
-- [ ] Filter by file, author, range and free text.
-- [ ] Act on the commit at point: cherry-pick, revert, reset to it, start an
+- [x] Filter by file, author, range and free text.
+- [x] Act on the commit at point: cherry-pick, revert, reset to it, start an
       interactive rebase from it, all of which depend on Tasks 2.7 and 2.9.
+
+*Done.* The log (`l` in the main menu, `L` in the status buffer — `l` folds
+there, as elsewhere in Helix) is `git log --graph` read line by line
+(`helix_magit::log`): the graph as git draws it, then hash, refs, subject, and
+author and date on the right when the window is wide enough. The cursor steps
+over the lines that only draw the graph. The log menu offers the current
+branch, all references and another revision or range, with `-A` author, `-G`
+message and `-F` file to limit it; inside the log, `/`, `@`, `f` and `o` change
+those, `=` clears them, and `+` doubles the 256 commits read at first.
+
+`RET` on a commit shows it in the status buffer's own view: the message and
+metadata in the header, the files, hunks and lines below, highlighted and
+folded the same way. It reads `git show --diff-merges=first-parent`, so a merge
+shows what it brought in, and a stash, being a commit, opens the same way from
+the status buffer (instead of the scratch buffer Task 2.5 used). In a commit,
+`a` applies the change under the cursor — file, hunk or line — to the working
+tree and `v` takes it back out, as in Magit; staging keys and `x` say why they
+do not apply.
+
+On a commit, in the log or the status buffer: `A` cherry-picks it, `V` reverts
+it, `X` opens the new reset menu aimed at it, `r` the rebase menu with the
+interactive rebase starting from it. After any of them the log is read again
+and the cursor stays on the same commit. Checked in the editor: the graph of a
+merge, every filter, a commit and a stash shown, a hunk reversed and reapplied,
+a revert, a hard reset (confirmed), a cherry-pick from the all-references log,
+and an interactive rebase started from the log.
+
+Transient options (`--author=`, `--strategy=`, …) could not be given a value
+until now: toggling one only ever cleared it. `-` and an option that is off
+now asks for its value, and the menu shows it.
 
 ### Task 2.9: The Remaining Transients
 
@@ -1371,7 +1401,8 @@ these are mostly breadth rather than new mechanism — with the exceptions noted
       worktree.
 - [ ] Merge, with `--no-ff`, `--squash` and abort; conflict resolution is its
       own problem and is not covered by this item.
-- [ ] Reset: soft, mixed and hard, with hard behind a confirmation.
+- [x] Reset: soft, mixed and hard, with hard behind a confirmation. *(With
+      Task 2.8: `X`, plus keep; the target is the commit at point, or asked.)*
 - [ ] Tag: create, delete and push tags.
 - [ ] Cherry-pick and revert, including their continue and abort states.
 - [ ] Remote: add, rename, remove, and set a branch's upstream. This also

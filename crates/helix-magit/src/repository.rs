@@ -456,6 +456,36 @@ impl Repository {
         self.write_worktree(&file.path, reversed)
     }
 
+    /// Applies the selected part of a commit's change to the working tree,
+    /// or with `reverse` takes it back out — Magit's `a` and `v` in a
+    /// commit. The working tree has to have the lines the change expects;
+    /// if not, nothing is written.
+    pub fn apply_to_worktree(
+        &self,
+        file: &FileDiff,
+        selection: &Selection,
+        reverse: bool,
+    ) -> Result<()> {
+        if file.binary {
+            return Err(Error::BinaryFile(file.path.clone()));
+        }
+        if reverse {
+            let reversed = self.worktree_reversed(file, selection)?;
+            return self.write_worktree(&file.path, reversed);
+        }
+        let patch = crate::build_partial_patch(file, selection).ok_or(Error::NothingSelected)?;
+        let current = match std::fs::read(self.workdir.join(&file.path)) {
+            Ok(content) => content,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(err) => return Err(err.into()),
+        };
+        let current =
+            String::from_utf8(current).map_err(|_| Error::BinaryFile(file.path.clone()))?;
+        let applied = crate::apply_patch(&current, &patch, false)?;
+        let deletes = applied.is_empty() && file.status == FileStatus::Deleted;
+        self.write_worktree(&file.path, (!deletes).then_some(applied))
+    }
+
     /// Deletes a file git does not track.
     pub fn discard_untracked(&self, rela_path: &Path) -> Result<()> {
         std::fs::remove_file(self.workdir.join(rela_path))?;

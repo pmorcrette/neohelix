@@ -33,6 +33,8 @@ pub enum Requirement {
     BranchName,
     /// A remote has to be chosen.
     Remote,
+    /// A revision has to be supplied (where to reset to).
+    Revision,
     /// An interactive rebase: its todo-list has to be edited first, and
     /// where to rebase from may still have to be asked.
     TodoList,
@@ -92,7 +94,28 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
         MagitCommand::OpenMenu(_)
         | MagitCommand::Status
         | MagitCommand::Refresh
-        | MagitCommand::Quit => return None,
+        | MagitCommand::Quit
+        | MagitCommand::LogCurrent
+        | MagitCommand::LogAll
+        | MagitCommand::LogOther => return None,
+
+        // Where to reset to is asked, unless the menu was opened on a
+        // commit. Hard throws away uncommitted work; keep refuses to.
+        MagitCommand::ResetMixed => Plan::new(["reset", "--mixed"], "Reset HEAD and the index")
+            .requiring(Requirement::Revision),
+        MagitCommand::ResetSoft => {
+            Plan::new(["reset", "--soft"], "Reset HEAD").requiring(Requirement::Revision)
+        }
+        MagitCommand::ResetHard => Plan::new(
+            ["reset", "--hard"],
+            "Reset HEAD, index and worktree, discarding uncommitted changes",
+        )
+        .requiring(Requirement::Revision)
+        .destructive(),
+        MagitCommand::ResetKeep => {
+            Plan::new(["reset", "--keep"], "Reset HEAD, keeping local changes")
+                .requiring(Requirement::Revision)
+        }
 
         MagitCommand::Commit => Plan::new(with(["commit"], args), "Commit")
             .requiring(Requirement::CommitMessage { amend: false }),

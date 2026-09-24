@@ -4,6 +4,7 @@ pub mod diff_view;
 mod document;
 pub(crate) mod editor;
 mod info;
+pub mod log_view;
 pub mod lsp;
 mod markdown;
 pub mod menu;

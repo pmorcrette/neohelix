@@ -2305,18 +2305,6 @@ impl Editor {
         )
     }
 
-    /// A new scratch buffer holding `text`. It starts unmodified, so it
-    /// closes without asking to be saved.
-    pub fn new_scratch_with_text(&mut self, action: Action, text: &str) -> DocumentId {
-        let doc = Document::from(
-            helix_core::Rope::from(text),
-            None,
-            self.config.clone(),
-            self.syn_loader.clone(),
-        );
-        self.new_file_from_document(action, doc)
-    }
-
     pub fn new_file_from_stdin(&mut self, action: Action) -> Result<DocumentId, Error> {
         let (stdin, encoding, has_bom) = crate::document::read_to_string(&mut stdin(), None)?;
         let doc = Document::from(

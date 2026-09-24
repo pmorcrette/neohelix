@@ -41,6 +41,8 @@ enum SectionKind {
     Unpushed,
     /// The last few commits, when nothing is unpushed.
     Recent,
+    /// The files a shown commit changed.
+    Commit,
 }
 
 impl SectionKind {
@@ -325,10 +327,85 @@ pub struct DiffView {
     head: String,
     /// Set when an action fails, shown in place of the header.
     error: Option<String>,
+    /// Set when this shows a commit rather than the status: its hash.
+    commit: Option<String>,
 }
 
 impl DiffView {
     pub const ID: &'static str = "magit-status";
+    /// A commit view, which opens over the status or the log.
+    pub const COMMIT_ID: &'static str = "magit-commit";
+
+    /// Shows a commit — or a stash — with the status buffer's rendering:
+    /// its message above, its files, hunks and lines below.
+    pub fn commit(workdir: &Path, rev: &str) -> Result<Self, String> {
+        let details = helix_magit::log::show(workdir, rev)?;
+        let mut header = vec![
+            HeaderLine {
+                label: "Commit:",
+                parts: vec![(details.hash.clone(), Tone::Emphasis)],
+            },
+            HeaderLine {
+                label: "Author:",
+                parts: vec![(details.author.clone(), Tone::Plain)],
+            },
+            HeaderLine {
+                label: "Date:",
+                parts: vec![(details.date.clone(), Tone::Plain)],
+            },
+        ];
+        if !details.refs.is_empty() {
+            header.push(HeaderLine {
+                label: "Refs:",
+                parts: vec![(details.refs.join(", "), Tone::Emphasis)],
+            });
+        }
+        for (index, line) in details.message.lines().enumerate() {
+            header.push(HeaderLine {
+                label: "",
+                parts: vec![(
+                    line.to_string(),
+                    if index == 0 {
+                        Tone::Emphasis
+                    } else {
+                        Tone::Plain
+                    },
+                )],
+            });
+        }
+
+        let mut view = Self {
+            workdir: workdir.to_path_buf(),
+            header,
+            sections: Vec::new(),
+            rows: Vec::new(),
+            cursor: 0,
+            scroll: 0,
+            head: if details.hash.starts_with(rev) {
+                details.short.clone()
+            } else {
+                format!("{rev} ({})", details.short)
+            },
+            error: None,
+            commit: Some(details.hash),
+        };
+        view.replace_sections(vec![Section {
+            kind: SectionKind::Commit,
+            title: "Changes".to_string(),
+            files: details.files,
+            items: Vec::new(),
+            folded: false,
+        }]);
+        Ok(view)
+    }
+
+    fn view_id(&self) -> &'static str {
+        if self.commit.is_some() {
+            Self::COMMIT_ID
+        } else {
+            Self::ID
+        }
+    }
 
     /// Opens the status of the repository containing `path`.
     pub fn new(path: &Path) -> Result<Self, helix_magit::repository::Error> {
@@ -342,6 +419,7 @@ impl DiffView {
             scroll: 0,
             head: repository.head_description(),
             error: None,
+            commit: None,
         };
         view.reload(&repository)?;
         Ok(view)
@@ -368,6 +446,10 @@ impl DiffView {
     /// unstaged section entirely — so the cursor is clamped rather than
     /// restored exactly.
     fn reload(&mut self, repository: &Repository) -> Result<(), helix_magit::repository::Error> {
+        // A commit does not change.
+        if self.commit.is_some() {
+            return Ok(());
+        }
         let (unstaged, untracked) = repository.worktree_diffs()?;
         let staged = repository.staged_diff()?;
         let unmerged = repository.unmerged()?;
@@ -601,6 +683,9 @@ impl DiffView {
             };
         }
 
+        if section.kind.staged().is_none() {
+            return Err("A commit cannot be discarded; v reverses its change".to_string());
+        }
         let file = self
             .file_at(row)
             .ok_or_else(|| "Move to a file, hunk or line first".to_string())?;
@@ -714,6 +799,13 @@ impl DiffView {
             self.error = Some("Move to a change or a commit first".to_string());
             return;
         };
+        let in_commit = row
+            .section()
+            .and_then(|section| self.sections.get(section))
+            .is_some_and(|section| section.kind == SectionKind::Commit);
+        if in_commit {
+            return self.apply_commit_change(true);
+        }
         if staged != Some(true) {
             self.error = Some("Unstaged changes cannot be reversed — use x to discard".to_string());
             return;
@@ -725,6 +817,27 @@ impl DiffView {
         if let Err(err) = outcome {
             self.error = Some(err.to_string());
         }
+    }
+
+    /// `a` and `v` in a commit: the change under the cursor applied to the
+    /// working tree, or taken back out of it.
+    fn apply_commit_change(&mut self, reverse: bool) {
+        self.error = None;
+        let Some(row) = self.current_row() else {
+            return;
+        };
+        let (Some(file), Some(selection)) = (self.file_at(row).cloned(), self.selection_at(row))
+        else {
+            self.error = Some("Move to a file, hunk or line first".to_string());
+            return;
+        };
+        let outcome = Repository::discover(&self.workdir)
+            .and_then(|repository| repository.apply_to_worktree(&file, &selection, reverse));
+        self.error = Some(match outcome {
+            Ok(()) if reverse => "Reversed in the working tree".to_string(),
+            Ok(()) => "Applied to the working tree".to_string(),
+            Err(err) => err.to_string(),
+        });
     }
 
     /// The git command `a` (apply) or `v` (reverse) runs on the commit or
@@ -761,38 +874,31 @@ impl DiffView {
         }))
     }
 
-    /// Where an interactive rebase from the commit under the cursor starts:
-    /// its parent, so the commit itself is in the list; `--root` for the
-    /// first commit.
-    fn rebase_base_at_cursor(&self) -> Option<String> {
+    /// The commit under the cursor, for the menus that act on one: a
+    /// commit in a list, or the commit this view shows.
+    fn commit_at_cursor(&self) -> Option<String> {
+        if let Some(commit) = &self.commit {
+            return Some(commit.clone());
+        }
         let Some(Row::Item { section, item }) = self.current_row() else {
             return None;
         };
         let section = self.sections.get(section)?;
-        if !matches!(
+        matches!(
             section.kind,
             SectionKind::Unpushed | SectionKind::Unpulled | SectionKind::Recent
-        ) {
-            return None;
-        }
-        let hash = &section.items.get(item)?.label;
-        let parent = format!("{hash}^");
-        let has_parent = helix_magit::GitCommand::new(
-            &self.workdir,
-            vec![
-                "rev-parse".into(),
-                "--verify".into(),
-                "--quiet".into(),
-                parent.clone(),
-            ],
         )
-        .run()
-        .is_ok_and(|output| output.success);
-        Some(if has_parent {
-            parent
-        } else {
-            "--root".to_string()
-        })
+        .then(|| section.items.get(item).map(|item| item.label.clone()))?
+    }
+
+    /// What `RET` shows: the commit or stash under the cursor.
+    fn revision_at_cursor(&self) -> Option<String> {
+        let Some(Row::Item { section, item }) = self.current_row() else {
+            return None;
+        };
+        let section = self.sections.get(section)?;
+        (section.kind != SectionKind::Unmerged)
+            .then(|| section.items.get(item).map(|item| item.label.clone()))?
     }
 
     /// Where `RET` on a change goes: the file in the working tree, at the
@@ -855,6 +961,10 @@ impl DiffView {
                 self.error = Some("Not staged yet — use s to stage".to_string());
                 return;
             }
+            (_, None) => {
+                self.error = Some("A commit's change: a applies it, v reverses it".to_string());
+                return;
+            }
             _ => {}
         }
 
@@ -888,23 +998,6 @@ impl DiffView {
         }
     }
 
-    /// The git command that shows the commit or stash under the cursor.
-    fn show_args(&self) -> Option<Vec<String>> {
-        let Some(Row::Item { section, item }) = self.current_row() else {
-            return None;
-        };
-        let section = self.sections.get(section)?;
-        let item = section.items.get(item)?;
-        let args: &[&str] = match section.kind {
-            SectionKind::Unmerged => return None,
-            SectionKind::Stashes => &["stash", "show", "--patch", "--stat"],
-            _ => &["show", "--stat", "--patch"],
-        };
-        let mut args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
-        args.push(item.label.clone());
-        Some(args)
-    }
-
     /// Keeps the cursor inside the visible window.
     fn scroll_into_view(&mut self, height: usize) {
         if height == 0 {
@@ -929,9 +1022,10 @@ impl Component for DiffView {
         let popup_style = cx.editor.theme.get("ui.popup");
         surface.clear_with(area, popup_style);
 
-        let title = match &self.error {
-            Some(error) => format!("Magit: {error}"),
-            None => format!("Magit: {}", self.head),
+        let title = match (&self.error, &self.commit) {
+            (Some(error), _) => format!("Magit: {error}"),
+            (None, Some(_)) => format!("Commit {}", self.head),
+            (None, None) => format!("Magit: {}", self.head),
         };
         let block = Block::bordered().title(title).border_style(popup_style);
         let inner = block.inner(area);
@@ -977,8 +1071,9 @@ impl Component for DiffView {
         // The status buffer is modal: it owns the keyboard while it is open.
         match (key.code, key.modifiers) {
             (KeyCode::Esc, _) | (KeyCode::Char('q'), KeyModifiers::NONE) => {
-                return EventResult::Consumed(Some(Box::new(|compositor, _| {
-                    compositor.remove(DiffView::ID);
+                let id = self.view_id();
+                return EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                    compositor.remove(id);
                 })));
             }
             (KeyCode::Char('j') | KeyCode::Down, KeyModifiers::NONE) => self.move_cursor(1),
@@ -992,18 +1087,22 @@ impl Component for DiffView {
                 self.toggle_fold()
             }
             (KeyCode::Enter, _) => {
-                if let Some(args) = self.show_args() {
-                    let workdir = self.workdir.clone();
-                    return EventResult::Consumed(Some(Box::new(move |compositor, cx| {
-                        compositor.remove(DiffView::ID);
-                        crate::magit::show(cx, workdir, args);
-                    })));
+                if let Some(rev) = self.revision_at_cursor() {
+                    match DiffView::commit(&self.workdir, &rev) {
+                        Ok(view) => {
+                            return EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                                compositor.push(Box::new(view));
+                            })))
+                        }
+                        Err(err) => self.error = Some(err),
+                    }
+                    return EventResult::Consumed(None);
                 }
                 match self.visit_target() {
                     Ok((path, line)) => {
                         let path = self.workdir.join(path);
                         return EventResult::Consumed(Some(Box::new(move |compositor, cx| {
-                            compositor.remove(DiffView::ID);
+                            crate::magit::close_views(compositor);
                             crate::roam::open_at(cx.editor, &path, line - 1);
                         })));
                     }
@@ -1046,6 +1145,7 @@ impl Component for DiffView {
                     }
                     Some(Err(err)) => self.error = Some(err),
                     None if reverse => self.reverse_change(),
+                    None if self.commit.is_some() => self.apply_commit_change(false),
                     None => {
                         self.error = Some(
                             "A change here is already in the working tree; a applies commits and stashes"
@@ -1055,21 +1155,22 @@ impl Component for DiffView {
                 }
             }
             // Magit's status buffer opens the menus by their dispatch keys.
-            (KeyCode::Char(key @ ('c' | 'r' | 'P' | 'F' | 'b' | '?')), _) => {
+            // `l` folds here, as in the rest of Helix, so the log is `L`.
+            (KeyCode::Char(key @ ('c' | 'r' | 'P' | 'F' | 'b' | 'L' | 'X' | '?')), _) => {
                 let kind = match key {
                     'c' => MenuKind::Commit,
                     'r' => MenuKind::Rebase,
                     'P' => MenuKind::Push,
                     'F' => MenuKind::Pull,
                     'b' => MenuKind::Branch,
+                    'L' => MenuKind::Log,
+                    'X' => MenuKind::Reset,
                     _ => MenuKind::Main,
                 };
                 let mut overlay =
                     TransientOverlay::new(kind.menu(), self.head.clone(), self.workdir.clone());
-                if kind == MenuKind::Rebase {
-                    if let Some(base) = self.rebase_base_at_cursor() {
-                        overlay = overlay.with_rebase_base(base);
-                    }
+                if let Some(commit) = self.commit_at_cursor() {
+                    overlay = overlay.with_commit(commit);
                 }
                 return EventResult::Consumed(Some(Box::new(move |compositor, _| {
                     compositor.push(Box::new(overlay));
@@ -1086,7 +1187,7 @@ impl Component for DiffView {
     }
 
     fn id(&self) -> Option<&'static str> {
-        Some(Self::ID)
+        Some(self.view_id())
     }
 }
 
@@ -1447,6 +1548,7 @@ mod tests {
             scroll: 0,
             head: "main".to_string(),
             error: None,
+            commit: None,
         };
         view.replace_sections(build_sections(
             unmerged, untracked, unstaged, staged, overview,
@@ -1720,20 +1822,15 @@ mod tests {
         assert_eq!(view.rows.len(), 4 + 3 * 2);
         assert!(matches!(view.rows[0], Row::Header { line: 0 }));
 
-        // RET on a stash shows it with `git stash show`, on a commit with
-        // `git show`; anywhere else it shows nothing.
+        // RET shows a stash or a commit; the menus act on commits only.
         view.cursor = 5;
-        assert_eq!(
-            view.show_args().unwrap(),
-            ["stash", "show", "--patch", "--stat", "stash@{0}"]
-        );
+        assert_eq!(view.revision_at_cursor().as_deref(), Some("stash@{0}"));
+        assert_eq!(view.commit_at_cursor(), None);
         view.cursor = 7;
-        assert_eq!(
-            view.show_args().unwrap(),
-            ["show", "--stat", "--patch", "def5678"]
-        );
+        assert_eq!(view.revision_at_cursor().as_deref(), Some("def5678"));
+        assert_eq!(view.commit_at_cursor().as_deref(), Some("def5678"));
         view.cursor = 0;
-        assert_eq!(view.show_args(), None);
+        assert_eq!(view.revision_at_cursor(), None);
     }
 
     #[test]
@@ -1907,6 +2004,6 @@ mod tests {
             (PathBuf::from("src/conflict.rs"), 1)
         );
         assert!(view.item_command(false).unwrap().is_err());
-        assert_eq!(view.show_args(), None);
+        assert_eq!(view.revision_at_cursor(), None);
     }
 }

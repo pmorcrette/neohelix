@@ -13,6 +13,8 @@ use tui::buffer::Buffer as Surface;
 use tui::widgets::{Block, Widget};
 
 use crate::compositor::{Callback, Component, Context, Event, EventResult};
+use crate::ui::log_view::LogView;
+use helix_magit::log::LogFilter;
 
 /// Columns narrower than this are not worth splitting into.
 const MIN_COLUMN_WIDTH: u16 = 22;
@@ -26,9 +28,9 @@ pub struct TransientOverlay {
     context: String,
     /// The repository the menu acts on, so it can open the status buffer.
     workdir: PathBuf,
-    /// Where an interactive rebase starts when the menu was opened on a
-    /// commit, so it is not asked for.
-    rebase_base: Option<String>,
+    /// The commit the menu was opened on, if any: a reset goes there and an
+    /// interactive rebase starts from it, without asking.
+    commit: Option<String>,
 }
 
 impl TransientOverlay {
@@ -39,13 +41,13 @@ impl TransientOverlay {
             menu,
             context: context.into(),
             workdir,
-            rebase_base: None,
+            commit: None,
         }
     }
 
-    /// Makes an interactive rebase from this menu start at `base`.
-    pub fn with_rebase_base(mut self, base: String) -> Self {
-        self.rebase_base = Some(base);
+    /// Makes the menu act on `commit` where an action needs one.
+    pub fn with_commit(mut self, commit: String) -> Self {
+        self.commit = Some(commit);
         self
     }
 
@@ -85,6 +87,8 @@ impl TransientOverlay {
             MenuKind::Pull => "git pull",
             MenuKind::Branch => "git branch",
             MenuKind::Rebase => "git rebase",
+            MenuKind::Log => "git log",
+            MenuKind::Reset => "git reset",
         };
 
         if args.is_empty() {
@@ -182,7 +186,11 @@ impl Component for TransientOverlay {
                     surface.set_string_truncated(
                         x + 3,
                         y,
-                        &format!("{} {}", argument.flag(), argument.description()),
+                        &format!(
+                            "{} {}",
+                            argument.to_arg().as_deref().unwrap_or(argument.flag()),
+                            argument.description()
+                        ),
                         width.saturating_sub(3),
                         |_| style,
                         true,
@@ -248,6 +256,18 @@ impl Component for TransientOverlay {
             KeyEvent {
                 code: KeyCode::Esc, ..
             } => return EventResult::Consumed(Some(close)),
+            // `-` then an option that is off: ask for its value.
+            KeyEvent {
+                code: KeyCode::Char(c),
+                ..
+            } if self.menu.argument_prefix && self.menu.option_awaiting_value(*c).is_some() => {
+                self.menu.argument_prefix = false;
+                let key = *c;
+                let label = format!("{}: ", self.menu.option_awaiting_value(key).unwrap_or(""));
+                return EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                    compositor.push(Box::new(option_prompt(label, key)));
+                })));
+            }
             KeyEvent {
                 code: KeyCode::Char(c),
                 ..
@@ -279,6 +299,23 @@ impl TransientOverlay {
                 EventResult::Consumed(None)
             }
             MagitCommand::Quit => EventResult::Consumed(Some(close)),
+            MagitCommand::LogCurrent | MagitCommand::LogAll => {
+                let mut filter = LogFilter::from_args(&self.menu.args());
+                filter.all = command == MagitCommand::LogAll;
+                let workdir = self.workdir.clone();
+                EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                    compositor.remove(TransientOverlay::ID);
+                    compositor.push(Box::new(LogView::new(workdir, filter)));
+                })))
+            }
+            MagitCommand::LogOther => {
+                let filter = LogFilter::from_args(&self.menu.args());
+                let workdir = self.workdir.clone();
+                EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                    compositor.remove(TransientOverlay::ID);
+                    compositor.push(Box::new(crate::ui::log_view::range_prompt(workdir, filter)));
+                })))
+            }
             // The status buffer replaces the menu rather than stacking on it.
             MagitCommand::Status | MagitCommand::Refresh => {
                 let workdir = self.workdir.clone();
@@ -294,8 +331,17 @@ impl TransientOverlay {
                 let Some(mut plan) = helix_magit::resolve(command, &self.menu.args()) else {
                     return EventResult::Consumed(Some(close));
                 };
-                if plan.requirement == helix_magit::Requirement::TodoList {
-                    plan.args.extend(self.rebase_base.clone());
+                if let Some(commit) = &self.commit {
+                    match plan.requirement {
+                        helix_magit::Requirement::TodoList => plan
+                            .args
+                            .push(helix_magit::rebase::base_for(&self.workdir, commit)),
+                        helix_magit::Requirement::Revision => {
+                            plan.args.push(commit.clone());
+                            plan.requirement = helix_magit::Requirement::None;
+                        }
+                        _ => {}
+                    }
                 }
                 let workdir = self.workdir.clone();
 
@@ -308,6 +354,33 @@ impl TransientOverlay {
             }
         }
     }
+}
+
+/// Asks for an option's value and sets it in the menu, which stays open.
+fn option_prompt(label: String, key: char) -> crate::ui::Prompt {
+    crate::ui::Prompt::new(
+        label.into(),
+        None,
+        |_, _| Vec::new(),
+        move |cx, input, event| {
+            if event != crate::ui::PromptEvent::Validate || input.trim().is_empty() {
+                return;
+            }
+            let value = input.trim().to_string();
+            cx.jobs.callback(async move {
+                Ok(crate::job::Callback::EditorCompositor(Box::new(
+                    move |_: &mut helix_view::Editor,
+                          compositor: &mut crate::compositor::Compositor| {
+                        if let Some(overlay) =
+                            compositor.find_id::<TransientOverlay>(TransientOverlay::ID)
+                        {
+                            overlay.menu.set_option(key, Some(value));
+                        }
+                    },
+                )))
+            });
+        },
+    )
 }
 
 #[cfg(test)]
@@ -375,14 +448,7 @@ mod tests {
     fn every_action_a_menu_offers_resolves_or_opens_another_menu() {
         // An action that neither runs a command nor opens a menu would be a
         // key that silently does nothing.
-        for kind in [
-            MenuKind::Main,
-            MenuKind::Commit,
-            MenuKind::Push,
-            MenuKind::Pull,
-            MenuKind::Branch,
-            MenuKind::Rebase,
-        ] {
+        for kind in MenuKind::ALL {
             let menu = kind.menu();
             for action in menu.groups.iter().flat_map(|group| &group.actions) {
                 let handled = matches!(
@@ -391,6 +457,9 @@ mod tests {
                         | MagitCommand::Status
                         | MagitCommand::Refresh
                         | MagitCommand::Quit
+                        | MagitCommand::LogCurrent
+                        | MagitCommand::LogAll
+                        | MagitCommand::LogOther
                 ) || helix_magit::resolve(action.command, &[]).is_some();
                 assert!(handled, "{kind:?} binds '{}' to nothing", action.key);
             }
