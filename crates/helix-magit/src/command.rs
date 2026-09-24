@@ -64,6 +64,9 @@ pub struct Ask {
     pub optional: bool,
     /// Already answered, by what the menu was opened on.
     pub preset: Option<String>,
+    /// Whether a preset is only a suggestion, shown for editing rather than
+    /// taken as the answer: the file an ignore pattern starts from.
+    pub suggested: bool,
 }
 
 impl Ask {
@@ -73,7 +76,14 @@ impl Ask {
             label,
             optional: false,
             preset: None,
+            suggested: false,
         }
+    }
+
+    /// Makes a preset a suggestion to edit rather than the answer.
+    pub fn suggested(mut self) -> Self {
+        self.suggested = true;
+        self
     }
 
     pub fn optional(kind: AskKind, label: &'static str) -> Self {
@@ -119,6 +129,14 @@ pub enum Special {
     /// (`spinoff`) or not (`spinout`), and reset the current one to its
     /// upstream.
     Spinoff { checkout: bool },
+    /// Resolve a conflicted path with one side's whole file — or with its
+    /// deletion, when that side deleted it.
+    TakeSide { theirs: bool },
+    /// Add a conflicted path as resolved, refusing while a conflict marker
+    /// is left in it.
+    MarkResolved,
+    /// `--continue` for whichever operation stopped.
+    Continue,
 }
 
 /// What an action would do, before anything is run.
@@ -226,6 +244,9 @@ impl Plan {
 
     /// The command line as it would be typed, for display.
     pub fn command_line(&self) -> String {
+        if self.special == Some(Special::Continue) {
+            return "git … --continue".to_string();
+        }
         if self.special.is_some() {
             return format!("{} ({})", self.summary, self.args.join(" "));
         }
@@ -259,7 +280,34 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
         | MagitCommand::ShowRefs
         | MagitCommand::ShowCherries
         | MagitCommand::ShowProcess
-        | MagitCommand::Shortlog => return None,
+        | MagitCommand::Shortlog
+        | MagitCommand::ConflictEdit
+        | MagitCommand::ConflictShowOurs
+        | MagitCommand::ConflictShowTheirs
+        | MagitCommand::ConflictShowBase => return None,
+
+        // ── Conflicts ──
+        MagitCommand::ConflictTakeOurs => Plan::new(["{0}"], "Resolve with our side")
+            .asking([Ask::required(AskKind::Path, "Conflicted file")])
+            .special(Special::TakeSide { theirs: false })
+            .destructive(),
+        MagitCommand::ConflictTakeTheirs => Plan::new(["{0}"], "Resolve with their side")
+            .asking([Ask::required(AskKind::Path, "Conflicted file")])
+            .special(Special::TakeSide { theirs: true })
+            .destructive(),
+        MagitCommand::ConflictMarkResolved => Plan::new(["{0}"], "Mark resolved")
+            .asking([Ask::required(AskKind::Path, "Conflicted file")])
+            .special(Special::MarkResolved),
+        // Rewrites the file from the index, so edits made to it are lost.
+        MagitCommand::ConflictWithBase => Plan::new(
+            ["checkout", "--conflict=diff3", "--", "{0}"],
+            "Rewrite the conflicts with the base shown, discarding edits to the file",
+        )
+        .asking([Ask::required(AskKind::Path, "Conflicted file")])
+        .destructive(),
+        MagitCommand::Continue => {
+            Plan::new(Vec::<String>::new(), "Continue").special(Special::Continue)
+        }
 
         // ── Configuration ──
         MagitCommand::BranchConfigDescription => Plan::new(
@@ -641,10 +689,10 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
 
         // ── Ignoring ──
         MagitCommand::IgnoreShared => Plan::new(["{0}"], "Ignore in .gitignore")
-            .asking([Ask::required(AskKind::Path, "Ignore (pattern)")])
+            .asking([Ask::required(AskKind::Path, "Ignore (pattern)").suggested()])
             .special(Special::Ignore { private: false }),
         MagitCommand::IgnorePrivate => Plan::new(["{0}"], "Ignore in .git/info/exclude")
-            .asking([Ask::required(AskKind::Path, "Ignore (pattern)")])
+            .asking([Ask::required(AskKind::Path, "Ignore (pattern)").suggested()])
             .special(Special::Ignore { private: true }),
 
         // With the `--interactive` switch on, this is the interactive
@@ -845,6 +893,28 @@ pub fn run_plan(workdir: &Path, plan: &Plan) -> std::io::Result<GitOutput> {
             let new = plan.args.first().cloned().unwrap_or_default();
             spinoff(workdir, &new, checkout, &mut log)?;
         }
+        Some(Special::TakeSide { theirs }) => {
+            let path = plan.args.first().cloned().unwrap_or_default();
+            take_side(workdir, Path::new(&path), theirs, &mut log)?;
+        }
+        Some(Special::MarkResolved) => {
+            let path = plan.args.first().cloned().unwrap_or_default();
+            mark_resolved(workdir, Path::new(&path), &mut log)?;
+        }
+        Some(Special::Continue) => {
+            let operation = crate::status::git_dir(workdir)
+                .and_then(|dir| crate::status::in_progress(&dir, &|_| None))
+                .map(|state| state.operation);
+            match operation {
+                None => log.fail("nothing is in progress"),
+                Some(crate::status::Operation::Bisect) => {
+                    log.fail("a bisect goes on with good, bad or skip (B)")
+                }
+                Some(operation) => {
+                    log.run(workdir, &args_of(&[operation.command(), "--continue"]))?;
+                }
+            }
+        }
     }
     Ok(log.output())
 }
@@ -991,6 +1061,77 @@ fn ignore(workdir: &Path, pattern: &str, private: bool) -> std::io::Result<GitOu
         stdout: format!("Ignoring {pattern} in {}", file.display()),
         stderr: String::new(),
     })
+}
+
+/// Resolves a conflicted path with one side's whole version.
+fn take_side(
+    workdir: &Path,
+    path: &Path,
+    theirs: bool,
+    log: &mut Transcript,
+) -> std::io::Result<()> {
+    use crate::conflict::{stage_content, Side};
+    let side = if theirs { Side::Theirs } else { Side::Ours };
+    let spec = path.display().to_string();
+    match stage_content(workdir, path, side) {
+        Some(content) => {
+            std::fs::write(workdir.join(path), content)?;
+            if log.run(workdir, &args_of(&["add", "--", &spec]))? {
+                log.note = Some(format!(
+                    "{spec}: resolved with {} version",
+                    if theirs { "their" } else { "our" }
+                ));
+            }
+        }
+        // That side deleted it: resolving with it is the deletion.
+        None => {
+            if log.run(
+                workdir,
+                &args_of(&["rm", "--quiet", "--force", "--", &spec]),
+            )? {
+                log.note = Some(format!(
+                    "{spec}: resolved as deleted, as {} side has it",
+                    if theirs { "their" } else { "our" }
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Adds a resolved path, unless a conflict marker is still in it; a path
+/// that is gone is resolved as deleted.
+fn mark_resolved(workdir: &Path, path: &Path, log: &mut Transcript) -> std::io::Result<()> {
+    let spec = path.display().to_string();
+    match std::fs::read_to_string(workdir.join(path)) {
+        Ok(text) => {
+            if let Some(line) = crate::conflict::first_marker(&text) {
+                log.fail(&format!(
+                    "{spec} still has a conflict marker on line {}",
+                    line + 1
+                ));
+                return Ok(());
+            }
+            if log.run(workdir, &args_of(&["add", "--", &spec]))? {
+                log.note = Some(format!("{spec}: resolved"));
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            if log.run(
+                workdir,
+                &args_of(&["rm", "--quiet", "--cached", "--", &spec]),
+            )? {
+                log.note = Some(format!("{spec}: resolved as deleted"));
+            }
+        }
+        // Not text: nothing to check for markers, the user decides.
+        Err(_) => {
+            if log.run(workdir, &args_of(&["add", "--", &spec]))? {
+                log.note = Some(format!("{spec}: resolved"));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Moves the commits the upstream does not have to a new branch.

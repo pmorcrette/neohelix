@@ -300,11 +300,12 @@ fn ask_next(
     asks: Vec<Ask>,
     mut answers: Vec<String>,
 ) {
-    // A path the menu was opened on is a suggestion to edit — `junk.log`
-    // is as likely to become `*.log` — so it is asked with it filled in.
+    // A suggested preset — the file an ignore pattern starts from, since
+    // `junk.log` is as likely to become `*.log` — is asked with it filled
+    // in; any other preset is the answer.
     while let Some(preset) = asks
         .get(answers.len())
-        .filter(|ask| ask.kind != AskKind::Path)
+        .filter(|ask| !ask.suggested)
         .and_then(|ask| ask.preset.clone())
     {
         answers.push(preset);
@@ -407,6 +408,114 @@ pub fn shortlog_prompt(workdir: PathBuf, args: Vec<String>) -> crate::ui::Prompt
             }
         },
     )
+}
+
+// ── Conflicts ───────────────────────────────────────────────────────────
+
+/// Opens a conflicted file on its first conflict.
+pub fn edit_conflict(editor: &mut Editor, path: &std::path::Path) {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let line = helix_magit::conflict::regions(&text)
+        .first()
+        .map_or(0, |region| region.start);
+    if crate::roam::open_at(editor, path, line) {
+        let count = helix_magit::conflict::regions(&text).len();
+        editor.set_status(format!(
+            "{count} conflict(s): ]m / [m move between them, \
+             :conflict-take ours|theirs|base|both resolves the one under the cursor"
+        ));
+    }
+}
+
+/// Shows one side of a conflicted file — ours, theirs or the base — in a
+/// scratch buffer beside it, highlighted as the file is.
+pub fn show_conflict_side(
+    editor: &mut Editor,
+    workdir: &std::path::Path,
+    path: &std::path::Path,
+    side: helix_magit::conflict::Side,
+) {
+    use helix_magit::conflict::Side;
+    let name = match side {
+        Side::Ours => "ours",
+        Side::Theirs => "theirs",
+        _ => "base",
+    };
+    let Some(content) = helix_magit::conflict::stage_content(workdir, path, side) else {
+        editor.set_error(format!("{} has no {name} version", path.display()));
+        return;
+    };
+    let doc_id = editor.new_scratch_with_text(helix_view::editor::Action::VerticalSplit, &content);
+    let loader = editor.syn_loader.load();
+    if let Some(language) = loader.language_for_filename(path) {
+        let config = loader.language(language).config().clone();
+        helix_view::doc_mut!(editor, &doc_id).set_language(Some(config), &loader);
+    }
+    editor.set_status(format!("{}: the {name} version", path.display()));
+}
+
+/// `]m` / `[m`: the next or previous conflict in the buffer.
+pub fn goto_conflict(editor: &mut Editor, forward: bool) {
+    let (view, doc) = helix_view::current!(editor);
+    let text = doc.text().clone();
+    let regions = helix_magit::conflict::regions(&text.to_string());
+    let cursor = doc.selection(view.id).primary().cursor(text.slice(..));
+    let line = text.char_to_line(cursor);
+    let target = if forward {
+        regions.iter().find(|region| region.start > line)
+    } else {
+        regions.iter().rev().find(|region| region.end <= line)
+    };
+    let Some(target) = target else {
+        editor.set_status(if regions.is_empty() {
+            "No conflict in this buffer"
+        } else {
+            "No more conflicts that way"
+        });
+        return;
+    };
+    let at = text.line_to_char(target.start);
+    doc.set_selection(view.id, helix_core::Selection::point(at));
+    helix_view::align_view(doc, view, helix_view::Align::Center);
+}
+
+/// `:conflict-take <side>`: replaces the conflict under the cursor with
+/// one side of it, or with both.
+pub fn conflict_take(editor: &mut Editor, side: &str) -> Result<(), String> {
+    use helix_core::{Selection, Transaction};
+    use helix_magit::conflict::{kept, region_at, regions, Side};
+
+    let side =
+        Side::parse(side).ok_or_else(|| format!("`{side}` is not ours, theirs, base or both"))?;
+    let (view, doc) = helix_view::current!(editor);
+    let text = doc.text().clone();
+    let cursor = doc.selection(view.id).primary().cursor(text.slice(..));
+    let line = text.char_to_line(cursor);
+    let found = regions(&text.to_string());
+    let region = region_at(&found, line).ok_or("The cursor is not in a conflict")?;
+    let lines = kept(region, side).ok_or(
+        "This conflict has no base section: rewrite the file with the base shown (e then 3)",
+    )?;
+
+    let start = text.line_to_char(region.start);
+    let end = text.line_to_char(region.end.min(text.len_lines()));
+    let mut replacement = lines.join("\n");
+    if !lines.is_empty() {
+        replacement.push('\n');
+    }
+    let transaction =
+        Transaction::change(&text, [(start, end, Some(replacement.into()))].into_iter())
+            .with_selection(Selection::point(start));
+    doc.apply(&transaction, view.id);
+    doc.append_changes_to_history(view);
+
+    let left = regions(&doc.text().to_string()).len();
+    editor.set_status(if left == 0 {
+        "No conflict left: write the file, then mark it resolved (s in the status)".to_string()
+    } else {
+        format!("{left} conflict(s) left")
+    });
+    Ok(())
 }
 
 /// Runs the plan and reports what git said.

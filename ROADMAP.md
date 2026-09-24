@@ -1501,12 +1501,43 @@ its own answer.
       their stage. *(With Task 2.5: "both modified", "deleted by them", … as
       `git status` words it, from which of base, ours and theirs the index
       holds.)*
-- [ ] Open a conflicted file with the three sides available — ours, theirs and
+- [x] Open a conflicted file with the three sides available — ours, theirs and
       the base — and a way to take either side for a region.
-- [ ] Mark a path resolved, and drive the surrounding operation to its end
+- [x] Mark a path resolved, and drive the surrounding operation to its end
       (`merge --continue`, `rebase --continue`, `cherry-pick --continue`).
-- [ ] This applies to every operation that can stop on a conflict, not just
+- [x] This applies to every operation that can stop on a conflict, not just
       merge, so it belongs with none of them in particular.
+
+*Done — the fork's answer to Ediff is the conflicted file itself, with the
+sides one key away rather than three windows at once.* `e` on an unmerged path
+in the status buffer opens a resolve menu for it:
+
+- `e` opens the file on its first conflict. `]m` / `[m` move between
+  conflicts (both free under Helix's bracket keys), and
+  `:conflict-take ours|theirs|base|both` replaces the conflict under the
+  cursor with that side, or with ours then theirs; the status line counts what
+  is left. The regions are read from the markers (`helix_magit::conflict`),
+  and a half-edited region — an opening marker with no closing one — is not
+  taken for one.
+- `O`, `B`, `T` open the file and, beside it, the whole of our, the base's or
+  their version, from index stages 2, 1 and 3, highlighted as the file is.
+- `3` rewrites the file with the base section in every conflict
+  (`checkout --conflict=diff3`), so `base` can be taken per region; it discards
+  edits made to the file, so it asks first.
+- `o` / `t` resolve the whole file with one side, including a side that
+  deleted it, which resolves as the deletion; they ask first too.
+- `s` — here and on an unmerged path in the status buffer — marks it resolved,
+  and refuses while a conflict marker is left, naming the line.
+- `c` here, or `C` anywhere in the status buffer, continues whichever operation
+  stopped: merge, rebase, cherry-pick, revert or `am`, read from git's state
+  files rather than tied to any one menu. The status buffer's hint for each
+  says so.
+
+Checked in the editor on a merge stopped on a both-modified file and a file
+their side deleted (one region taken as theirs, one as both, written, marked
+resolved; the deletion taken as theirs; `C` committed the merge) and on a
+rebase stopped on a conflict (rewritten with the base, the base taken,
+resolved, `C` finished the rebase), plus the base shown beside the file.
 
 ### Task 2.11: File-Scoped Commands and Blame
 

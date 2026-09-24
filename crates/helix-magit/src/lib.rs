@@ -5,6 +5,7 @@
 //! `gix`. Rendering and key handling live in `helix-term`.
 
 pub mod command;
+pub mod conflict;
 pub mod diff;
 pub mod log;
 pub mod patch;

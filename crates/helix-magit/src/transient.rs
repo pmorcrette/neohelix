@@ -135,6 +135,19 @@ pub enum MagitCommand {
     /// Who contributed what over a range; shown, not just run.
     Shortlog,
 
+    /// Resolving the conflicted file the menu was opened on.
+    ConflictEdit,
+    ConflictShowOurs,
+    ConflictShowTheirs,
+    ConflictShowBase,
+    ConflictTakeOurs,
+    ConflictTakeTheirs,
+    ConflictWithBase,
+    ConflictMarkResolved,
+    /// Continue whichever operation stopped: merge, rebase, cherry-pick,
+    /// revert or am.
+    Continue,
+
     /// Views the editor opens rather than commands it runs: every branch
     /// and tag against HEAD, the commits one branch has that another does
     /// not, and what the commands run so far printed.
@@ -179,10 +192,12 @@ pub enum MenuKind {
     /// and remote menus.
     BranchConfig,
     RemoteConfig,
+    /// A conflicted file, opened from the status buffer with `e`.
+    Resolve,
 }
 
 impl MenuKind {
-    pub const ALL: [MenuKind; 24] = [
+    pub const ALL: [MenuKind; 25] = [
         MenuKind::Main,
         MenuKind::Commit,
         MenuKind::Push,
@@ -207,6 +222,7 @@ impl MenuKind {
         MenuKind::Ignore,
         MenuKind::BranchConfig,
         MenuKind::RemoteConfig,
+        MenuKind::Resolve,
     ];
 
     /// The key that opens this menu, in the main menu and the status
@@ -236,7 +252,7 @@ impl MenuKind {
             MenuKind::Subtree => 'O',
             MenuKind::Notes => 'T',
             MenuKind::Ignore => 'i',
-            MenuKind::BranchConfig | MenuKind::RemoteConfig => return None,
+            MenuKind::BranchConfig | MenuKind::RemoteConfig | MenuKind::Resolve => return None,
         })
     }
 
@@ -274,6 +290,7 @@ impl MenuKind {
             MenuKind::Ignore => ignore_menu(),
             MenuKind::BranchConfig => branch_config_menu(),
             MenuKind::RemoteConfig => remote_config_menu(),
+            MenuKind::Resolve => resolve_menu(),
         }
     }
 }
@@ -976,6 +993,34 @@ pub fn remote_config_menu() -> TransientMenu {
             TransientAction::new('U', "pushurl", MagitCommand::RemoteConfigPushUrl),
             TransientAction::new('f', "fetch (refspec)", MagitCommand::RemoteConfigFetch),
         ]),
+    ])
+}
+
+pub fn resolve_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::Resolve, "Resolve").with_groups([
+        TransientGroup::new("Edit").with_actions([
+            TransientAction::new('e', "Edit the file", MagitCommand::ConflictEdit),
+            TransientAction::new(
+                '3',
+                "Rewrite with the base shown",
+                MagitCommand::ConflictWithBase,
+            ),
+        ]),
+        TransientGroup::new("Show").with_actions([
+            TransientAction::new('O', "Ours", MagitCommand::ConflictShowOurs),
+            TransientAction::new('B', "Base", MagitCommand::ConflictShowBase),
+            TransientAction::new('T', "Theirs", MagitCommand::ConflictShowTheirs),
+        ]),
+        TransientGroup::new("Whole file").with_actions([
+            TransientAction::new('o', "Take ours", MagitCommand::ConflictTakeOurs),
+            TransientAction::new('t', "Take theirs", MagitCommand::ConflictTakeTheirs),
+            TransientAction::new('s', "Mark resolved", MagitCommand::ConflictMarkResolved),
+        ]),
+        TransientGroup::new("Then").with_actions([TransientAction::new(
+            'c',
+            "Continue the operation",
+            MagitCommand::Continue,
+        )]),
     ])
 }
 

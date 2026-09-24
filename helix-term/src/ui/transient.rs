@@ -111,6 +111,7 @@ impl TransientOverlay {
             MenuKind::Notes => "git notes",
             MenuKind::Ignore => return String::new(),
             MenuKind::BranchConfig | MenuKind::RemoteConfig => "git config",
+            MenuKind::Resolve => return String::new(),
         };
 
         if args.is_empty() {
@@ -335,6 +336,36 @@ impl TransientOverlay {
                     compositor.push(Box::new(crate::ui::diff_view::cherries_prompt(workdir)));
                 })))
             }
+            MagitCommand::ConflictEdit
+            | MagitCommand::ConflictShowOurs
+            | MagitCommand::ConflictShowTheirs
+            | MagitCommand::ConflictShowBase => {
+                use helix_magit::conflict::Side;
+                let Some((path, AskKind::Path)) = self.target.clone() else {
+                    return EventResult::Consumed(Some(close));
+                };
+                let workdir = self.workdir.clone();
+                EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                    compositor.remove(TransientOverlay::ID);
+                    crate::magit::close_views(compositor);
+                    let path = std::path::PathBuf::from(path);
+                    match command {
+                        MagitCommand::ConflictEdit => {
+                            crate::magit::edit_conflict(cx.editor, &workdir.join(&path))
+                        }
+                        command => {
+                            // The file itself first, so the side opens beside it.
+                            crate::magit::edit_conflict(cx.editor, &workdir.join(&path));
+                            let side = match command {
+                                MagitCommand::ConflictShowOurs => Side::Ours,
+                                MagitCommand::ConflictShowTheirs => Side::Theirs,
+                                _ => Side::Base,
+                            };
+                            crate::magit::show_conflict_side(cx.editor, &workdir, &path, side);
+                        }
+                    }
+                })))
+            }
             MagitCommand::Shortlog => {
                 let workdir = self.workdir.clone();
                 let args = self.menu.args();
@@ -511,6 +542,10 @@ mod tests {
                         | MagitCommand::ShowCherries
                         | MagitCommand::ShowProcess
                         | MagitCommand::Shortlog
+                        | MagitCommand::ConflictEdit
+                        | MagitCommand::ConflictShowOurs
+                        | MagitCommand::ConflictShowTheirs
+                        | MagitCommand::ConflictShowBase
                 ) || helix_magit::resolve(action.command, &[]).is_some();
                 assert!(handled, "{kind:?} binds '{}' to nothing", action.key);
             }

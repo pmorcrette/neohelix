@@ -719,6 +719,8 @@ impl MappableCommand {
         goto_prev_test, "Goto previous test",
         goto_next_xml_element, "Goto next (X)HTML element",
         goto_prev_xml_element, "Goto previous (X)HTML element",
+        goto_next_conflict, "Goto next merge conflict",
+        goto_prev_conflict, "Goto previous merge conflict",
         goto_next_entry, "Goto next pairing",
         goto_prev_entry, "Goto previous pairing",
         goto_next_paragraph, "Goto next paragraph",
@@ -7988,6 +7990,14 @@ fn goto_next_test(cx: &mut Context) {
 
 fn goto_prev_test(cx: &mut Context) {
     goto_ts_object_impl(cx, "test", Direction::Backward)
+}
+
+fn goto_next_conflict(cx: &mut Context) {
+    crate::magit::goto_conflict(cx.editor, true);
+}
+
+fn goto_prev_conflict(cx: &mut Context) {
+    crate::magit::goto_conflict(cx.editor, false);
 }
 
 fn goto_next_xml_element(cx: &mut Context) {

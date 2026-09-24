@@ -21,7 +21,7 @@ use tui::widgets::{Block, Widget};
 use crate::compositor::{Component, Compositor, Context, Event, EventResult};
 use crate::ui::confirm::Confirm;
 use crate::ui::transient::TransientOverlay;
-use helix_magit::transient::MenuKind;
+use helix_magit::transient::{MagitCommand, MenuKind};
 
 /// What a section lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -150,11 +150,11 @@ fn header_lines(overview: &Overview) -> Vec<HeaderLine> {
         // Each operation's menu has what gets out of it.
         use helix_magit::status::Operation;
         let hint = match state.operation {
-            Operation::Rebase => "r then c to continue, s to skip, z to abort",
-            Operation::Merge => "m then c to commit the merge, z to abort",
-            Operation::CherryPick => "A then c to continue, s to skip, z to abort",
-            Operation::Revert => "V then c to continue, s to skip, z to abort",
-            Operation::Am => "w then c to continue, s to skip, z to abort",
+            Operation::Rebase => "C to continue; r then s to skip, z to abort",
+            Operation::Merge => "C to commit the merge; m then z to abort",
+            Operation::CherryPick => "C to continue; A then s to skip, z to abort",
+            Operation::Revert => "C to continue; V then s to skip, z to abort",
+            Operation::Am => "C to continue; w then s to skip, z to abort",
             Operation::Bisect => "B then g good, b bad, s skip, r to end",
         }
         .to_string();
@@ -207,7 +207,7 @@ fn build_sections(
     vec![
         items(
             SectionKind::Unmerged,
-            "Unmerged paths".to_string(),
+            "Unmerged paths — e to resolve, s once resolved".to_string(),
             unmerged
                 .into_iter()
                 .map(|path| Item {
@@ -1097,6 +1097,38 @@ impl DiffView {
         .then(|| section.items.get(item).map(|item| item.label.clone()))?
     }
 
+    /// The conflicted path under the cursor.
+    fn unmerged_at_cursor(&self) -> Option<String> {
+        let Some(Row::Item { section, item }) = self.current_row() else {
+            return None;
+        };
+        let section = self.sections.get(section)?;
+        (section.kind == SectionKind::Unmerged)
+            .then(|| section.items.get(item).map(|item| item.text.clone()))?
+    }
+
+    /// Runs a menu command on `path` without its menu.
+    fn run_on_path(&self, command: MagitCommand, path: String) -> EventResult {
+        let Some(mut plan) = helix_magit::resolve(command, &[]) else {
+            return EventResult::Consumed(None);
+        };
+        plan.preset(&path, AskKind::Path);
+        let plan = match &plan.requirement {
+            helix_magit::Requirement::Ask(asks) => {
+                let answers: Vec<String> = asks
+                    .iter()
+                    .map(|ask| ask.preset.clone().unwrap_or_default())
+                    .collect();
+                plan.answered(&answers)
+            }
+            _ => plan,
+        };
+        let workdir = self.workdir.clone();
+        EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+            crate::magit::execute(compositor, cx, plan, workdir);
+        })))
+    }
+
     /// The worktree or submodule under the cursor, whose own status `RET`
     /// opens.
     fn repository_at_cursor(&self) -> Option<PathBuf> {
@@ -1380,6 +1412,34 @@ impl Component for DiffView {
             }
             (KeyCode::Char('S'), _) => self.apply_all(true),
             (KeyCode::Char('U'), _) => self.apply_all(false),
+            // On a conflicted path, staging is marking it resolved.
+            (KeyCode::Char('s'), KeyModifiers::NONE) if self.unmerged_at_cursor().is_some() => {
+                let path = self.unmerged_at_cursor().unwrap_or_default();
+                return self.run_on_path(MagitCommand::ConflictMarkResolved, path);
+            }
+            (KeyCode::Char('e'), KeyModifiers::NONE) => match self.unmerged_at_cursor() {
+                Some(path) => {
+                    let overlay = TransientOverlay::new(
+                        MenuKind::Resolve.menu(),
+                        path.clone(),
+                        self.workdir.clone(),
+                    )
+                    .with_target(path, AskKind::Path);
+                    return EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                        compositor.push(Box::new(overlay));
+                    })));
+                }
+                None => self.error = Some("e resolves a conflicted path".to_string()),
+            },
+            (KeyCode::Char('C'), _) => {
+                let plan = helix_magit::resolve(MagitCommand::Continue, &[]);
+                let workdir = self.workdir.clone();
+                if let Some(plan) = plan {
+                    return EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                        crate::magit::execute(compositor, cx, plan, workdir);
+                    })));
+                }
+            }
             (KeyCode::Char('s'), KeyModifiers::NONE) => self.apply(true),
             (KeyCode::Char('u'), KeyModifiers::NONE) => self.apply(false),
             (KeyCode::Char('y'), KeyModifiers::NONE) => {
@@ -2054,7 +2114,7 @@ mod tests {
                 "Head: main  abc1234 Latest",
                 "Upstream: origin/main  def5678 Theirs",
                 "State: Merging 0123456",
-                " m then c to commit the merge, z to abort",
+                " C to commit the merge; m then z to abort",
             ]
         );
 
@@ -2272,7 +2332,7 @@ mod tests {
             vec![],
             &Overview::default(),
         );
-        assert_eq!(view.sections[0].title, "Unmerged paths");
+        assert!(view.sections[0].title.starts_with("Unmerged paths"));
         view.cursor = 1;
         assert_eq!(
             view.visit_target().unwrap(),
@@ -2280,5 +2340,12 @@ mod tests {
         );
         assert!(view.item_command(false).unwrap().is_err());
         assert_eq!(view.revision_at_cursor(), None);
+        // `e` and `s` act on the path itself.
+        assert_eq!(
+            view.unmerged_at_cursor().as_deref(),
+            Some("src/conflict.rs")
+        );
+        view.cursor = 0;
+        assert_eq!(view.unmerged_at_cursor(), None);
     }
 }

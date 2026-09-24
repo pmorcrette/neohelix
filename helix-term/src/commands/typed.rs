@@ -2421,6 +2421,17 @@ roam_buffer_command!(org_columns, crate::roam::toggle_columns);
 roam_component_command!(roam_dailies_directory, crate::roam::dailies_picker);
 
 /// `:roam-dailies-capture <entry>`, or a prompt for it.
+fn conflict_take(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    crate::magit::conflict_take(cx.editor, &args[0]).map_err(|err| anyhow::anyhow!(err))
+}
+
 fn rebase_todo(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
@@ -4167,6 +4178,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "conflict-take",
+        aliases: &[],
+        doc: "Resolve the merge conflict under the cursor with ours, theirs, base or both.",
+        fun: conflict_take,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (1, Some(1)),
             ..Signature::DEFAULT
         },
     },
