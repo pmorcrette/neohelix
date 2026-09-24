@@ -222,6 +222,30 @@ fn fold_for(text: RopeSlice, start_byte: usize, end_byte: usize) -> Option<Fold>
     (from < to).then(|| Fold::new(from, to))
 }
 
+/// The text of `range` without what `folds` hide: what the screen shows,
+/// markers aside.
+///
+/// A fold hides from the newline ending its first line to the newline
+/// ending its last, so cutting the hidden spans out leaves whole lines — a
+/// folded outline copies as the outline it looks like.
+pub fn visible_text(text: RopeSlice, range: Range<usize>, folds: &Folds) -> String {
+    let mut out = String::new();
+    let mut at = range.start;
+    for fold in folds.iter() {
+        if fold.end <= at || fold.start >= range.end {
+            continue;
+        }
+        if fold.start > at {
+            out.extend(text.slice(at..fold.start).chunks());
+        }
+        at = at.max(fold.end);
+    }
+    if at < range.end {
+        out.extend(text.slice(at..range.end).chunks());
+    }
+    out
+}
+
 /// The outermost of `folds`, dropping every fold another one contains.
 ///
 /// What "fold everything" means is folding the file to its top level; folding
@@ -419,6 +443,22 @@ mod tests {
 
     fn ranges(folds: &Folds) -> Vec<(usize, usize)> {
         folds.iter().map(|fold| (fold.start, fold.end)).collect()
+    }
+
+    #[test]
+    fn visible_text_leaves_out_what_is_folded() {
+        let text = Rope::from("* A\nbody a\n* B\nbody b\n* C\n");
+        // Fold A's and B's bodies: from each headline's newline to the
+        // newline ending the body.
+        let folded = folds(&[(3, 10), (14, 21)]);
+        let all = 0..text.len_chars();
+        assert_eq!(
+            visible_text(text.slice(..), all, &folded),
+            "* A\n* B\n* C\n"
+        );
+        // A range starting inside a fold starts where the fold ends.
+        assert_eq!(visible_text(text.slice(..), 5..17, &folded), "\n* B");
+        assert_eq!(visible_text(text.slice(..), 0..3, &Folds::new()), "* A");
     }
 
     #[test]

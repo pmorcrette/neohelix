@@ -77,6 +77,7 @@ fn apply_parsed(graph: &mut RoamGraph, parsed: &[ParsedFile], errors: usize) -> 
     };
 
     for file in parsed {
+        graph.record_setup_files(&file.path, &file.settings.setup_files);
         for node in &file.nodes {
             graph.insert_node(node.clone());
             stats.nodes += 1;
@@ -157,6 +158,33 @@ pub async fn scan_directory_async(
 ///
 /// Parsing runs on a blocking thread and the lock is taken only for the
 /// update, which touches just this file's nodes.
+/// Re-indexes, from disk, every file that reads `setup` through
+/// `#+SETUPFILE:`, returning how many there were.
+///
+/// Called when `setup` is saved: the files naming it did not change, but
+/// what they mean did.
+pub async fn reindex_setup_dependents(
+    graph: Arc<RwLock<RoamGraph>>,
+    setup: PathBuf,
+) -> Result<usize, tokio::task::JoinError> {
+    tokio::task::spawn_blocking(move || {
+        let dependents = graph.read().setup_dependents(&setup);
+        let mut done = 0;
+        for path in &dependents {
+            let Ok(text) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            let parsed = parser::parse_org(&text, path);
+            let mut graph = graph.write();
+            graph.remove_nodes_in_file(path);
+            apply_parsed(&mut graph, std::slice::from_ref(&parsed), 0);
+            done += 1;
+        }
+        done
+    })
+    .await
+}
+
 pub async fn reindex_file_async(
     graph: Arc<RwLock<RoamGraph>>,
     path: PathBuf,

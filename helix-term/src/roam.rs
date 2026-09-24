@@ -43,16 +43,29 @@ pub fn start_initial_index(editor: &Editor) {
 /// reading it back.
 pub fn reindex_saved_file(editor: &Editor, path: &Path, text: String) {
     let config = editor.config();
-    if !config.roam.enable || !is_org_file(path) {
+    if !config.roam.enable {
         return;
     }
 
     let graph = editor.roam.clone();
     let path = path.to_path_buf();
+    let is_org = is_org_file(&path);
 
     tokio::spawn(async move {
-        if let Err(err) = scanner::reindex_file_async(graph, path.clone(), text).await {
-            log::error!("failed to re-index {}: {err}", path.display());
+        if is_org {
+            if let Err(err) = scanner::reindex_file_async(graph.clone(), path.clone(), text).await {
+                log::error!("failed to re-index {}: {err}", path.display());
+            }
+        }
+        // Any file can be a setup file — `.setup` is a common name for one —
+        // so this is asked of every save, not only of Org files.
+        match scanner::reindex_setup_dependents(graph, path.clone()).await {
+            Ok(0) => {}
+            Ok(count) => log::info!(
+                "{} changed: re-indexed {count} files reading it",
+                path.display()
+            ),
+            Err(err) => log::error!("failed to re-index what reads {}: {err}", path.display()),
         }
     });
 }
@@ -286,7 +299,17 @@ const LINK_REGISTER: char = 'o';
 
 /// The file's link abbreviations, which are per file rather than global.
 fn abbreviations(doc: &helix_view::Document) -> Vec<(String, String)> {
-    helix_roam::FileSettings::scan(&doc.text().to_string()).link_abbreviations
+    settings_of(doc).link_abbreviations
+}
+
+/// A document's settings, its `#+SETUPFILE:`s included when it has a path
+/// to resolve them against.
+fn settings_of(doc: &helix_view::Document) -> helix_roam::FileSettings {
+    let text = doc.text().to_string();
+    match doc.path() {
+        Some(path) => helix_roam::FileSettings::scan_at(&text, path),
+        None => helix_roam::FileSettings::scan(&text),
+    }
 }
 
 /// Byte offset of the cursor in the focused document.
@@ -1220,7 +1243,7 @@ const DEFAULT_EFFORTS: [&str; 9] = [
 pub fn increment_effort(editor: &mut Editor) {
     let (text, line) = text_and_line(editor);
 
-    let settings = helix_roam::FileSettings::scan(&text);
+    let settings = file_settings(editor);
     let declared: Vec<String> = settings
         .properties
         .iter()
@@ -1313,7 +1336,7 @@ pub fn log_state_change(editor: &mut Editor, input: &str) {
 
 /// The file's own settings, which decide what a keyword or a cookie is.
 fn file_settings(editor: &Editor) -> helix_roam::FileSettings {
-    helix_roam::FileSettings::scan(&doc!(editor).text().to_string())
+    settings_of(doc!(editor))
 }
 
 /// Applies a transformation and moves the cursor to `line`.
@@ -2361,7 +2384,7 @@ pub fn narrow_to_subtree(editor: &mut Editor) {
 /// asks to get back to how the file opened, which is Org's `C-u C-u TAB`.
 pub fn apply_startup_folds(doc: &mut helix_view::Document) -> usize {
     let text = doc.text().to_string();
-    let settings = helix_roam::FileSettings::scan(&text);
+    let settings = settings_of(doc);
     let startup = helix_roam::startup::Startup::of(&settings);
     let ranges = helix_roam::startup::opening_ranges(&text, &startup);
 
@@ -2520,7 +2543,7 @@ pub fn footnote_renumber(editor: &mut Editor) {
 /// The bibliography files this buffer declares, resolved against it.
 fn bibliography_files(editor: &Editor) -> Vec<PathBuf> {
     let doc = doc!(editor);
-    let settings = helix_roam::FileSettings::scan(&doc.text().to_string());
+    let settings = settings_of(doc);
     let beside = doc
         .path()
         .and_then(|path| path.parent().map(Path::to_path_buf))

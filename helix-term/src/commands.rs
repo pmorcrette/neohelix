@@ -512,6 +512,7 @@ impl MappableCommand {
         org_attach, "Copy a file into the attachment directory of the entry",
         org_attach_open, "Pick one of the files attached to the entry",
         org_inline_task, "Insert an inline task below the cursor",
+        org_copy_visible, "Yank only the visible text of the selections, or of the buffer",
         org_encrypt_entry, "Encrypt the body of the entry at the cursor with gpg",
         org_encrypt_entries, "Encrypt every :crypt: entry of the buffer that is in clear",
         org_decrypt_entry, "Decrypt the entry at the cursor",
@@ -4501,6 +4502,43 @@ fn org_encrypt_entries(cx: &mut Context) {
 
 fn org_decrypt_entry(cx: &mut Context) {
     crate::roam::decrypt_entry(cx.editor);
+}
+
+/// Yanks what the screen shows of each selection, leaving folded text out:
+/// a folded outline copies as the outline. A selection of one character
+/// means the whole buffer, which is the usual thing to share.
+///
+/// This is Org's `org-copy-visible`.
+fn org_copy_visible(cx: &mut Context) {
+    org_copy_visible_into(cx.editor, cx.register.unwrap_or('"'));
+}
+
+pub fn org_copy_visible_into(editor: &mut Editor, register: char) {
+    let (view, doc) = current!(editor);
+    let text = doc.text().slice(..);
+
+    let mut values = Vec::new();
+    let mut hidden_lines = 0;
+    for range in doc.selection(view.id).iter() {
+        let span = if range.len() <= 1 {
+            0..text.len_chars()
+        } else {
+            range.from()..range.to()
+        };
+        let visible = helix_core::fold::visible_text(text, span.clone(), doc.folds());
+        let all_lines = text.slice(span).chars().filter(|c| *c == '\n').count();
+        hidden_lines += all_lines.saturating_sub(visible.matches('\n').count());
+        values.push(visible);
+    }
+
+    let lines: usize = values.iter().map(|value| value.lines().count()).sum();
+    match editor.registers.write(register, values) {
+        Ok(()) => editor.set_status(format!(
+            "Yanked {lines} visible line{} to [{register}], leaving out {hidden_lines} hidden",
+            if lines == 1 { "" } else { "s" }
+        )),
+        Err(err) => editor.set_error(err.to_string()),
+    }
 }
 
 fn org_inline_task(cx: &mut Context) {

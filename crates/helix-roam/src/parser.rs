@@ -50,6 +50,8 @@ pub struct ParsedFile {
     pub citations: Vec<(String, Uuid)>,
     /// What the file declared about how it should be read.
     pub settings: FileSettings,
+    /// The file this was parsed from.
+    pub path: PathBuf,
 }
 
 /// What a file declares about how it should be read.
@@ -78,6 +80,10 @@ pub struct FileSettings {
     pub drawers: Vec<String>,
     /// `#+STARTUP:` options, in the order given.
     pub startup: Vec<String>,
+    /// The `#+SETUPFILE:`s read, nested ones included, as resolved paths.
+    /// Empty from [`FileSettings::scan`], which has no file to resolve
+    /// them against; filled by [`FileSettings::scan_at`].
+    pub setup_files: Vec<PathBuf>,
     /// What entering or leaving a keyword records, from `TODO(t!)` and
     /// `DONE(d@/!)`. Only keywords that ask for something appear.
     pub todo_logging: Vec<(String, crate::logging::KeywordLog)>,
@@ -104,6 +110,7 @@ impl Default for FileSettings {
             declared_tags: Vec::new(),
             drawers: Vec::new(),
             startup: Vec::new(),
+            setup_files: Vec::new(),
             todo_logging: Vec::new(),
             properties: Vec::new(),
             link_abbreviations: Vec::new(),
@@ -140,6 +147,28 @@ impl FileSettings {
             .find(|(name, _)| name == keyword)
             .map(|(_, log)| *log)
             .unwrap_or_default()
+    }
+
+    /// Reads the settings of the file at `path`, following `#+SETUPFILE:`.
+    ///
+    /// A setup file's keywords count as if written where the `#+SETUPFILE:`
+    /// line is, as in Org, and a setup file may name another. A path is
+    /// relative to the file naming it; `~` is the home directory. A URL is
+    /// not fetched, a file that cannot be read is skipped, and a file
+    /// already being read is not read again, so two setup files naming each
+    /// other do not loop.
+    pub fn scan_at(text: &str, path: &Path) -> Self {
+        let mut visited = vec![path.to_path_buf()];
+        let mut found = Vec::new();
+        let dir = path.parent().unwrap_or(Path::new("."));
+        let header = expand_setup(text, dir, &mut visited, &mut found);
+        let mut settings = if header.is_empty() {
+            Self::scan(text)
+        } else {
+            Self::scan(&format!("{header}{text}"))
+        };
+        settings.setup_files = found;
+        settings
     }
 
     /// Reads every setting a file declares.
@@ -215,6 +244,60 @@ impl FileSettings {
 
         settings
     }
+}
+
+/// The keyword lines of every `#+SETUPFILE:` in `text`, in order, nested
+/// setup files expanded where they are named.
+fn expand_setup(
+    text: &str,
+    dir: &Path,
+    visited: &mut Vec<PathBuf>,
+    found: &mut Vec<PathBuf>,
+) -> String {
+    let mut out = String::new();
+    for line in text.lines() {
+        let Some((key, value)) = parse_keyword(line.trim_start()) else {
+            continue;
+        };
+        if key != "setupfile" {
+            continue;
+        }
+        let value = value.trim().trim_matches('"');
+        if value.is_empty() || value.contains("://") {
+            continue;
+        }
+        let path = match value.strip_prefix("~/") {
+            Some(rest) => std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_default()
+                .join(rest),
+            None => dir.join(value),
+        };
+        if visited.contains(&path) {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        visited.push(path.clone());
+        found.push(path.clone());
+
+        let nested_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+        for inner in content.lines() {
+            let trimmed = inner.trim_start();
+            match parse_keyword(trimmed) {
+                Some((key, _)) if key == "setupfile" => {
+                    out.push_str(&expand_setup(inner, &nested_dir, visited, found));
+                }
+                Some(_) => {
+                    out.push_str(trimmed);
+                    out.push('\n');
+                }
+                None => {}
+            }
+        }
+    }
+    out
 }
 
 /// Splits `TODO NEXT | DONE` into its not-done and done keywords.
@@ -529,7 +612,8 @@ impl Parser {
     fn run(mut self, text: &str) -> ParsedFile {
         // Read before anything else: these govern headlines that may precede
         // the declaration itself.
-        self.settings = FileSettings::scan(text);
+        self.settings = FileSettings::scan_at(text, &self.path);
+        self.file.path = self.path.clone();
 
         // The preamble behaves like a level-0 headline: it can carry a
         // property drawer, and its node owns every link before the first

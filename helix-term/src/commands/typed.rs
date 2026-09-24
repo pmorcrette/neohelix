@@ -2418,6 +2418,11 @@ roam_buffer_command!(org_clock_goto, crate::roam::clock_goto);
 roam_buffer_command!(org_clock_report, crate::roam::clock_report);
 roam_buffer_command!(org_babel_execute, crate::roam::babel_execute);
 roam_buffer_command!(org_columns, crate::roam::toggle_columns);
+/// `:org-copy-visible`, into the default register.
+fn copy_visible_default(editor: &mut Editor) {
+    crate::commands::org_copy_visible_into(editor, '"');
+}
+roam_buffer_command!(org_copy_visible, copy_visible_default);
 roam_buffer_command!(org_encrypt_entry, crate::roam::encrypt_entry);
 roam_buffer_command!(org_encrypt_entries, crate::roam::encrypt_entries);
 roam_buffer_command!(org_decrypt_entry, crate::roam::decrypt_entry);
@@ -5053,6 +5058,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Show or hide the column view of the buffer, from its #+COLUMNS:.",
         fun: org_columns,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-copy-visible",
+        aliases: &[],
+        doc: "Yank only the visible text of the selections (or of the buffer) to the default register.",
+        fun: org_copy_visible,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

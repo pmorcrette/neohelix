@@ -46,12 +46,40 @@ pub struct RoamGraph {
     /// target is — so every `.org` file the editor opens leaves its ids here,
     /// and a link that the nodes cannot answer is asked of this.
     locations: HashMap<Uuid, PathBuf>,
+    /// For each `#+SETUPFILE:`, the files that read it.
+    ///
+    /// A file's meaning can depend on a second file, so saving the second
+    /// has to re-read the first: this is what says which ones.
+    setup_dependents: HashMap<PathBuf, std::collections::BTreeSet<PathBuf>>,
 }
 
 impl RoamGraph {
     /// Creates an empty graph.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Records which setup files `file` reads, replacing what it read before.
+    pub fn record_setup_files(&mut self, file: &Path, setup_files: &[PathBuf]) {
+        for readers in self.setup_dependents.values_mut() {
+            readers.remove(file);
+        }
+        self.setup_dependents
+            .retain(|_, readers| !readers.is_empty());
+        for setup in setup_files {
+            self.setup_dependents
+                .entry(setup.clone())
+                .or_default()
+                .insert(file.to_path_buf());
+        }
+    }
+
+    /// The files that read `setup` through `#+SETUPFILE:`.
+    pub fn setup_dependents(&self, setup: &Path) -> Vec<PathBuf> {
+        self.setup_dependents
+            .get(setup)
+            .map(|readers| readers.iter().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Inserts `node`, or replaces the node already registered under the same
