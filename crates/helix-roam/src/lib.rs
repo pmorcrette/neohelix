@@ -8,6 +8,7 @@
 pub mod agenda;
 pub mod attach;
 pub mod babel;
+pub mod bib;
 pub mod capture;
 pub mod clip;
 pub mod clock;

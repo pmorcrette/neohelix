@@ -2418,6 +2418,35 @@ roam_buffer_command!(org_clock_goto, crate::roam::clock_goto);
 roam_buffer_command!(org_clock_report, crate::roam::clock_report);
 roam_buffer_command!(org_babel_execute, crate::roam::babel_execute);
 roam_buffer_command!(org_columns, crate::roam::toggle_columns);
+roam_component_command!(roam_dailies_directory, crate::roam::dailies_picker);
+
+/// `:roam-dailies-capture <entry>`, or a prompt for it.
+fn roam_dailies_capture(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let entry: Vec<&str> = args.iter().map(|arg| arg.as_ref()).collect();
+    if entry.is_empty() {
+        cx.jobs.callback(async move {
+            let call: job::Callback = Callback::EditorCompositor(Box::new(
+                move |_editor: &mut Editor, compositor: &mut Compositor| {
+                    compositor.push(crate::commands::property_prompt(
+                        "Today: ",
+                        crate::roam::daily_capture,
+                    ))
+                },
+            ));
+            Ok(call)
+        });
+    } else {
+        crate::roam::daily_capture(cx.editor, &entry.join(" "));
+    }
+    Ok(())
+}
 /// `:org-copy-visible`, into the default register.
 fn copy_visible_default(editor: &mut Editor) {
     crate::commands::org_copy_visible_into(editor, '"');
@@ -5058,6 +5087,28 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Show or hide the column view of the buffer, from its #+COLUMNS:.",
         fun: org_columns,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-dailies-capture",
+        aliases: &[],
+        doc: "Add an entry to today's daily note without leaving this buffer.",
+        fun: roam_dailies_capture,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, None),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-dailies-directory",
+        aliases: &[],
+        doc: "Pick a file in the dailies directory.",
+        fun: roam_dailies_directory,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

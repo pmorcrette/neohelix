@@ -132,6 +132,21 @@ enum Inline {
     /// A footnote reference, by label.
     Footnote(String),
     LineBreak,
+    /// `[cite/style:prefix;@key suffix;…]`.
+    Citation {
+        style: Option<String>,
+        cites: Vec<Cite>,
+        prefix: String,
+        suffix: String,
+    },
+}
+
+/// One reference inside a citation, with the text around it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Cite {
+    key: String,
+    prefix: String,
+    suffix: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,6 +196,8 @@ enum Element {
         text: String,
     },
     Rule,
+    /// Where `#+PRINT_BIBLIOGRAPHY:` asks for the references.
+    Bibliography,
 }
 
 /// The export options Org reads from `#+OPTIONS:`, with Org's defaults.
@@ -196,6 +213,11 @@ struct Options {
     author: Option<String>,
     date: Option<String>,
     exclude_tags: Vec<String>,
+    /// `#+BIBLIOGRAPHY:` files, as written.
+    bibliography: Vec<String>,
+    /// `#+CITE_EXPORT:`'s processor: `basic` unless it says `biblatex` or
+    /// `natbib`, which only LaTeX has.
+    cite_export: String,
 }
 
 impl Default for Options {
@@ -210,6 +232,8 @@ impl Default for Options {
             author: None,
             date: None,
             exclude_tags: vec!["noexport".to_string()],
+            bibliography: Vec::new(),
+            cite_export: "basic".to_string(),
         }
     }
 }
@@ -222,6 +246,10 @@ struct Document {
     /// links.
     anchors: HashMap<String, String>,
     warnings: Vec<String>,
+    /// The bibliography's entries, from `#+BIBLIOGRAPHY:`.
+    bib: Vec<crate::bib::Entry>,
+    /// Keys in the order they are first cited.
+    cited: Vec<String>,
 }
 
 // ── Reading ────────────────────────────────────────────────────────────────
@@ -232,6 +260,11 @@ struct Reader<'a> {
     anonymous: usize,
     exclude_tags: Vec<String>,
     warnings: Vec<String>,
+    /// `#+MACRO:` definitions and the built-in ones, by name.
+    macros: HashMap<String, String>,
+    /// Every `#+KEY: value`, for `{{{keyword(KEY)}}}`.
+    keywords: HashMap<String, String>,
+    cited: Vec<String>,
 }
 
 fn keyword<'a>(line: &'a str, name: &str) -> Option<&'a str> {
@@ -250,6 +283,16 @@ fn read_options(text: &str) -> Options {
             options.author = Some(value.to_string());
         } else if let Some(value) = keyword(line, "date") {
             options.date = Some(value.to_string());
+        } else if let Some(value) = keyword(line, "bibliography") {
+            options
+                .bibliography
+                .push(value.trim_matches('"').to_string());
+        } else if let Some(value) = keyword(line, "cite_export") {
+            options.cite_export = value
+                .split_whitespace()
+                .next()
+                .unwrap_or("basic")
+                .to_ascii_lowercase();
         } else if let Some(value) = keyword(line, "exclude_tags") {
             options.exclude_tags = value.split_whitespace().map(str::to_string).collect();
         } else if let Some(value) = keyword(line, "options") {
@@ -432,6 +475,13 @@ impl Reader<'_> {
                     }
                 }
                 drop_results = false;
+                continue;
+            }
+
+            if keyword(line, "print_bibliography").is_some() {
+                flush!();
+                out.push(Element::Bibliography);
+                at += 1;
                 continue;
             }
 
@@ -701,6 +751,8 @@ impl Reader<'_> {
     /// Inline markup, with links found first so their brackets are never
     /// read as anything else.
     fn inlines(&mut self, text: &str) -> Vec<Inline> {
+        let expanded = self.expand_macros(text, 0);
+        let text = expanded.as_str();
         let links = find_links(text, &self.settings.link_abbreviations);
         let mut masked = String::with_capacity(text.len());
         let mut last = 0;
@@ -717,6 +769,109 @@ impl Reader<'_> {
         }
         masked.push_str(&text[last..]);
         self.markup(&masked, &found)
+    }
+
+    /// `{{{name(arg, arg)}}}` replaced by the macro's body, `$1`, `$2`, …
+    /// taking the arguments. A macro's body may call another, to a depth
+    /// that stops a macro calling itself from looping.
+    fn expand_macros(&mut self, text: &str, depth: usize) -> String {
+        if !text.contains("{{{") || depth > 8 {
+            return text.to_string();
+        }
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(open) = rest.find("{{{") {
+            out.push_str(&rest[..open]);
+            let Some(close) = rest[open..].find("}}}").map(|close| open + close) else {
+                out.push_str(&rest[open..]);
+                return out;
+            };
+            let call = &rest[open + 3..close];
+            let (name, args) = match call.split_once('(') {
+                Some((name, args)) => (name.trim(), args.strip_suffix(')').unwrap_or(args)),
+                None => (call.trim(), ""),
+            };
+            let args: Vec<String> = split_macro_args(args);
+
+            let expansion = match name.to_ascii_lowercase().as_str() {
+                "keyword" => self
+                    .keywords
+                    .get(
+                        &args
+                            .first()
+                            .cloned()
+                            .unwrap_or_default()
+                            .to_ascii_lowercase(),
+                    )
+                    .cloned(),
+                lower => self.macros.get(lower).map(|body| {
+                    let mut body = body.clone();
+                    for (index, arg) in args.iter().enumerate().rev() {
+                        body = body.replace(&format!("${}", index + 1), arg);
+                    }
+                    body
+                }),
+            };
+            match expansion {
+                Some(expansion) => out.push_str(&self.expand_macros(&expansion, depth + 1)),
+                None => {
+                    self.warnings.push(format!(
+                        "{{{{{{{name}}}}}}} is not a macro this file defines"
+                    ));
+                    out.push_str(&rest[open..close + 3]);
+                }
+            }
+            rest = &rest[close + 3..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// Reads `[cite/style:prefix;@key suffix;…;suffix]`, from the text after
+    /// its opening bracket, returning the citation and its length.
+    fn citation(&mut self, inner: &str) -> Option<Inline> {
+        let rest = inner.strip_prefix("cite")?;
+        let (style, body) = match rest.strip_prefix('/') {
+            Some(styled) => {
+                let (style, body) = styled.split_once(':')?;
+                (Some(style.to_string()), body)
+            }
+            None => (None, rest.strip_prefix(':')?),
+        };
+
+        let parts: Vec<&str> = body.split(';').collect();
+        let mut cites = Vec::new();
+        let mut prefix = String::new();
+        let mut suffix = String::new();
+        for (index, part) in parts.iter().enumerate() {
+            match part.find('@') {
+                Some(at) => {
+                    let key: String = part[at + 1..]
+                        .chars()
+                        .take_while(|c| {
+                            c.is_alphanumeric() || matches!(c, '-' | '_' | ':' | '.' | '/')
+                        })
+                        .collect();
+                    let after = part[at + 1 + key.len()..].trim().to_string();
+                    if !self.cited.contains(&key) {
+                        self.cited.push(key.clone());
+                    }
+                    cites.push(Cite {
+                        key,
+                        prefix: part[..at].trim().to_string(),
+                        suffix: after,
+                    });
+                }
+                None if index == 0 => prefix = part.trim().to_string(),
+                None => suffix = part.trim().to_string(),
+            }
+        }
+        (!cites.is_empty()).then_some(Inline::Citation {
+            style,
+            cites,
+            prefix,
+            suffix,
+        })
     }
 
     /// Emphasis, footnote references, line breaks and bare URLs.
@@ -759,6 +914,19 @@ impl Reader<'_> {
                         at += 1;
                     }
                     continue;
+                }
+            }
+
+            // `[cite:@key]` and its styled forms.
+            if c == '[' && chars[at..].iter().take(5).collect::<String>() == "[cite" {
+                if let Some(close) = chars[at..].iter().position(|c| *c == ']') {
+                    let inner: String = chars[at + 1..at + close].iter().collect();
+                    if let Some(citation) = self.citation(&inner) {
+                        push_plain!();
+                        out.push(citation);
+                        at += close + 1;
+                        continue;
+                    }
                 }
             }
 
@@ -966,6 +1134,11 @@ fn plain(inlines: &[Inline]) -> String {
             Inline::Link { target, .. } => link_label(target),
             Inline::Footnote(_) => String::new(),
             Inline::LineBreak => " ".to_string(),
+            Inline::Citation { cites, .. } => cites
+                .iter()
+                .map(|cite| cite.key.clone())
+                .collect::<Vec<_>>()
+                .join("; "),
         })
         .collect()
 }
@@ -984,15 +1157,56 @@ fn link_label(target: &LinkKind) -> String {
     }
 }
 
-fn read(text: &str) -> Document {
+fn read(text: &str, source: &Path) -> Document {
     let settings = FileSettings::scan(text);
     let options = read_options(text);
+
+    let mut keywords = HashMap::new();
+    let mut macros = HashMap::new();
+    for line in text.lines() {
+        let Some(rest) = line.trim_start().strip_prefix("#+") else {
+            continue;
+        };
+        let Some((key, value)) = rest.split_once(':') else {
+            continue;
+        };
+        let key = key.trim().to_ascii_lowercase();
+        if key == "macro" {
+            if let Some((name, body)) = value.trim().split_once(char::is_whitespace) {
+                macros.insert(name.to_ascii_lowercase(), body.trim().to_string());
+            } else if !value.trim().is_empty() {
+                macros.insert(value.trim().to_ascii_lowercase(), String::new());
+            }
+        } else if !key.starts_with("begin_") && !key.starts_with("end_") {
+            keywords.insert(key, value.trim().to_string());
+        }
+    }
+    // Org's built-in macros, which a file's own definitions override.
+    for (name, value) in [
+        ("title", options.title.clone()),
+        ("author", options.author.clone()),
+        ("date", options.date.clone()),
+        (
+            "input-file",
+            source
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string()),
+        ),
+    ] {
+        macros
+            .entry(name.to_string())
+            .or_insert(value.unwrap_or_default());
+    }
+
     let mut reader = Reader {
         settings: &settings,
         footnotes: Vec::new(),
         anonymous: 0,
         exclude_tags: options.exclude_tags.clone(),
         warnings: Vec::new(),
+        macros,
+        keywords,
+        cited: Vec::new(),
     };
     let lines: Vec<&str> = text.lines().collect();
     let elements = reader.elements(&lines, true);
@@ -1006,13 +1220,173 @@ fn read(text: &str) -> Document {
         }
     }
 
+    let mut warnings = reader.warnings;
+    let dir = source.parent().unwrap_or(Path::new(""));
+    let mut bib = Vec::new();
+    for file in &options.bibliography {
+        match std::fs::read_to_string(dir.join(file)) {
+            Ok(text) => bib.extend(crate::bib::parse(&text)),
+            Err(err) => warnings.push(format!("could not read the bibliography {file}: {err}")),
+        }
+    }
+    for key in &reader.cited {
+        if !bib.iter().any(|entry| &entry.key == key) {
+            warnings.push(format!("@{key} is not in the bibliography"));
+        }
+    }
+
     Document {
         options,
         elements,
         footnotes: reader.footnotes,
         anchors,
-        warnings: reader.warnings,
+        warnings,
+        bib,
+        cited: reader.cited,
     }
+}
+
+/// `a, b\, c` as `["a", "b, c"]`: commas separate arguments unless escaped.
+fn split_macro_args(args: &str) -> Vec<String> {
+    if args.trim().is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![String::new()];
+    let mut chars = args.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if chars.peek() == Some(&',') => {
+                out.last_mut().unwrap().push(',');
+                chars.next();
+            }
+            ',' => out.push(String::new()),
+            c => out.last_mut().unwrap().push(c),
+        }
+    }
+    out.into_iter().map(|arg| arg.trim().to_string()).collect()
+}
+
+/// `#+INCLUDE:` lines replaced by what they include.
+///
+/// `#+INCLUDE: "file.org"` includes Org text, itself expanded; with `src
+/// lang`, `example` or `export backend` after the file, it is wrapped in
+/// that block. `:lines "5-10"` takes those lines (one-based, either end
+/// open), and `:minlevel N` moves included headlines so the shallowest is
+/// at level N.
+fn expand_includes(text: &str, dir: &Path, depth: usize, warnings: &mut Vec<String>) -> String {
+    if depth > 8 {
+        warnings.push("#+INCLUDE: nested too deep; stopped".to_string());
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        let Some(value) = keyword(line, "include") else {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        };
+        let (file, rest) = match value.strip_prefix('"') {
+            Some(quoted) => match quoted.split_once('"') {
+                Some((file, rest)) => (file, rest),
+                None => (quoted, ""),
+            },
+            None => value.split_once(char::is_whitespace).unwrap_or((value, "")),
+        };
+        let path = dir.join(file);
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(err) => {
+                warnings.push(format!("could not include {file}: {err}"));
+                continue;
+            }
+        };
+
+        let words: Vec<&str> = rest.split_whitespace().collect();
+        let option = |name: &str| {
+            words
+                .iter()
+                .position(|word| *word == name)
+                .and_then(|at| words.get(at + 1))
+                .map(|value| value.trim_matches('"').to_string())
+        };
+        let mut lines: Vec<&str> = content.lines().collect();
+        if let Some(range) = option(":lines") {
+            let (from, to) = range
+                .split_once('-')
+                .unwrap_or((range.as_str(), range.as_str()));
+            let from = from.parse::<usize>().unwrap_or(1).max(1) - 1;
+            let to = to.parse::<usize>().unwrap_or(lines.len()).min(lines.len());
+            lines = lines.get(from..to.max(from)).unwrap_or(&[]).to_vec();
+        }
+        let body = lines.join("\n");
+
+        let block = words.first().filter(|word| !word.starts_with(':'));
+        let escaped = || {
+            body.lines()
+                .map(|line| {
+                    let trimmed = line.trim_start();
+                    if trimmed.starts_with('*') || trimmed.starts_with("#+") {
+                        format!(",{line}")
+                    } else {
+                        line.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        match block.map(|word| word.to_ascii_lowercase()).as_deref() {
+            Some("src") => {
+                let language = words
+                    .get(1)
+                    .filter(|word| !word.starts_with(':'))
+                    .unwrap_or(&"");
+                out.push_str(&format!(
+                    "#+begin_src {language}\n{}\n#+end_src\n",
+                    escaped()
+                ));
+            }
+            Some("example") => {
+                out.push_str(&format!("#+begin_example\n{}\n#+end_example\n", escaped()))
+            }
+            Some("export") => {
+                let backend = words.get(1).unwrap_or(&"");
+                out.push_str(&format!("#+begin_export {backend}\n{body}\n#+end_export\n"));
+            }
+            _ => {
+                let nested_dir = path.parent().unwrap_or(dir).to_path_buf();
+                let mut included = expand_includes(&body, &nested_dir, depth + 1, warnings);
+                if let Some(level) =
+                    option(":minlevel").and_then(|level| level.parse::<usize>().ok())
+                {
+                    included = shift_headlines(&included, level);
+                }
+                out.push_str(&included);
+                if !included.ends_with('\n') {
+                    out.push('\n');
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Moves every headline so the shallowest one is at `level`.
+fn shift_headlines(text: &str, level: usize) -> String {
+    let shallowest = text.lines().filter_map(headline_level).min();
+    let Some(shallowest) = shallowest else {
+        return text.to_string();
+    };
+    text.lines()
+        .map(|line| match headline_level(line) {
+            Some(stars) => {
+                let wanted = (stars + level).saturating_sub(shallowest).max(1);
+                format!("{}{}", "*".repeat(wanted), &line[stars..])
+            }
+            None => line.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
 }
 
 // ── Links ──────────────────────────────────────────────────────────────────
@@ -1056,10 +1430,66 @@ struct Context<'a> {
     anchors: &'a HashMap<String, String>,
     /// Footnote labels in order of first reference, which numbers them.
     footnote_order: Vec<String>,
+    bib: &'a [crate::bib::Entry],
+    /// The cited entries' keys and bibliography lines, in the order the
+    /// bibliography lists them.
+    references: Vec<(String, String)>,
+    /// `basic`, `biblatex` or `natbib`.
+    processor: String,
     warnings: Vec<String>,
 }
 
 impl Context<'_> {
+    /// A citation as the `basic` processor writes it: author and year.
+    ///
+    /// `wrap` decorates each reference, which is how HTML makes it a link
+    /// to the bibliography.
+    fn basic_citation(
+        &mut self,
+        style: Option<&str>,
+        cites: &[Cite],
+        prefix: &str,
+        suffix: &str,
+        wrap: &dyn Fn(&str, String) -> String,
+    ) -> String {
+        let style = style.unwrap_or("").split('/').next().unwrap_or("");
+        if style == "nocite" || style == "n" {
+            return String::new();
+        }
+        let parts: Vec<String> = cites
+            .iter()
+            .map(|cite| {
+                let (authors, year) = match self.bib.iter().find(|entry| entry.key == cite.key) {
+                    Some(entry) => (entry.short_authors(), entry.year().unwrap_or_default()),
+                    None => (cite.key.clone(), "?".to_string()),
+                };
+                let body = match style {
+                    "t" | "text" => format!("{authors} ({year}{})", with_comma(&cite.suffix)),
+                    "a" | "author" => authors,
+                    "na" | "noauthor" => format!("{year}{}", with_comma(&cite.suffix)),
+                    _ => format!("{authors}, {year}{}", with_comma(&cite.suffix)),
+                };
+                let body = if cite.prefix.is_empty() {
+                    body
+                } else {
+                    format!("{} {body}", cite.prefix)
+                };
+                wrap(&cite.key, body)
+            })
+            .collect();
+        let joined = parts.join("; ");
+        let framed = match style {
+            "t" | "text" | "a" | "author" => joined,
+            _ => format!("({joined})"),
+        };
+        [prefix, framed.as_str(), suffix]
+            .iter()
+            .filter(|part| !part.is_empty())
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     fn href(&mut self, target: &LinkKind, described: bool) -> Href {
         let dir = self.source.parent().unwrap_or(Path::new(""));
         let ext = self.backend.link_extension();
@@ -1161,13 +1591,23 @@ impl Context<'_> {
 
 /// Exports `text`, the content of the Org file at `source`.
 pub fn export(text: &str, source: &Path, backend: Backend, resolve: &dyn Resolve) -> Exported {
-    let document = read(text);
+    let mut include_warnings = Vec::new();
+    let dir = source.parent().unwrap_or(Path::new(""));
+    let expanded = expand_includes(text, dir, 0, &mut include_warnings);
+    let mut document = read(&expanded, source);
+    document.warnings.splice(0..0, include_warnings);
     let mut context = Context {
         source,
         backend,
         resolve,
         anchors: &document.anchors,
         footnote_order: Vec::new(),
+        bib: &document.bib,
+        references: cited_entries(&document)
+            .into_iter()
+            .map(|entry| (entry.key.clone(), entry.reference()))
+            .collect(),
+        processor: document.options.cite_export.clone(),
         warnings: document.warnings.clone(),
     };
 
@@ -1180,6 +1620,26 @@ pub fn export(text: &str, source: &Path, backend: Backend, resolve: &dyn Resolve
     let mut warnings = context.warnings;
     warnings.dedup();
     Exported { content, warnings }
+}
+
+/// `, p. 5` for a non-empty suffix, nothing for an empty one.
+fn with_comma(suffix: &str) -> String {
+    if suffix.is_empty() {
+        String::new()
+    } else {
+        format!(", {suffix}")
+    }
+}
+
+/// The cited entries, sorted as a bibliography lists them.
+fn cited_entries(document: &Document) -> Vec<&crate::bib::Entry> {
+    let mut entries: Vec<&crate::bib::Entry> = document
+        .bib
+        .iter()
+        .filter(|entry| document.cited.contains(&entry.key))
+        .collect();
+    entries.sort_by_key(|entry| entry.reference());
+    entries
 }
 
 /// Headings in order, with their numbers when the options number them.
@@ -1268,6 +1728,16 @@ mod markdown {
             }
             Inline::Footnote(label) => format!("[^{}]", cx.footnote_number(label)),
             Inline::LineBreak => "\\\n".to_string(),
+            Inline::Citation {
+                style,
+                cites,
+                prefix,
+                suffix,
+            } => {
+                let text =
+                    cx.basic_citation(style.as_deref(), cites, prefix, suffix, &|_, body| body);
+                escape(&text)
+            }
         }
     }
 
@@ -1430,6 +1900,12 @@ mod markdown {
                 }
             }
             Element::Rule => "---".to_string(),
+            Element::Bibliography => cx
+                .references
+                .iter()
+                .map(|(_, reference)| format!("- {}", escape(reference)))
+                .collect::<Vec<_>>()
+                .join("\n"),
         }
     }
 
@@ -1539,6 +2015,24 @@ mod html {
                 format!("<sup><a id=\"fnr.{n}\" class=\"footref\" href=\"#fn.{n}\" role=\"doc-backlink\">{n}</a></sup>")
             }
             Inline::LineBreak => "<br>\n".to_string(),
+            Inline::Citation {
+                style,
+                cites,
+                prefix,
+                suffix,
+            } => {
+                // Linked to the bibliography when one is printed.
+                let wrap = |key: &str, body: String| {
+                    format!("<a href=\"#bib-{}\">{}</a>", escape(key), escape(&body))
+                };
+                cx.basic_citation(
+                    style.as_deref(),
+                    cites,
+                    &escape(prefix),
+                    &escape(suffix),
+                    &wrap,
+                )
+            }
         }
     }
 
@@ -1703,6 +2197,18 @@ mod html {
                 }
             }
             Element::Rule => "<hr>".to_string(),
+            Element::Bibliography => {
+                let mut out = vec!["<div class=\"bibliography\">".to_string()];
+                for (key, reference) in &cx.references {
+                    out.push(format!(
+                        "<p class=\"bib-entry\" id=\"bib-{}\">{}</p>",
+                        escape(key),
+                        escape(reference)
+                    ));
+                }
+                out.push("</div>".to_string());
+                out.join("\n")
+            }
         }
     }
 
@@ -1915,6 +2421,64 @@ mod latex {
                 format!("\\footnote{{{body}}}")
             }
             Inline::LineBreak => "\\\\\n".to_string(),
+            Inline::Citation {
+                style,
+                cites,
+                prefix,
+                suffix,
+            } => {
+                let keys: Vec<&str> = cites.iter().map(|cite| cite.key.as_str()).collect();
+                let style = style
+                    .as_deref()
+                    .unwrap_or("")
+                    .split('/')
+                    .next()
+                    .unwrap_or("");
+                let command = match (cx.processor.as_str(), style) {
+                    (_, "nocite" | "n") if cx.processor != "basic" => "nocite",
+                    ("biblatex", "t" | "text") => "textcite",
+                    ("biblatex", "a" | "author") | ("natbib", "a" | "author") => "citeauthor",
+                    ("biblatex", "na" | "noauthor") | ("natbib", "na" | "noauthor") => "citeyear",
+                    ("biblatex", _) => "autocite",
+                    ("natbib", "t" | "text") => "citet",
+                    ("natbib", _) => "citep",
+                    _ => {
+                        let text = cx.basic_citation(
+                            Some(style).filter(|s| !s.is_empty()),
+                            cites,
+                            prefix,
+                            suffix,
+                            &|_, body| body,
+                        );
+                        return escape(&text);
+                    }
+                };
+                // One reference's own prefix and suffix are the command's
+                // optional arguments; with several, the citation's own.
+                let (pre, post) = match cites.as_slice() {
+                    [one] => (
+                        [prefix.as_str(), one.prefix.as_str()]
+                            .iter()
+                            .filter(|p| !p.is_empty())
+                            .copied()
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                        [one.suffix.as_str(), suffix.as_str()]
+                            .iter()
+                            .filter(|p| !p.is_empty())
+                            .copied()
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    ),
+                    _ => (prefix.clone(), suffix.clone()),
+                };
+                let options = match (pre.is_empty(), post.is_empty()) {
+                    (true, true) => String::new(),
+                    (true, false) => format!("[{}]", escape(&post)),
+                    (false, _) => format!("[{}][{}]", escape(&pre), escape(&post)),
+                };
+                format!("\\{command}{options}{{{}}}", keys.join(","))
+            }
         }
     }
 
@@ -2026,6 +2590,29 @@ mod latex {
                 }
             }
             Element::Rule => "\\noindent\\rule{\\textwidth}{0.5pt}".to_string(),
+            Element::Bibliography => match cx.processor.as_str() {
+                "biblatex" => "\\printbibliography".to_string(),
+                "natbib" => {
+                    let files: Vec<String> = document
+                        .options
+                        .bibliography
+                        .iter()
+                        .map(|file| file.trim_end_matches(".bib").to_string())
+                        .collect();
+                    format!(
+                        "\\bibliographystyle{{plainnat}}\n\\bibliography{{{}}}",
+                        files.join(",")
+                    )
+                }
+                _ => {
+                    let mut out = vec!["\\begin{itemize}".to_string()];
+                    for (_, reference) in &cx.references {
+                        out.push(format!("\\item {}", escape(reference)));
+                    }
+                    out.push("\\end{itemize}".to_string());
+                    out.join("\n")
+                }
+            },
         }
     }
 
@@ -2042,6 +2629,16 @@ mod latex {
             "\\usepackage{amssymb}".to_string(),
             "\\usepackage{hyperref}".to_string(),
         ];
+        match cx.processor.as_str() {
+            "biblatex" => {
+                out.push("\\usepackage[backend=biber]{biblatex}".to_string());
+                for file in &options.bibliography {
+                    out.push(format!("\\addbibresource{{{file}}}"));
+                }
+            }
+            "natbib" => out.push("\\usepackage{natbib}".to_string()),
+            _ => {}
+        }
         if let Some(author) = &options.author {
             out.push(format!("\\author{{{}}}", escape(author)));
         }

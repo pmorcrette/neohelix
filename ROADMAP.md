@@ -199,14 +199,20 @@ typing an `:ID:` drawer by hand.
 - [x] Add and remove aliases, tags *and refs* on the node at point, keeping the
       property drawer and the graph in step.
 - [x] Open a random node, which is how a large set of notes gets revisited.
-- [ ] Dailies come in two forms upstream, and the difference matters: *goto*
+- [x] Dailies come in two forms upstream, and the difference matters: *goto*
       opens the day's note, *capture* adds an entry to it through a template
       without leaving the current buffer. Both, plus opening the dailies
       directory itself.
 
-  Only *goto* is built. `daily_directory` resolves the path but no command
-  opens it, and the capture form — the one that does not move the cursor — is
-  the half that is missing.
+  *Capture* is `:roam-dailies-capture <entry>` (or a prompt without an
+  argument). It appends `* <entry>` to today's note, which is Org-Roam's
+  default daily template, creating the note if needed, and the cursor stays
+  where it was. If today's note is open, its buffer gets the entry, unsaved;
+  if not, the file does, and the index follows. `:roam-dailies-directory`
+  opens a file picker there. Checked in the editor: two captures from
+  `rust.org` landed in a note created for them, the cursor never left, and
+  the picker listed it. Not built: capture templates other than the
+  headline one.
 - [x] Unlinked references: occurrences of a node's title or alias in other
       files that are not yet links, and a way to turn one into a link.
 - [x] Renaming a node's title, updating the link descriptions that named it.
@@ -1039,9 +1045,32 @@ produces a wrong index that nothing reports.
   `SCHEDULED:`, which stops being a planning line once it is not directly
   under the headline; and setting `DEADLINE:` silently dropped a `CLOSED:`
   stamp on the same line. Each has a regression test.
-- [ ] The export and citation keywords — `#+OPTIONS:`, `#+INCLUDE:`,
+- [x] The export and citation keywords — `#+OPTIONS:`, `#+INCLUDE:`,
       `#+MACRO:`, `#+BIBLIOGRAPHY:`, `#+CITE_EXPORT:` — belong with Tasks 1.9
       and 1.14 rather than here.
+
+  All read by the export (Task 1.9), which already read `#+OPTIONS:`:
+  - `#+MACRO:` with `$1…` arguments and escaped commas, plus Org's
+    built-ins `title`, `author`, `date`, `input-file` and `keyword(…)`.
+    Macros are expanded in text but not in code, and an unknown one stays as
+    written and is reported.
+  - `#+INCLUDE:` of Org text (itself expanded, with `:minlevel`), or wrapped
+    as `src`, `example` or `export`, and `:lines "a-b"`. A missing file is
+    reported.
+  - Citations. `[cite…]` with styles (`/t`, `/a`, `/na`, `/nocite`) and
+    prefixes and suffixes is read against `#+BIBLIOGRAPHY:` files, with a
+    small BibTeX reader. How it is written depends on `#+CITE_EXPORT:`:
+    - `basic`, the default and the only one outside LaTeX, writes
+      "(Doe and Smith, 2020, p. 5)", linked to the entry in HTML, and
+      `#+PRINT_BIBLIOGRAPHY:` lists the cited entries.
+    - `biblatex` writes `\autocite`, `\textcite` and the rest, with
+      `\addbibresource` and `\printbibliography`.
+    - `natbib` writes `\citep`/`\citet` and `\bibliography`.
+    A key not in the bibliography is reported.
+
+  All three are tested against real files. Not read: CSL styles (Org's
+  `csl` processor), `@string` macros in the bibliography, and `#+INCLUDE:`
+  of a named block or a headline.
 - [x] Keyword matching must be case-insensitive, as Org's is. The parser
       already lowercases keys, so this is a property to keep rather than add.
 

@@ -513,6 +513,8 @@ impl MappableCommand {
         org_attach_open, "Pick one of the files attached to the entry",
         org_inline_task, "Insert an inline task below the cursor",
         org_copy_visible, "Yank only the visible text of the selections, or of the buffer",
+        roam_dailies_capture, "Add an entry to today's daily note without leaving this buffer",
+        roam_dailies_directory, "Pick a file in the dailies directory",
         org_encrypt_entry, "Encrypt the body of the entry at the cursor with gpg",
         org_encrypt_entries, "Encrypt every :crypt: entry of the buffer that is in clear",
         org_decrypt_entry, "Decrypt the entry at the cursor",
@@ -4538,6 +4540,16 @@ pub fn org_copy_visible_into(editor: &mut Editor, register: char) {
             if lines == 1 { "" } else { "s" }
         )),
         Err(err) => editor.set_error(err.to_string()),
+    }
+}
+
+fn roam_dailies_capture(cx: &mut Context) {
+    prompt_for_property(cx, "Today: ", crate::roam::daily_capture);
+}
+
+fn roam_dailies_directory(cx: &mut Context) {
+    if let Some(picker) = crate::roam::dailies_picker(cx.editor) {
+        cx.push_layer(picker);
     }
 }
 

@@ -866,33 +866,99 @@ pub fn random_node(editor: &mut Editor) {
     jump_to_byte(editor, byte);
 }
 
-/// Opens the daily note for `date`, creating it if there is none.
-pub fn open_daily(editor: &mut Editor, date: helix_roam::Date) {
+/// The daily note for `date`, created if there is none yet.
+fn ensure_daily(editor: &mut Editor, date: helix_roam::Date) -> Result<PathBuf, String> {
     let directory = editor.config().roam.dailies_directory();
     let path = directory.join(format!("{}.org", date.to_iso()));
-
-    if !path.exists() {
-        let id = helix_roam::Uuid::new_v4();
-        let contents = format!(
-            ":PROPERTIES:\n:ID:       {id}\n:END:\n#+title: {}\n\n",
-            date.to_iso()
-        );
-
-        if let Err(err) = std::fs::create_dir_all(&directory) {
-            editor.set_error(format!("could not create {}: {err}", directory.display()));
-            return;
-        }
-        if let Err(err) = std::fs::write(&path, &contents) {
-            editor.set_error(format!("could not write {}: {err}", path.display()));
-            return;
-        }
-        // Indexed at once, so a link to today resolves before any save.
-        helix_roam::reindex_file(&mut editor.roam.write(), &path, &contents);
+    if path.exists() {
+        return Ok(path);
     }
 
+    let id = helix_roam::Uuid::new_v4();
+    let contents = format!(
+        ":PROPERTIES:\n:ID:       {id}\n:END:\n#+title: {}\n\n",
+        date.to_iso()
+    );
+    std::fs::create_dir_all(&directory)
+        .map_err(|err| format!("could not create {}: {err}", directory.display()))?;
+    std::fs::write(&path, &contents)
+        .map_err(|err| format!("could not write {}: {err}", path.display()))?;
+    // Indexed at once, so a link to today resolves before any save.
+    helix_roam::reindex_file(&mut editor.roam.write(), &path, &contents);
+    Ok(path)
+}
+
+/// Opens the daily note for `date`, creating it if there is none.
+pub fn open_daily(editor: &mut Editor, date: helix_roam::Date) {
+    let path = match ensure_daily(editor, date) {
+        Ok(path) => path,
+        Err(err) => {
+            editor.set_error(err);
+            return;
+        }
+    };
     if let Err(err) = editor.open(&path, helix_view::editor::Action::Replace) {
         editor.set_error(format!("could not open {}: {err}", path.display()));
     }
+}
+
+/// Adds an entry to today's note without leaving the current buffer.
+///
+/// Org-Roam's `roam-dailies-capture-today`, with its default template,
+/// `* %?`: the entry is a headline. If today's note is open, its buffer
+/// gets the entry, unsaved like any other change; if not, the file does.
+pub fn daily_capture(editor: &mut Editor, entry: &str) {
+    let entry = entry.trim();
+    if entry.is_empty() {
+        return;
+    }
+    let today = helix_roam::Date::today();
+    let path = match ensure_daily(editor, today) {
+        Ok(path) => path,
+        Err(err) => {
+            editor.set_error(err);
+            return;
+        }
+    };
+    let append = |text: &str| {
+        let mut out = text.to_string();
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(&format!("* {entry}\n"));
+        out
+    };
+
+    let result = match editor
+        .document_by_path(&path)
+        .map(|doc| (doc.id(), doc.text().to_string()))
+    {
+        Some((id, text)) => apply_to_document(editor, id, &append(&text)).map_err(str::to_string),
+        None => std::fs::read_to_string(&path)
+            .map_err(|err| err.to_string())
+            .and_then(|text| {
+                let after = append(&text);
+                std::fs::write(&path, &after).map_err(|err| err.to_string())?;
+                helix_roam::reindex_file(&mut editor.roam.write(), &path, &after);
+                Ok(())
+            }),
+    };
+    match result {
+        Ok(()) => editor.set_status(format!("Added to {}", today.to_iso())),
+        Err(err) => editor.set_error(format!("Not added: {err}")),
+    }
+}
+
+/// A file picker over the dailies directory.
+pub fn dailies_picker(editor: &mut Editor) -> Option<Box<dyn crate::compositor::Component>> {
+    let directory = editor.config().roam.dailies_directory();
+    if !directory.is_dir() {
+        editor.set_error(format!("No daily notes yet in {}", directory.display()));
+        return None;
+    }
+    Some(Box::new(crate::ui::overlay::overlaid(
+        crate::ui::file_picker(editor, directory),
+    )))
 }
 
 /// Today's daily note.
@@ -954,11 +1020,6 @@ pub fn daily_step(editor: &mut Editor, forward: bool) {
             "No earlier daily note"
         }),
     }
-}
-
-/// Opens the dailies directory itself, for browsing.
-pub fn daily_directory(editor: &mut Editor) -> PathBuf {
-    editor.config().roam.dailies_directory()
 }
 
 /// Renames the node at the cursor, and the links that named it.
