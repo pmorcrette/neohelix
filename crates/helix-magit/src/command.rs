@@ -284,7 +284,17 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
         | MagitCommand::ConflictEdit
         | MagitCommand::ConflictShowOurs
         | MagitCommand::ConflictShowTheirs
-        | MagitCommand::ConflictShowBase => return None,
+        | MagitCommand::ConflictShowBase
+        | MagitCommand::FileDiff
+        | MagitCommand::FileLog
+        | MagitCommand::FileBlame => return None,
+
+        MagitCommand::FileStage => Plan::new(["add", "--", "{0}"], "Stage the file")
+            .asking([Ask::required(AskKind::Path, "Stage file")]),
+        MagitCommand::FileUnstage => {
+            Plan::new(["reset", "--quiet", "--", "{0}"], "Unstage the file")
+                .asking([Ask::required(AskKind::Path, "Unstage file")])
+        }
 
         // ── Conflicts ──
         MagitCommand::ConflictTakeOurs => Plan::new(["{0}"], "Resolve with our side")

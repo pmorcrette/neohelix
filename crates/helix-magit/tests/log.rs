@@ -178,3 +178,40 @@ fn a_commit_s_change_is_applied_to_and_reversed_out_of_the_worktree() {
     assert_eq!(fs::read_to_string(work.join("b.txt")).unwrap(), "bee\n");
     assert_eq!(git(work, &["status", "--porcelain"]).unwrap(), "");
 }
+
+#[test]
+fn a_file_s_log_follows_it_through_a_rename_and_blame_names_each_line() {
+    let Some(dir) = fixture() else { return };
+    let work = dir.path();
+    git(work, &["mv", "b.txt", "bee.txt"]).unwrap();
+    git(work, &["commit", "-q", "-m", "Rename the bee"]).unwrap();
+    fs::write(work.join("bee.txt"), "bee\nbuzz\n").unwrap();
+    git(work, &["commit", "-q", "-am", "Buzz"]).unwrap();
+
+    let filter = LogFilter {
+        path: Some(PathBuf::from("bee.txt")),
+        follow: true,
+        ..LogFilter::default()
+    };
+    assert_eq!(
+        subjects(&read_log(work, &filter).unwrap()),
+        ["Buzz", "Rename the bee", "Fix the bee"]
+    );
+
+    let lines = helix_magit::blame::blame(work, Path::new("bee.txt"), None).unwrap();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0].summary, "Fix the bee");
+    assert_eq!(lines[0].author, "Bob");
+    assert_eq!(lines[0].filename, "b.txt", "blame follows the rename");
+    assert_eq!(lines[1].summary, "Buzz");
+    assert_eq!(lines[1].content, "buzz");
+
+    // An edit not committed yet is blamed on nobody.
+    fs::write(work.join("bee.txt"), "bee\nbuzz\nhum\n").unwrap();
+    let lines = helix_magit::blame::blame(work, Path::new("bee.txt"), None).unwrap();
+    assert!(lines[2].is_uncommitted());
+
+    // As of an earlier revision.
+    let lines = helix_magit::blame::blame(work, Path::new("b.txt"), Some("HEAD~2")).unwrap();
+    assert_eq!(lines.len(), 1);
+}

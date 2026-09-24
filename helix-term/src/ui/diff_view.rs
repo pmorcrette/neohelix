@@ -379,6 +379,8 @@ pub struct DiffView {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ViewKind {
     Status,
+    /// The status of one file: its unstaged and staged changes.
+    File(PathBuf),
     Commit,
     Refs,
     Cherries {
@@ -462,7 +464,8 @@ impl DiffView {
 
     fn view_id(&self) -> &'static str {
         match self.kind {
-            ViewKind::Status => Self::ID,
+            // A file's diff answers to the status buffer's refreshes.
+            ViewKind::Status | ViewKind::File(_) => Self::ID,
             ViewKind::Commit => Self::COMMIT_ID,
             ViewKind::Refs => Self::REFS_ID,
             ViewKind::Cherries { .. } => Self::CHERRIES_ID,
@@ -598,6 +601,19 @@ impl DiffView {
         Ok(view)
     }
 
+    /// The changes to one file, staged and not, to stage and discard as in
+    /// the status buffer: the file dispatch's diff.
+    pub fn file(workdir: &Path, path: PathBuf) -> Result<Self, helix_magit::repository::Error> {
+        let repository = Repository::discover(workdir)?;
+        let mut view = Self::empty(
+            repository.workdir(),
+            format!("Diff: {}", path.display()),
+            ViewKind::File(path),
+        );
+        view.reload(&repository)?;
+        Ok(view)
+    }
+
     /// Re-reads the repository after something outside the view changed it.
     ///
     /// Used after a git command runs: the index, HEAD or the working tree may
@@ -620,7 +636,7 @@ impl DiffView {
     /// restored exactly.
     fn reload(&mut self, repository: &Repository) -> Result<(), helix_magit::repository::Error> {
         match self.kind {
-            ViewKind::Status => {}
+            ViewKind::Status | ViewKind::File(_) => {}
             // A commit does not change.
             ViewKind::Commit => return Ok(()),
             ViewKind::Refs => {
@@ -632,9 +648,30 @@ impl DiffView {
                 return Ok(());
             }
         }
-        let (unstaged, untracked) = repository.worktree_diffs()?;
-        let staged = repository.staged_diff()?;
-        let unmerged = repository.unmerged()?;
+        let (mut unstaged, mut untracked) = repository.worktree_diffs()?;
+        let mut staged = repository.staged_diff()?;
+        let mut unmerged = repository.unmerged()?;
+
+        if let ViewKind::File(path) = &self.kind {
+            unstaged.retain(|file| &file.path == path);
+            untracked.retain(|file| &file.path == path);
+            staged.retain(|file| &file.path == path);
+            unmerged.retain(|entry| &entry.path == path);
+            self.header = vec![HeaderLine {
+                label: "File:",
+                parts: vec![(path.display().to_string(), Tone::Emphasis)],
+            }];
+            if unstaged.is_empty() && untracked.is_empty() && staged.is_empty() {
+                self.header.push(HeaderLine {
+                    label: "",
+                    parts: vec![("No changes to this file".to_string(), Tone::Dim)],
+                });
+            }
+            let sections =
+                build_sections(unmerged, untracked, unstaged, staged, &Overview::default());
+            self.replace_sections(sections);
+            return Ok(());
+        }
         let overview = helix_magit::status::read(repository.workdir());
 
         self.head = repository.head_description();
@@ -1269,6 +1306,7 @@ impl Component for DiffView {
             (Some(error), _) => format!("Magit: {error}"),
             (None, ViewKind::Commit) => format!("Commit {}", self.head),
             (None, ViewKind::Status) => format!("Magit: {}", self.head),
+            (None, ViewKind::File(_)) => self.head.clone(),
             (None, _) => self.head.clone(),
         };
         let block = Block::bordered().title(title).border_style(popup_style);
@@ -1519,20 +1557,20 @@ pub fn cherries_prompt(workdir: PathBuf) -> crate::ui::Prompt {
 
 /// Where a fragment is drawn, and how much room it has.
 #[derive(Debug, Clone, Copy)]
-struct Cell {
-    x: u16,
-    y: u16,
-    width: usize,
+pub(crate) struct Cell {
+    pub(crate) x: u16,
+    pub(crate) y: u16,
+    pub(crate) width: usize,
 }
 
 /// Draws one row, with the theme's diff colours and Tree-sitter highlighting.
-struct RowRenderer<'a> {
+pub(crate) struct RowRenderer<'a> {
     theme: &'a helix_view::Theme,
     loader: arc_swap::Guard<std::sync::Arc<helix_core::syntax::Loader>>,
 }
 
 impl<'a> RowRenderer<'a> {
-    fn new(editor: &'a Editor) -> Self {
+    pub(crate) fn new(editor: &'a Editor) -> Self {
         Self {
             theme: &editor.theme,
             loader: editor.syn_loader.load(),
@@ -1736,7 +1774,7 @@ impl<'a> RowRenderer<'a> {
     /// file, so a construct spanning a hunk boundary can be coloured as if the
     /// hunk were the entire file. Reconstructing both sides of every file to
     /// avoid that would mean reading each file twice per frame.
-    fn put_highlighted(
+    pub(crate) fn put_highlighted(
         &self,
         surface: &mut Surface,
         cell: Cell,

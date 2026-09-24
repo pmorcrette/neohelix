@@ -25,6 +25,8 @@ pub struct LogFilter {
     pub grep: Option<String>,
     /// Commits that touch this path.
     pub path: Option<PathBuf>,
+    /// Follow the path through renames; git allows it for one file only.
+    pub follow: bool,
     pub limit: usize,
 }
 
@@ -36,6 +38,7 @@ impl Default for LogFilter {
             author: None,
             grep: None,
             path: None,
+            follow: false,
             limit: DEFAULT_LIMIT,
         }
     }
@@ -100,6 +103,9 @@ impl LogFilter {
         }
         if self.all {
             args.push("--all".into());
+        }
+        if self.follow && self.path.is_some() {
+            args.push("--follow".into());
         }
         if let Some(range) = &self.range {
             args.push(range.clone());

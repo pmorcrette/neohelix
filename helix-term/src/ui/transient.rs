@@ -33,6 +33,9 @@ pub struct TransientOverlay {
     /// What the menu was opened on — a commit, a branch, a stash, a file —
     /// which answers the first question it fits instead of asking it.
     target: Option<(String, AskKind)>,
+    /// The cursor's line in the file the menu was opened from, where a
+    /// blame starts.
+    line: usize,
 }
 
 impl TransientOverlay {
@@ -44,7 +47,14 @@ impl TransientOverlay {
             context: context.into(),
             workdir,
             target: None,
+            line: 0,
         }
+    }
+
+    /// Where the file dispatch's blame puts its cursor.
+    pub fn with_line(mut self, line: usize) -> Self {
+        self.line = line;
+        self
     }
 
     /// Makes the menu act on `commit` where an action needs one.
@@ -111,7 +121,7 @@ impl TransientOverlay {
             MenuKind::Notes => "git notes",
             MenuKind::Ignore => return String::new(),
             MenuKind::BranchConfig | MenuKind::RemoteConfig => "git config",
-            MenuKind::Resolve => return String::new(),
+            MenuKind::Resolve | MenuKind::File => return String::new(),
         };
 
         if args.is_empty() {
@@ -366,6 +376,34 @@ impl TransientOverlay {
                     }
                 })))
             }
+            MagitCommand::FileDiff | MagitCommand::FileLog | MagitCommand::FileBlame => {
+                let Some((path, AskKind::Path)) = self.target.clone() else {
+                    return EventResult::Consumed(Some(close));
+                };
+                let path = std::path::PathBuf::from(path);
+                let workdir = self.workdir.clone();
+                let line = self.line;
+                EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                    compositor.remove(TransientOverlay::ID);
+                    match command {
+                        MagitCommand::FileDiff => match DiffView::file(&workdir, path) {
+                            Ok(view) => compositor.push(Box::new(view)),
+                            Err(err) => cx.editor.set_error(err.to_string()),
+                        },
+                        MagitCommand::FileLog => {
+                            let filter = LogFilter {
+                                path: Some(path),
+                                follow: true,
+                                ..LogFilter::default()
+                            };
+                            compositor.push(Box::new(LogView::new(workdir, filter)));
+                        }
+                        _ => compositor.push(Box::new(crate::ui::blame_view::BlameView::new(
+                            workdir, path, None, line,
+                        ))),
+                    }
+                })))
+            }
             MagitCommand::Shortlog => {
                 let workdir = self.workdir.clone();
                 let args = self.menu.args();
@@ -546,6 +584,9 @@ mod tests {
                         | MagitCommand::ConflictShowOurs
                         | MagitCommand::ConflictShowTheirs
                         | MagitCommand::ConflictShowBase
+                        | MagitCommand::FileDiff
+                        | MagitCommand::FileLog
+                        | MagitCommand::FileBlame
                 ) || helix_magit::resolve(action.command, &[]).is_some();
                 assert!(handled, "{kind:?} binds '{}' to nothing", action.key);
             }

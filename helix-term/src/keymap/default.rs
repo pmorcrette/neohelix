@@ -238,6 +238,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "g" => changed_file_picker,
             "a" => code_action,
             "m" => magit,
+            "M" => magit_file,
             "t" => terminal,
             "n" => { "Notes (Org-Roam)"
                 "f" => roam_node_find,

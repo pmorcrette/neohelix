@@ -1545,12 +1545,40 @@ Magit has a second dispatch for the file you are editing, reachable without
 opening the status buffer at all. The fork has nothing equivalent: every Git
 operation currently starts from `<space>m`.
 
-- [ ] A file dispatch: stage, unstage, diff, log and blame for the current
+- [x] A file dispatch: stage, unstage, diff, log and blame for the current
       buffer's file.
-- [ ] Blame: annotate each line with its commit, author and date, and move
+- [x] Blame: annotate each line with its commit, author and date, and move
       between revisions of the same line.
-- [ ] Log and diff restricted to the current file, which Task 2.8 should build
+- [x] Log and diff restricted to the current file, which Task 2.8 should build
       on rather than duplicate.
+
+*Done.* `<space>M` (free in Helix's space mode, beside `<space>m`) or
+`:magit-file` opens the file dispatch for the current buffer's file: `s` / `u`
+stage and unstage the whole file, `c` opens the commit menu, `d` its diff, `l`
+its log, `b` its blame, `g` the status and `?` the main menu.
+
+- The diff is the status buffer restricted to the file — its unstaged and
+  staged changes, staged, unstaged and discarded by hunk or line the same way.
+- The log is Task 2.8's log with a path, now followed through renames
+  (`--follow`, which git allows for a single file).
+- The blame (`helix_magit::blame`, from `git blame --line-porcelain`) opens on
+  the cursor's line: each run of lines from one commit is headed by its hash,
+  author date (in the author's zone), author and subject, beside the code
+  highlighted as the file is; lines not committed yet say so. `n` / `p` move
+  between runs, `RET` shows the commit in the commit view, `l` shows the log,
+  `v` visits the file at that line. `b` blames the version before the commit
+  under the cursor — the commit and file name git records as the line's
+  `previous`, so a rename on the way is crossed — landing on the line's number
+  in that commit's version; repeated, it walks a line's history back one change
+  at a time, and `q` walks forward again, closing the blame at the start. On a
+  line with no earlier version it says so.
+
+The blame is a view of its own over the editor rather than annotations inside
+the buffer: Helix has no line-annotation layer to put them in, and building one
+is outside this task. Checked in the editor on a file with three authors and a
+rename: stepping back from the working tree through two earlier versions of one
+line and across the rename, forward again, the commit and file visit from the
+blame, the file's diff, log (through the rename) and staging.
 
 ### Task 2.12: Diff Presentation Controls
 

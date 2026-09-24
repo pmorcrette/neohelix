@@ -2421,6 +2421,23 @@ roam_buffer_command!(org_columns, crate::roam::toggle_columns);
 roam_component_command!(roam_dailies_directory, crate::roam::dailies_picker);
 
 /// `:roam-dailies-capture <entry>`, or a prompt for it.
+fn magit_file(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    cx.jobs.callback(async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                if let Some(overlay) = super::magit_file_overlay(editor) {
+                    compositor.push(overlay);
+                }
+            },
+        ));
+        Ok(call)
+    });
+    Ok(())
+}
+
 fn conflict_take(
     cx: &mut compositor::Context,
     args: Args,
@@ -4175,6 +4192,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Open the Magit transient menu.",
         fun: magit,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "magit-file",
+        aliases: &[],
+        doc: "Open the Magit menu for the current file: stage, unstage, diff, log, blame.",
+        fun: magit_file,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

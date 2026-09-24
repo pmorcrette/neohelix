@@ -148,6 +148,14 @@ pub enum MagitCommand {
     /// revert or am.
     Continue,
 
+    /// The file dispatch, for the file being edited: staging it, and its
+    /// diff, log and blame (the last three are views the editor opens).
+    FileStage,
+    FileUnstage,
+    FileDiff,
+    FileLog,
+    FileBlame,
+
     /// Views the editor opens rather than commands it runs: every branch
     /// and tag against HEAD, the commits one branch has that another does
     /// not, and what the commands run so far printed.
@@ -194,10 +202,12 @@ pub enum MenuKind {
     RemoteConfig,
     /// A conflicted file, opened from the status buffer with `e`.
     Resolve,
+    /// The file being edited, opened from the editor with `<space>M`.
+    File,
 }
 
 impl MenuKind {
-    pub const ALL: [MenuKind; 25] = [
+    pub const ALL: [MenuKind; 26] = [
         MenuKind::Main,
         MenuKind::Commit,
         MenuKind::Push,
@@ -223,6 +233,7 @@ impl MenuKind {
         MenuKind::BranchConfig,
         MenuKind::RemoteConfig,
         MenuKind::Resolve,
+        MenuKind::File,
     ];
 
     /// The key that opens this menu, in the main menu and the status
@@ -252,7 +263,10 @@ impl MenuKind {
             MenuKind::Subtree => 'O',
             MenuKind::Notes => 'T',
             MenuKind::Ignore => 'i',
-            MenuKind::BranchConfig | MenuKind::RemoteConfig | MenuKind::Resolve => return None,
+            MenuKind::BranchConfig
+            | MenuKind::RemoteConfig
+            | MenuKind::Resolve
+            | MenuKind::File => return None,
         })
     }
 
@@ -291,6 +305,7 @@ impl MenuKind {
             MenuKind::BranchConfig => branch_config_menu(),
             MenuKind::RemoteConfig => remote_config_menu(),
             MenuKind::Resolve => resolve_menu(),
+            MenuKind::File => file_menu(),
         }
     }
 }
@@ -1021,6 +1036,26 @@ pub fn resolve_menu() -> TransientMenu {
             "Continue the operation",
             MagitCommand::Continue,
         )]),
+    ])
+}
+
+/// Magit's file dispatch: what applies to the file being edited.
+pub fn file_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::File, "File").with_groups([
+        TransientGroup::new("Index").with_actions([
+            TransientAction::new('s', "Stage", MagitCommand::FileStage),
+            TransientAction::new('u', "Unstage", MagitCommand::FileUnstage),
+            TransientAction::new('c', "Commit…", MagitCommand::OpenMenu(MenuKind::Commit)),
+        ]),
+        TransientGroup::new("Inspect").with_actions([
+            TransientAction::new('d', "Diff", MagitCommand::FileDiff),
+            TransientAction::new('l', "Log", MagitCommand::FileLog),
+            TransientAction::new('b', "Blame", MagitCommand::FileBlame),
+        ]),
+        TransientGroup::new("Everything").with_actions([
+            TransientAction::new('g', "Status", MagitCommand::Status),
+            TransientAction::new('?', "Magit…", MagitCommand::OpenMenu(MenuKind::Main)),
+        ]),
     ])
 }
 

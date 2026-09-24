@@ -549,6 +549,7 @@ impl MappableCommand {
         roam_ref_add, "Add a ref to the node at the cursor",
         roam_ref_remove, "Remove a ref from the node at the cursor",
         magit, "Open the Magit transient menu",
+        magit_file, "Open the Magit menu for the current file",
         terminal, "Open the integrated terminal",
         symbol_picker, "Open symbol picker",
         syntax_symbol_picker, "Open symbol picker from syntax information",
@@ -3640,6 +3641,44 @@ pub fn magit_overlay(editor: &mut Editor) -> Option<Box<dyn Component>> {
             editor.set_error(err.to_string());
             None
         }
+    }
+}
+
+/// The file dispatch: the menu for the current buffer's file. Shared by
+/// `magit_file` and `:magit-file`.
+pub fn magit_file_overlay(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    let (view, doc) = current_ref!(editor);
+    let Some(path) = doc.path().map(Path::to_path_buf) else {
+        editor.set_error("This buffer has no file");
+        return None;
+    };
+    let text = doc.text().slice(..);
+    let line = text.char_to_line(doc.selection(view.id).primary().cursor(text));
+    let repository = match helix_magit::Repository::discover(path.parent().unwrap_or(&path)) {
+        Ok(repository) => repository,
+        Err(err) => {
+            editor.set_error(err.to_string());
+            return None;
+        }
+    };
+    let Some(relative) = ui::blame_view::relative_to(repository.workdir(), &path) else {
+        editor.set_error("The file is outside its repository's working tree");
+        return None;
+    };
+    Some(Box::new(
+        ui::transient::TransientOverlay::new(
+            helix_magit::transient::file_menu(),
+            relative.display().to_string(),
+            repository.workdir().to_path_buf(),
+        )
+        .with_target(relative.display().to_string(), helix_magit::AskKind::Path)
+        .with_line(line),
+    ))
+}
+
+fn magit_file(cx: &mut Context) {
+    if let Some(overlay) = magit_file_overlay(cx.editor) {
+        cx.push_layer(overlay);
     }
 }
 

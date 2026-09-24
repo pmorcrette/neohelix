@@ -1,3 +1,4 @@
+pub mod blame_view;
 mod completion;
 pub mod confirm;
 pub mod diff_view;

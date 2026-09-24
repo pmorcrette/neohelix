@@ -604,6 +604,9 @@ pub fn show_process(editor: &mut Editor) {
 /// Closes the status, log and commit views, which cover the whole editor,
 /// before something in the editor itself has to be seen.
 pub fn close_views(compositor: &mut Compositor) {
+    compositor.remove(crate::ui::blame_view::BlameView::ID);
+    compositor.remove(DiffView::REFS_ID);
+    compositor.remove(DiffView::CHERRIES_ID);
     compositor.remove(DiffView::COMMIT_ID);
     compositor.remove(crate::ui::log_view::LogView::ID);
     compositor.remove(DiffView::ID);
