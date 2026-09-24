@@ -747,10 +747,38 @@ The panel showed backlinks in one list. It now has sections.
 
 Two extensions upstream ships that the fork has no equivalent of.
 
-- [ ] Render the graph — the whole one, or a neighbourhood around a node at a
+- [x] Render the graph — the whole one, or a neighbourhood around a node at a
       chosen depth — and open it. Upstream shells out to Graphviz; doing the
       same avoids a layout engine in-process, at the cost of a dependency the
       fork can detect and report rather than require.
+
+  `:roam-graph` draws the whole graph. `:roam-graph N` (or the
+  `roam_graph_neighbourhood` command with a count, default 2) draws the
+  nodes within N links of the one at the cursor. Links are followed both
+  ways, since a note that links here is as much a neighbour as one this
+  links to, and the centre is highlighted. An edge that exists only
+  through `:ROAM_REFS:` is dashed. Repeated links between the same two
+  notes are one edge, long titles wrap, and the DOT output is sorted, so
+  the same graph always gives the same file.
+
+  The DOT file is always written, to the system's temporary directory. If
+  `dot` is on `PATH`, it is rendered to SVG in the background and handed to
+  the system opener. What is missing is reported rather than failing:
+  without Graphviz, the message gives the DOT file's path; without an
+  opener, the SVG's.
+
+  Checked in the editor, three times:
+  - *without `dot`*, the DOT file was written and the reason given;
+  - *with Graphviz 2.42*, installed for the test, the whole test graph
+    rendered with 5 nodes and the depth-1 neighbourhood of "On systems"
+    with 3; the rendered picture shows the dashed ref edge and the isolated
+    node;
+  - *without `xdg-open`* (this environment has none), the message gave the
+    SVG's path.
+
+  Not built: a clickable node that opens the note, which upstream does
+  through `org-protocol` (Task 1.16); filtering links by type; and
+  Graphviz layout options in the configuration.
 - [x] Export: resolve `id:` links to something meaningful in the exported
       output rather than leaving a raw UUID. This is a prerequisite for
       Task 1.9's export being useful on a notes directory at all.

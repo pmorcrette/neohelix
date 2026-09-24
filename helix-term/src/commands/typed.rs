@@ -2406,6 +2406,24 @@ roam_buffer_command!(org_clock_goto, crate::roam::clock_goto);
 roam_buffer_command!(org_clock_report, crate::roam::clock_report);
 roam_buffer_command!(org_babel_execute, crate::roam::babel_execute);
 roam_buffer_command!(org_columns, crate::roam::toggle_columns);
+
+/// `:roam-graph [depth]`: the whole graph, or the neighbourhood of the node
+/// at the cursor.
+fn roam_graph(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let depth = match args.first() {
+        Some(depth) => Some(
+            depth
+                .parse::<usize>()
+                .map_err(|_| anyhow!("{depth:?} is not a number of links"))?,
+        ),
+        None => None,
+    };
+    crate::roam::graph(cx.editor, depth);
+    Ok(())
+}
 roam_component_command!(org_attach_open, crate::roam::attachment_picker);
 
 /// `:org-attach <file>`.
@@ -5020,6 +5038,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-graph",
+        aliases: &[],
+        doc: "Draw the Org-Roam graph with Graphviz; with a depth, only the nodes that many links from the one at the cursor.",
+        fun: roam_graph,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
             ..Signature::DEFAULT
         },
     },

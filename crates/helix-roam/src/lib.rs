@@ -32,6 +32,7 @@ pub mod source;
 pub mod startup;
 pub mod table;
 pub mod unlinked;
+pub mod visual;
 
 pub use clip::Clip;
 pub use date::Date;

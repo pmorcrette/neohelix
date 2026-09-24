@@ -3828,3 +3828,116 @@ fn follow_attachment(editor: &mut Editor, text: &str, offset: usize, name: &str)
         editor.set_error(format!("Could not open {}: {err}", path.display()));
     }
 }
+
+// ── Graph visualisation ───────────────────────────────────────────────────
+
+/// Where a program would be found on `PATH`, if anywhere.
+fn on_path(program: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(program))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Draws the graph — all of it, or the nodes within `depth` links of the one
+/// at the cursor — and opens the picture.
+///
+/// The DOT file is always written. Rendering it needs Graphviz's `dot`,
+/// which is looked for rather than required: without it, the message says
+/// where the DOT file is, and that is still something any Graphviz viewer
+/// can open.
+pub fn graph(editor: &mut Editor, depth: Option<usize>) {
+    let center = match depth {
+        None => None,
+        Some(depth) => match node_at_cursor(editor) {
+            Some((id, _)) => Some((id, depth)),
+            None => {
+                editor.set_error("No node at the cursor to draw the neighbourhood of");
+                return;
+            }
+        },
+    };
+
+    let text = {
+        let graph = editor.roam.read();
+        if graph.is_empty() {
+            drop(graph);
+            editor.set_error("The index is empty: nothing to draw");
+            return;
+        }
+        if let Some((id, _)) = center {
+            if !graph.contains_node(&id) {
+                drop(graph);
+                editor.set_error(
+                    "The node at the cursor is not in the index yet; save and try again",
+                );
+                return;
+            }
+        }
+        helix_roam::visual::dot(&graph, center)
+    };
+
+    let dir = std::env::temp_dir().join("neohelix-graph");
+    let stem = match center {
+        Some((id, depth)) => format!("{id}-{depth}"),
+        None => "roam".to_string(),
+    };
+    let dot_file = dir.join(format!("{stem}.dot"));
+    if let Err(err) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&dot_file, &text))
+    {
+        editor.set_error(format!("Could not write {}: {err}", dot_file.display()));
+        return;
+    }
+    let nodes = text.lines().filter(|line| line.contains("[label=")).count();
+
+    let Some(dot) = on_path("dot") else {
+        editor.set_status(format!(
+            "Wrote {} ({nodes} nodes); Graphviz's dot is not installed, so it was not rendered",
+            dot_file.display()
+        ));
+        return;
+    };
+
+    let svg = dir.join(format!("{stem}.svg"));
+    editor.set_status(format!("Rendering {nodes} nodes…"));
+    tokio::spawn(async move {
+        let rendered = tokio::process::Command::new(&dot)
+            .arg("-Tsvg")
+            .arg("-o")
+            .arg(&svg)
+            .arg(&dot_file)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .await;
+        crate::job::dispatch(move |editor, _| match rendered {
+            Ok(output) if output.status.success() => {
+                // Without a program to hand it to, the picture is still made:
+                // say where it is rather than report a failure.
+                let opener = if cfg!(target_os = "macos") {
+                    "open"
+                } else if cfg!(target_os = "windows") {
+                    "explorer"
+                } else {
+                    "xdg-open"
+                };
+                if cfg!(target_os = "windows") || on_path(opener).is_some() {
+                    open_externally(editor, &svg.to_string_lossy());
+                } else {
+                    editor.set_status(format!(
+                        "Rendered {}; {opener} is not installed to open it",
+                        svg.display()
+                    ));
+                }
+            }
+            Ok(output) => editor.set_error(format!(
+                "dot failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+            )),
+            Err(err) => editor.set_error(format!("could not run dot: {err}")),
+        })
+        .await;
+    });
+}

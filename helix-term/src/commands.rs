@@ -511,6 +511,8 @@ impl MappableCommand {
         org_columns, "Show or hide the column view of the buffer, from its #+COLUMNS:",
         org_attach, "Copy a file into the attachment directory of the entry",
         org_attach_open, "Pick one of the files attached to the entry",
+        roam_graph, "Draw the whole Org-Roam graph with Graphviz",
+        roam_graph_neighbourhood, "Draw the nodes within two links of the node at the cursor",
         org_copy_subtree, "Copy the subtree at the cursor",
         org_cut_subtree, "Cut the subtree at the cursor",
         org_paste_subtree, "Paste the copied subtree at the cursor's level",
@@ -4447,6 +4449,14 @@ fn org_attach(cx: &mut Context) {
         },
     );
     cx.push_layer(Box::new(prompt));
+}
+
+fn roam_graph(cx: &mut Context) {
+    crate::roam::graph(cx.editor, None);
+}
+
+fn roam_graph_neighbourhood(cx: &mut Context) {
+    crate::roam::graph(cx.editor, Some(cx.count.map_or(2, |count| count.get())));
 }
 
 fn org_attach_open(cx: &mut Context) {
