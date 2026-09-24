@@ -5,10 +5,12 @@
 //! repository changes. That keeps "what is under the cursor", "what does a
 //! keypress act on" and "what is on screen" one and the same question.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use helix_magit::diff::{DiffLineKind, FileDiff};
-use helix_magit::{Repository, Selection};
+use helix_magit::status::Overview;
+use helix_magit::{Repository, Selection, Unmerged};
 use helix_view::graphics::Rect;
 use helix_view::input::{KeyCode, KeyModifiers};
 use helix_view::Editor;
@@ -18,35 +20,222 @@ use tui::widgets::{Block, Widget};
 
 use crate::compositor::{Component, Context, Event, EventResult};
 
-/// Which side of the index a section shows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What a section lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum SectionKind {
+    /// Paths left in conflict by a merge, rebase or cherry-pick.
+    Unmerged,
+    /// Files git does not track yet: what `s` can add.
+    Untracked,
     /// Index against working tree: what `s` can stage.
     Unstaged,
     /// HEAD against index: what `u` can unstage.
     Staged,
+    Stashes,
+    /// Commits the upstream has and HEAD does not.
+    Unpulled,
+    /// Commits HEAD has and the upstream does not.
+    Unpushed,
+    /// The last few commits, when nothing is unpushed.
+    Recent,
 }
 
 impl SectionKind {
-    fn title(self) -> &'static str {
+    /// Whether the section holds changes still to stage, already staged, or
+    /// neither.
+    fn staged(self) -> Option<bool> {
         match self {
-            SectionKind::Unstaged => "Unstaged changes",
-            SectionKind::Staged => "Staged changes",
+            SectionKind::Untracked | SectionKind::Unstaged => Some(false),
+            SectionKind::Staged => Some(true),
+            _ => None,
         }
     }
 }
 
+/// A commit or a stash in a section: what `RET` shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Item {
+    /// The abbreviated hash, or `stash@{0}`.
+    label: String,
+    text: String,
+}
+
 struct Section {
     kind: SectionKind,
+    title: String,
     files: Vec<FileDiff>,
+    items: Vec<Item>,
     folded: bool,
+}
+
+impl Section {
+    fn len(&self) -> usize {
+        self.files.len() + self.items.len()
+    }
+}
+
+/// How a part of a header line is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tone {
+    Plain,
+    Emphasis,
+    Dim,
+}
+
+/// A line above the sections: where HEAD is, and what is under way.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HeaderLine {
+    label: &'static str,
+    parts: Vec<(String, Tone)>,
+}
+
+/// The header Magit shows above its sections, from the overview.
+fn header_lines(overview: &Overview) -> Vec<HeaderLine> {
+    let commit_parts = |commit: &Option<helix_magit::status::Commit>| match commit {
+        Some(commit) => vec![
+            (commit.hash.clone(), Tone::Dim),
+            (format!(" {}", commit.subject), Tone::Plain),
+        ],
+        None => vec![("(no commits yet)".to_string(), Tone::Dim)],
+    };
+
+    let mut lines = Vec::new();
+    let mut head = vec![(
+        overview
+            .branch
+            .clone()
+            .unwrap_or_else(|| "(detached)".to_string()),
+        Tone::Emphasis,
+    )];
+    head.push(("  ".to_string(), Tone::Plain));
+    head.extend(commit_parts(&overview.head));
+    lines.push(HeaderLine {
+        label: "Head:",
+        parts: head,
+    });
+
+    for (label, tracked) in [("Upstream:", &overview.upstream), ("Push:", &overview.push)] {
+        if let Some(tracked) = tracked {
+            let mut parts = vec![
+                (tracked.name.clone(), Tone::Emphasis),
+                ("  ".to_string(), Tone::Plain),
+            ];
+            match &tracked.commit {
+                Some(_) => parts.extend(commit_parts(&tracked.commit)),
+                None => parts.push(("(not fetched)".to_string(), Tone::Dim)),
+            }
+            lines.push(HeaderLine { label, parts });
+        }
+    }
+
+    if let Some(state) = &overview.in_progress {
+        lines.push(HeaderLine {
+            label: "State:",
+            parts: vec![(state.description.clone(), Tone::Emphasis)],
+        });
+        lines.push(HeaderLine {
+            label: "",
+            parts: vec![(state.operation.hint().to_string(), Tone::Dim)],
+        });
+    }
+    lines
+}
+
+/// Every section, in Magit's order. Empty ones are kept, and skipped when
+/// the rows are built, so a section's index never depends on its content.
+fn build_sections(
+    unmerged: Vec<Unmerged>,
+    untracked: Vec<FileDiff>,
+    unstaged: Vec<FileDiff>,
+    staged: Vec<FileDiff>,
+    overview: &Overview,
+) -> Vec<Section> {
+    let commits = |commits: &[helix_magit::status::Commit]| -> Vec<Item> {
+        commits
+            .iter()
+            .map(|commit| Item {
+                label: commit.hash.clone(),
+                text: commit.subject.clone(),
+            })
+            .collect()
+    };
+    let upstream = overview
+        .upstream
+        .as_ref()
+        .map_or("upstream", |upstream| upstream.name.as_str());
+
+    let files = |kind, title: &str, files| Section {
+        kind,
+        title: title.to_string(),
+        files,
+        items: Vec::new(),
+        folded: false,
+    };
+    let items = |kind, title: String, items| Section {
+        kind,
+        title,
+        files: Vec::new(),
+        items,
+        folded: false,
+    };
+
+    vec![
+        items(
+            SectionKind::Unmerged,
+            "Unmerged paths".to_string(),
+            unmerged
+                .into_iter()
+                .map(|path| Item {
+                    label: path.state.to_string(),
+                    text: path.path.display().to_string(),
+                })
+                .collect(),
+        ),
+        files(SectionKind::Untracked, "Untracked files", untracked),
+        files(SectionKind::Unstaged, "Unstaged changes", unstaged),
+        files(SectionKind::Staged, "Staged changes", staged),
+        items(
+            SectionKind::Stashes,
+            "Stashes".to_string(),
+            overview
+                .stashes
+                .iter()
+                .map(|stash| Item {
+                    label: stash.name.clone(),
+                    text: stash.subject.clone(),
+                })
+                .collect(),
+        ),
+        items(
+            SectionKind::Unpulled,
+            format!("Unpulled from {upstream}"),
+            commits(&overview.unpulled),
+        ),
+        items(
+            SectionKind::Unpushed,
+            format!("Unmerged into {upstream}"),
+            commits(&overview.unpushed),
+        ),
+        items(
+            SectionKind::Recent,
+            "Recent commits".to_string(),
+            commits(&overview.recent),
+        ),
+    ]
 }
 
 /// One rendered line, and what it stands for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Row {
+    Header {
+        line: usize,
+    },
     Section {
         section: usize,
+    },
+    Item {
+        section: usize,
+        item: usize,
     },
     File {
         section: usize,
@@ -69,19 +258,21 @@ impl Row {
     /// How deep this row sits in the tree, for indentation.
     fn depth(self) -> u16 {
         match self {
-            Row::Section { .. } => 0,
-            Row::File { .. } => 1,
+            Row::Header { .. } | Row::Section { .. } => 0,
+            Row::Item { .. } | Row::File { .. } => 1,
             Row::Hunk { .. } => 2,
             Row::Line { .. } => 3,
         }
     }
 
-    fn section(self) -> usize {
+    fn section(self) -> Option<usize> {
         match self {
+            Row::Header { .. } => None,
             Row::Section { section }
+            | Row::Item { section, .. }
             | Row::File { section, .. }
             | Row::Hunk { section, .. }
-            | Row::Line { section, .. } => section,
+            | Row::Line { section, .. } => Some(section),
         }
     }
 }
@@ -89,6 +280,7 @@ impl Row {
 /// The status buffer.
 pub struct DiffView {
     workdir: PathBuf,
+    header: Vec<HeaderLine>,
     sections: Vec<Section>,
     rows: Vec<Row>,
     cursor: usize,
@@ -106,6 +298,7 @@ impl DiffView {
         let repository = Repository::discover(path)?;
         let mut view = Self {
             workdir: repository.workdir().to_path_buf(),
+            header: Vec::new(),
             sections: Vec::new(),
             rows: Vec::new(),
             cursor: 0,
@@ -138,52 +331,56 @@ impl DiffView {
     /// unstaged section entirely — so the cursor is clamped rather than
     /// restored exactly.
     fn reload(&mut self, repository: &Repository) -> Result<(), helix_magit::repository::Error> {
-        let folded: Vec<(SectionKind, PathBuf)> = self
-            .sections
-            .iter()
-            .flat_map(|section| {
-                section
-                    .files
-                    .iter()
-                    .filter(|file| file.folded)
-                    .map(move |file| (section.kind, file.path.clone()))
-            })
-            .collect();
-
-        let mut unstaged = repository.worktree_diff()?;
-        let mut staged = repository.staged_diff()?;
-
-        // Folding is a view preference, so it survives a refresh.
-        for file in unstaged.iter_mut() {
-            file.folded = folded.contains(&(SectionKind::Unstaged, file.path.clone()));
-        }
-        for file in staged.iter_mut() {
-            file.folded = folded.contains(&(SectionKind::Staged, file.path.clone()));
-        }
+        let (unstaged, untracked) = repository.worktree_diffs()?;
+        let staged = repository.staged_diff()?;
+        let unmerged = repository.unmerged()?;
+        let overview = helix_magit::status::read(repository.workdir());
 
         self.head = repository.head_description();
-        self.sections = vec![
-            Section {
-                kind: SectionKind::Unstaged,
-                files: unstaged,
-                folded: false,
-            },
-            Section {
-                kind: SectionKind::Staged,
-                files: staged,
-                folded: false,
-            },
-        ];
-        self.rebuild_rows();
+        self.header = header_lines(&overview);
+        let sections = build_sections(unmerged, untracked, unstaged, staged, &overview);
+        self.replace_sections(sections);
         Ok(())
+    }
+
+    /// Swaps in freshly read sections, carrying the folding over: folding is
+    /// a view preference, so it survives a refresh. Untracked files start
+    /// folded, as Magit lists them by name.
+    fn replace_sections(&mut self, mut sections: Vec<Section>) {
+        let mut files: HashMap<(SectionKind, PathBuf), bool> = HashMap::new();
+        let mut folded_sections: HashMap<SectionKind, bool> = HashMap::new();
+        for section in &self.sections {
+            folded_sections.insert(section.kind, section.folded);
+            for file in &section.files {
+                files.insert((section.kind, file.path.clone()), file.folded);
+            }
+        }
+
+        for section in sections.iter_mut() {
+            section.folded = folded_sections
+                .get(&section.kind)
+                .copied()
+                .unwrap_or(section.folded);
+            for file in section.files.iter_mut() {
+                file.folded = files
+                    .get(&(section.kind, file.path.clone()))
+                    .copied()
+                    .unwrap_or(section.kind == SectionKind::Untracked);
+            }
+        }
+
+        self.sections = sections;
+        self.rebuild_rows();
     }
 
     /// Flattens the tree into the rows currently visible.
     fn rebuild_rows(&mut self) {
-        let mut rows = Vec::new();
+        let mut rows: Vec<Row> = (0..self.header.len())
+            .map(|line| Row::Header { line })
+            .collect();
 
         for (section_index, section) in self.sections.iter().enumerate() {
-            if section.files.is_empty() {
+            if section.len() == 0 {
                 continue;
             }
             rows.push(Row::Section {
@@ -191,6 +388,13 @@ impl DiffView {
             });
             if section.folded {
                 continue;
+            }
+
+            for item in 0..section.items.len() {
+                rows.push(Row::Item {
+                    section: section_index,
+                    item,
+                });
             }
 
             for (file_index, file) in section.files.iter().enumerate() {
@@ -234,7 +438,7 @@ impl DiffView {
 
     fn file_at(&self, row: Row) -> Option<&FileDiff> {
         match row {
-            Row::Section { .. } => None,
+            Row::Header { .. } | Row::Section { .. } | Row::Item { .. } => None,
             Row::File { section, file, .. }
             | Row::Hunk { section, file, .. }
             | Row::Line { section, file, .. } => self.sections.get(section)?.files.get(file),
@@ -244,7 +448,7 @@ impl DiffView {
     /// Turns the cursor's position into the selection an action applies to.
     fn selection_at(&self, row: Row) -> Option<Selection> {
         match row {
-            Row::Section { .. } => None,
+            Row::Header { .. } | Row::Section { .. } | Row::Item { .. } => None,
             Row::File { .. } => Some(Selection::File),
             Row::Hunk { hunk, .. } => Some(Selection::Hunk(hunk)),
             Row::Line { hunk, line, .. } => Some(Selection::Lines {
@@ -286,10 +490,19 @@ impl DiffView {
         };
 
         match row {
+            Row::Header { .. } => return,
             Row::Section { section } => {
                 if let Some(section) = self.sections.get_mut(section) {
                     section.folded = !section.folded;
                 }
+            }
+            // A commit or stash has nothing folded under it; its section
+            // folds, as a file's line folds its hunk.
+            Row::Item { section, .. } => {
+                if let Some(section) = self.sections.get_mut(section) {
+                    section.folded = true;
+                }
+                self.move_to_parent();
             }
             Row::File { section, file } => {
                 if let Some(file) = self
@@ -342,13 +555,15 @@ impl DiffView {
             return;
         };
 
-        let kind = self.sections[row.section()].kind;
-        match (stage, kind) {
-            (true, SectionKind::Staged) => {
+        let Some(section) = row.section() else {
+            return;
+        };
+        match (stage, self.sections[section].kind.staged()) {
+            (true, Some(true)) => {
                 self.error = Some("Already staged — use u to unstage".to_string());
                 return;
             }
-            (false, SectionKind::Unstaged) => {
+            (false, Some(false)) => {
                 self.error = Some("Not staged yet — use s to stage".to_string());
                 return;
             }
@@ -383,6 +598,23 @@ impl DiffView {
         if let Err(err) = self.reload(&repository) {
             self.error = Some(err.to_string());
         }
+    }
+
+    /// The git command that shows the commit or stash under the cursor.
+    fn show_args(&self) -> Option<Vec<String>> {
+        let Some(Row::Item { section, item }) = self.current_row() else {
+            return None;
+        };
+        let section = self.sections.get(section)?;
+        let item = section.items.get(item)?;
+        let args: &[&str] = match section.kind {
+            SectionKind::Unmerged => return None,
+            SectionKind::Stashes => &["stash", "show", "--patch", "--stat"],
+            _ => &["show", "--stat", "--patch"],
+        };
+        let mut args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+        args.push(item.label.clone());
+        Some(args)
     }
 
     /// Keeps the cursor inside the visible window.
@@ -471,6 +703,15 @@ impl Component for DiffView {
             (KeyCode::Tab, _) | (KeyCode::Char('l') | KeyCode::Right, KeyModifiers::NONE) => {
                 self.toggle_fold()
             }
+            (KeyCode::Enter, _) => {
+                if let Some(args) = self.show_args() {
+                    let workdir = self.workdir.clone();
+                    return EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                        compositor.remove(DiffView::ID);
+                        crate::magit::show(cx, workdir, args);
+                    })));
+                }
+            }
             (KeyCode::Char('s'), KeyModifiers::NONE) => self.apply(true),
             (KeyCode::Char('u'), KeyModifiers::NONE) => self.apply(false),
             _ => {}
@@ -536,13 +777,21 @@ impl<'a> RowRenderer<'a> {
         }
 
         match row {
+            Row::Header { line } => {
+                let Some(line) = view.header.get(line) else {
+                    return;
+                };
+                let mut parts = vec![(format!("{:<10}", line.label), Tone::Emphasis)];
+                parts.extend(line.parts.iter().cloned());
+                self.put_parts(surface, cell, &parts, focused);
+            }
             Row::Section { section } => {
                 let section = &view.sections[section];
                 let text = format!(
                     "{} {} ({})",
                     fold_marker(section.folded),
-                    section.kind.title(),
-                    section.files.len()
+                    section.title,
+                    section.len()
                 );
                 self.put(
                     surface,
@@ -551,6 +800,16 @@ impl<'a> RowRenderer<'a> {
                     self.theme.get("ui.text.focus"),
                     focused,
                 );
+            }
+            Row::Item { section, item } => {
+                let Some(item) = view.sections[section].items.get(item) else {
+                    return;
+                };
+                let parts = [
+                    (item.label.clone(), Tone::Dim),
+                    (format!(" {}", item.text), Tone::Plain),
+                ];
+                self.put_parts(surface, cell, &parts, focused);
             }
             Row::File { .. } => {
                 let Some(file) = view.file_at(row) else {
@@ -647,6 +906,35 @@ impl<'a> RowRenderer<'a> {
             style
         };
         surface.set_string_truncated(cell.x, cell.y, text, cell.width, |_| style, true, false);
+    }
+
+    /// Draws a line made of differently styled parts, left to right.
+    fn put_parts(
+        &self,
+        surface: &mut Surface,
+        cell: Cell,
+        parts: &[(String, Tone)],
+        focused: bool,
+    ) {
+        let mut x = cell.x;
+        let end = cell.x + cell.width as u16;
+        for (text, tone) in parts {
+            if x >= end {
+                break;
+            }
+            let style = match tone {
+                Tone::Plain => self.theme.get("ui.text"),
+                Tone::Emphasis => self.theme.get("ui.text.focus"),
+                Tone::Dim => self.theme.get("ui.virtual"),
+            };
+            let cell = Cell {
+                x,
+                width: (end - x) as usize,
+                ..cell
+            };
+            self.put(surface, cell, text, style, focused);
+            x += helix_core::unicode::width::UnicodeWidthStr::width(text.as_str()) as u16;
+        }
     }
 
     /// Draws a code fragment with Tree-sitter highlighting over the diff's own
@@ -769,27 +1057,32 @@ mod tests {
 
     /// A view over a fixed model, with no repository behind it.
     fn make_view(unstaged: Vec<FileDiff>, staged: Vec<FileDiff>) -> DiffView {
+        make_full_view(Vec::new(), unstaged, staged, &Overview::default())
+    }
+
+    fn make_full_view(
+        untracked: Vec<FileDiff>,
+        unstaged: Vec<FileDiff>,
+        staged: Vec<FileDiff>,
+        overview: &Overview,
+    ) -> DiffView {
         let mut view = DiffView {
             workdir: PathBuf::from("/repo"),
-            sections: vec![
-                Section {
-                    kind: SectionKind::Unstaged,
-                    files: unstaged,
-                    folded: false,
-                },
-                Section {
-                    kind: SectionKind::Staged,
-                    files: staged,
-                    folded: false,
-                },
-            ],
+            header: Vec::new(),
+            sections: Vec::new(),
             rows: Vec::new(),
             cursor: 0,
             scroll: 0,
             head: "main".to_string(),
             error: None,
         };
-        view.rebuild_rows();
+        view.replace_sections(build_sections(
+            Vec::new(),
+            untracked,
+            unstaged,
+            staged,
+            overview,
+        ));
         view
     }
 
@@ -800,18 +1093,18 @@ mod tests {
         // Section, file, then each hunk followed by its lines. The staged
         // section is empty, so it contributes no header.
         assert_eq!(view.rows.len(), 1 + 1 + (1 + 2) * 2);
-        assert_eq!(view.rows[0], Row::Section { section: 0 });
+        assert_eq!(view.rows[0], Row::Section { section: 2 });
         assert_eq!(
             view.rows[1],
             Row::File {
-                section: 0,
+                section: 2,
                 file: 0
             }
         );
         assert_eq!(
             view.rows[2],
             Row::Hunk {
-                section: 0,
+                section: 2,
                 file: 0,
                 hunk: 0
             }
@@ -819,7 +1112,7 @@ mod tests {
         assert_eq!(
             view.rows[3],
             Row::Line {
-                section: 0,
+                section: 2,
                 file: 0,
                 hunk: 0,
                 line: 0
@@ -833,7 +1126,7 @@ mod tests {
         assert!(view.rows.is_empty());
 
         let view = make_view(Vec::new(), vec![file("a.rs", 1, 1)]);
-        assert_eq!(view.rows[0], Row::Section { section: 1 });
+        assert_eq!(view.rows[0], Row::Section { section: 3 });
     }
 
     #[test]
@@ -845,7 +1138,7 @@ mod tests {
         view.toggle_fold();
 
         assert_eq!(view.rows.len(), 2, "only the section and the file remain");
-        assert!(view.sections[0].files[0].folded);
+        assert!(view.sections[2].files[0].folded);
 
         view.toggle_fold();
         assert_eq!(view.rows.len(), before);
@@ -859,8 +1152,8 @@ mod tests {
 
         // The first hunk's two lines are gone; the second hunk keeps its own.
         assert_eq!(view.rows.len(), 1 + 1 + 1 + (1 + 2));
-        assert!(view.sections[0].files[0].hunks[0].folded);
-        assert!(!view.sections[0].files[0].hunks[1].folded);
+        assert!(view.sections[2].files[0].hunks[0].folded);
+        assert!(!view.sections[2].files[0].hunks[1].folded);
     }
 
     #[test]
@@ -870,12 +1163,12 @@ mod tests {
 
         view.toggle_fold();
 
-        assert!(view.sections[0].files[0].hunks[0].folded);
+        assert!(view.sections[2].files[0].hunks[0].folded);
         // The line the cursor was on no longer exists, so it lands on the hunk.
         assert_eq!(
             view.current_row(),
             Some(Row::Hunk {
-                section: 0,
+                section: 2,
                 file: 0,
                 hunk: 0
             })
@@ -976,5 +1269,143 @@ mod tests {
 
         view.apply(true);
         assert!(view.error.as_deref().unwrap().contains("Move to a file"));
+    }
+
+    fn overview() -> Overview {
+        use helix_magit::status::{Commit, InProgress, Operation, Stash, Tracked};
+        let commit = |hash: &str, subject: &str| Commit {
+            hash: hash.into(),
+            subject: subject.into(),
+        };
+        Overview {
+            branch: Some("main".into()),
+            head: Some(commit("abc1234", "Latest")),
+            upstream: Some(Tracked {
+                name: "origin/main".into(),
+                commit: Some(commit("def5678", "Theirs")),
+            }),
+            push: None,
+            in_progress: Some(InProgress {
+                operation: Operation::Merge,
+                description: "Merging 0123456".into(),
+            }),
+            unpulled: vec![commit("def5678", "Theirs")],
+            unpushed: vec![commit("abc1234", "Latest")],
+            recent: Vec::new(),
+            stashes: vec![Stash {
+                name: "stash@{0}".into(),
+                subject: "WIP on main".into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn the_header_says_where_head_is_and_what_is_under_way() {
+        let lines = header_lines(&overview());
+        let text: Vec<String> = lines
+            .iter()
+            .map(|line| {
+                let parts: String = line.parts.iter().map(|(text, _)| text.as_str()).collect();
+                format!("{} {parts}", line.label)
+            })
+            .collect();
+        assert_eq!(
+            text,
+            [
+                "Head: main  abc1234 Latest",
+                "Upstream: origin/main  def5678 Theirs",
+                "State: Merging 0123456",
+                " git merge --continue, or git merge --abort",
+            ]
+        );
+
+        let detached = header_lines(&Overview::default());
+        assert_eq!(detached.len(), 1);
+        assert_eq!(detached[0].parts[0].0, "(detached)");
+        assert_eq!(detached[0].parts[2].0, "(no commits yet)");
+    }
+
+    #[test]
+    fn commits_and_stashes_have_sections_of_their_own() {
+        let overview = overview();
+        let mut view = make_full_view(Vec::new(), Vec::new(), Vec::new(), &overview);
+        view.header = header_lines(&overview);
+        view.rebuild_rows();
+
+        let titles: Vec<&str> = view
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Section { section } => Some(view.sections[*section].title.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            titles,
+            [
+                "Stashes",
+                "Unpulled from origin/main",
+                "Unmerged into origin/main"
+            ]
+        );
+        // Four header lines, then each section and its one entry.
+        assert_eq!(view.rows.len(), 4 + 3 * 2);
+        assert!(matches!(view.rows[0], Row::Header { line: 0 }));
+
+        // RET on a stash shows it with `git stash show`, on a commit with
+        // `git show`; anywhere else it shows nothing.
+        view.cursor = 5;
+        assert_eq!(
+            view.show_args().unwrap(),
+            ["stash", "show", "--patch", "--stat", "stash@{0}"]
+        );
+        view.cursor = 7;
+        assert_eq!(
+            view.show_args().unwrap(),
+            ["show", "--stat", "--patch", "def5678"]
+        );
+        view.cursor = 0;
+        assert_eq!(view.show_args(), None);
+    }
+
+    #[test]
+    fn untracked_files_start_folded_and_stage_like_unstaged_ones() {
+        let mut view = make_full_view(
+            vec![file("new.rs", 1, 2)],
+            Vec::new(),
+            Vec::new(),
+            &Overview::default(),
+        );
+        assert_eq!(view.rows.len(), 2, "the section and the file name");
+        assert_eq!(view.sections[1].title, "Untracked files");
+
+        view.cursor = 1;
+        view.apply(false);
+        assert!(view.error.as_deref().unwrap().contains("Not staged yet"));
+    }
+
+    #[test]
+    fn folding_survives_a_refresh() {
+        let mut view = make_view(vec![file("a.rs", 1, 1)], vec![file("b.rs", 1, 1)]);
+        view.cursor = 0; // the unstaged section
+        view.toggle_fold();
+        let staged_file = view
+            .rows
+            .iter()
+            .position(|row| matches!(row, Row::File { section: 3, .. }))
+            .unwrap();
+        view.cursor = staged_file;
+        view.toggle_fold();
+
+        view.replace_sections(build_sections(
+            Vec::new(),
+            vec![file("new.rs", 1, 1)],
+            vec![file("a.rs", 1, 1)],
+            vec![file("b.rs", 1, 1)],
+            &Overview::default(),
+        ));
+        assert!(view.sections[2].folded);
+        assert!(view.sections[3].files[0].folded);
+        assert!(view.sections[1].files[0].folded, "a new untracked file");
     }
 }

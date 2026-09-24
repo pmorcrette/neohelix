@@ -97,6 +97,40 @@ fn run(cx: &mut Context, plan: Plan, workdir: PathBuf) {
     });
 }
 
+/// Shows what `git <args>` prints — a commit, a stash — in a scratch buffer
+/// highlighted as a diff.
+///
+/// The status buffer is an overlay over the whole editor, so the caller
+/// closes it first; `SPC g` (or `:magit`) brings it back.
+pub fn show(cx: &mut Context, workdir: PathBuf, args: Vec<String>) {
+    let line = format!("git {}", args.join(" "));
+    let command = GitCommand::new(workdir, args);
+    cx.editor.set_status(format!("Running {line}…"));
+
+    cx.jobs.callback(async move {
+        let outcome = tokio::task::spawn_blocking(move || command.run()).await;
+
+        Ok(Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, _: &mut Compositor| match outcome {
+                Ok(Ok(output)) if output.success => {
+                    open_scratch(editor, &output.stdout, "diff");
+                    editor.set_status(line);
+                }
+                Ok(Ok(output)) => editor.set_error(format!("{line}: {}", output.summary())),
+                Ok(Err(err)) => editor.set_error(format!("{line}: {err}")),
+                Err(err) => editor.set_error(format!("{line}: {err}")),
+            },
+        )))
+    });
+}
+
+/// A new scratch buffer holding `text`, highlighted as `language`.
+fn open_scratch(editor: &mut Editor, text: &str, language: &str) {
+    let doc_id = editor.new_scratch_with_text(helix_view::editor::Action::Replace, text);
+    let loader = editor.syn_loader.load();
+    let _ = helix_view::doc_mut!(editor, &doc_id).set_language_by_language_id(language, &loader);
+}
+
 /// Shows the outcome and brings the status buffer back in step.
 fn report(editor: &mut Editor, compositor: &mut Compositor, line: &str, output: GitOutput) {
     if output.success {

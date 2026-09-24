@@ -1226,16 +1226,36 @@ you whether you need to push, pull or recover something. Untracked files are
 already handled — they appear as whole-file additions under Unstaged — but
 they have no section of their own.
 
-- [ ] A head section: the current branch, its upstream, and the message of
+- [x] A head section: the current branch, its upstream, and the message of
       `HEAD`.
-- [ ] Unpushed and unpulled sections: commits the upstream does not have, and
+- [x] Unpushed and unpulled sections: commits the upstream does not have, and
       commits it has that the working copy does not.
-- [ ] A stashes section, listing entries and letting one be shown.
-- [ ] A recent-commits section.
-- [ ] An untracked section of its own, separate from unstaged changes.
-- [ ] In-progress state: a merge, a rebase or a cherry-pick under way is what a
+- [x] A stashes section, listing entries and letting one be shown.
+- [x] A recent-commits section.
+- [x] An untracked section of its own, separate from unstaged changes.
+- [x] In-progress state: a merge, a rebase or a cherry-pick under way is what a
       user most needs the status buffer to tell them, and it currently says
       nothing.
+
+*Done.* `helix_magit::status::read` asks the `git` binary — the one the
+transient commands run — for the branch, `@{upstream}`, `@{push}` (shown only
+when it differs from the upstream), `HEAD..@{upstream}`, `@{upstream}..HEAD`,
+the stash list and the last ten commits, which Magit shows only when nothing
+is unpushed and so does this. The operation under way is read from the state
+files git leaves in its directory (`rebase-merge/`, `rebase-apply/`,
+`MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `BISECT_LOG`), with the step
+and the commit a rebase stopped at, and a line naming the commands that get out
+of it. Rebases are not called "interactive": git's merge backend writes that
+marker for a plain `git rebase` too. Untracked files have their own section and
+start folded, listed by name; `s` still adds them. `RET` on a commit or a stash
+opens `git show` / `git stash show -p` in a scratch buffer highlighted as a
+diff, closing the status overlay, since it covers the whole editor. Checking
+this in the editor showed that a conflicted file appeared under *Staged
+changes* once per index stage; those entries are now skipped there and listed
+in an *Unmerged paths* section instead (Task 2.10's first item). Folding of
+sections now survives a refresh as file folding already did. The overview
+costs about eight short `git` processes per refresh, run on the editor thread
+like the rest of the refresh.
 
 ### Task 2.6: Discarding and Bulk Staging
 
@@ -1325,8 +1345,10 @@ produces, because that is a buffer and a workflow rather than a command line.
 Magit reaches for Ediff here (`e`, `E`); the fork has no equivalent and needs
 its own answer.
 
-- [ ] A conflicts section in the status buffer, listing unmerged paths and
-      their stage.
+- [x] A conflicts section in the status buffer, listing unmerged paths and
+      their stage. *(With Task 2.5: "both modified", "deleted by them", … as
+      `git status` words it, from which of base, ours and theirs the index
+      holds.)*
 - [ ] Open a conflicted file with the three sides available — ours, theirs and
       the base — and a way to take either side for a region.
 - [ ] Mark a path resolved, and drive the surrounding operation to its end

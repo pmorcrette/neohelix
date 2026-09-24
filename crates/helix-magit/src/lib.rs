@@ -8,6 +8,7 @@ pub mod command;
 pub mod diff;
 pub mod patch;
 pub mod repository;
+pub mod status;
 pub mod transient;
 
 pub use command::{resolve, GitCommand, GitOutput, Plan, Requirement};
@@ -16,7 +17,7 @@ pub use diff::{
     HunkHeader,
 };
 pub use patch::{apply_patch, build_partial_patch, ApplyError, Selection};
-pub use repository::{Repository, StatusEntry};
+pub use repository::{Repository, StatusEntry, Unmerged};
 pub use transient::{
     MagitCommand, TransientAction, TransientArgument, TransientGroup, TransientMenu,
     TransientOption, TransientSwitch,

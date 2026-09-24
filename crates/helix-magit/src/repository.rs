@@ -50,6 +50,28 @@ pub struct StatusEntry {
     pub untracked: bool,
 }
 
+/// A path left in conflict by a merge, rebase or cherry-pick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unmerged {
+    pub path: PathBuf,
+    /// How it conflicts, in `git status`'s words: "both modified", …
+    pub state: &'static str,
+}
+
+/// `git status`'s name for a conflict, from which of the base, ours and
+/// theirs the index holds.
+fn conflict_state([base, ours, theirs]: [bool; 3]) -> &'static str {
+    match (base, ours, theirs) {
+        (true, true, true) => "both modified",
+        (false, true, true) => "both added",
+        (true, true, false) => "deleted by them",
+        (true, false, true) => "deleted by us",
+        (false, true, false) => "added by us",
+        (false, false, true) => "added by them",
+        _ => "both deleted",
+    }
+}
+
 /// An open repository.
 pub struct Repository {
     inner: gix::Repository,
@@ -188,6 +210,28 @@ impl Repository {
         Ok(diffs)
     }
 
+    /// The same diffs as [`Repository::worktree_diff`], split into changes
+    /// to tracked files and files git does not track yet, which the status
+    /// buffer shows as separate sections.
+    ///
+    /// A file added with `--intent-to-add` has an index entry, so it counts
+    /// as tracked, as `git status` counts it.
+    pub fn worktree_diffs(&self) -> Result<(Vec<FileDiff>, Vec<FileDiff>)> {
+        let mut tracked = Vec::new();
+        let mut untracked = Vec::new();
+        for entry in self.worktree_status()? {
+            let Some(diff) = self.diff_entry(&entry)? else {
+                continue;
+            };
+            if entry.untracked && self.index_blob(&entry.path).is_none() {
+                untracked.push(diff);
+            } else {
+                tracked.push(diff);
+            }
+        }
+        Ok((tracked, untracked))
+    }
+
     /// The diff of one status entry, or `None` when there is nothing to show.
     fn diff_entry(&self, entry: &StatusEntry) -> Result<Option<FileDiff>> {
         let absolute = self.workdir.join(&entry.path);
@@ -261,6 +305,11 @@ impl Repository {
         let mut diffs = Vec::new();
 
         for entry in index.entries() {
+            // A conflicted path has up to three entries, none of them "the"
+            // staged version; they are listed by `unmerged` instead.
+            if entry.stage() != gix::index::entry::Stage::Unconflicted {
+                continue;
+            }
             let rela_path = PathBuf::from(entry.path(&index).to_string());
             let staged = self.blob(entry.id).unwrap_or_default();
             let head = self.blob_at_head(&rela_path).unwrap_or_default();
@@ -287,6 +336,34 @@ impl Repository {
 
         diffs.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(diffs)
+    }
+
+    /// The paths the index holds in conflict, with how they conflict.
+    pub fn unmerged(&self) -> Result<Vec<Unmerged>> {
+        let index = self.inner.index_or_empty().map_err(git)?;
+        let mut paths: Vec<(PathBuf, [bool; 3])> = Vec::new();
+        for entry in index.entries() {
+            let stage = entry.stage_raw() as usize;
+            if stage == 0 {
+                continue;
+            }
+            let path = PathBuf::from(entry.path(&index).to_string());
+            match paths.last_mut() {
+                Some((last, stages)) if *last == path => stages[stage - 1] = true,
+                _ => {
+                    let mut stages = [false; 3];
+                    stages[stage - 1] = true;
+                    paths.push((path, stages));
+                }
+            }
+        }
+        Ok(paths
+            .into_iter()
+            .map(|(path, stages)| Unmerged {
+                path,
+                state: conflict_state(stages),
+            })
+            .collect())
     }
 
     /// Applies the selected part of `file`'s diff to the index.
