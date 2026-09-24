@@ -311,3 +311,18 @@ Body.
         );
     }
 }
+
+#[test]
+fn an_id_goes_into_the_drawer_the_entry_already_has() {
+    use helix_roam::restructure::{ensure_id, IdOutcome};
+    let id: helix_roam::Uuid = "6ba7b810-9dad-11d1-80b4-00c04fd430c8".parse().unwrap();
+    let text = "* Task\nSCHEDULED: <2026-09-24 Thu>\n:PROPERTIES:\n:Effort: 1:30\n:END:\nBody.\n";
+    let IdOutcome::Created { text, .. } = ensure_id(text, 0, id).unwrap() else {
+        panic!("the entry had no id");
+    };
+    assert_eq!(
+        text,
+        "* Task\nSCHEDULED: <2026-09-24 Thu>\n:PROPERTIES:\n:Effort: 1:30\n\
+         :ID:       6ba7b810-9dad-11d1-80b4-00c04fd430c8\n:END:\nBody.\n"
+    );
+}

@@ -159,6 +159,10 @@ pub struct Document {
     /// above: the annotations are built from a `&Document`, and the graph
     /// lives on the editor. A command fills these; a re-index refreshes them.
     pub roam_counts: Vec<helix_core::text_annotations::InlineAnnotation>,
+    /// Org column view: each headline's row, drawn after it. Recomputed on
+    /// every change while `org_columns_on` is set.
+    pub org_columns: Vec<helix_core::text_annotations::InlineAnnotation>,
+    pub org_columns_on: bool,
 
     /// Ranges hidden from the display.
     ///
@@ -782,6 +786,8 @@ impl Document {
             readonly: false,
             jump_labels: HashMap::new(),
             roam_counts: Vec::new(),
+            org_columns: Vec::new(),
+            org_columns_on: false,
             folds: Folds::new(),
             document_highlights: HashMap::new(),
             code_action_hints: HashSet::new(),
@@ -1511,6 +1517,14 @@ impl Document {
         // do, so an edit above a folded section does not leave it hiding the
         // wrong lines.
         self.folds.map(transaction.changes());
+
+        // Annotations placed at a headline's end move with it, and stay after
+        // text typed at that end rather than before it.
+        for annotation in self.roam_counts.iter_mut().chain(&mut self.org_columns) {
+            annotation.char_idx = transaction
+                .changes()
+                .map_pos(annotation.char_idx, helix_core::Assoc::After);
+        }
 
         for view_data in self.view_data.values_mut() {
             view_data.view_position.anchor = transaction

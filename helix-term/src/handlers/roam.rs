@@ -7,7 +7,7 @@
 //! a file you have visited works even when the indexer has never seen it.
 
 use helix_event::register_hook;
-use helix_view::events::{DocumentDidClose, DocumentDidOpen};
+use helix_view::events::{DocumentDidChange, DocumentDidClose, DocumentDidOpen};
 use helix_view::{DocumentId, Editor};
 
 /// Records the ids an opened Org file declares.
@@ -62,6 +62,13 @@ pub(super) fn register_hooks() {
     register_hook!(move |event: &mut DocumentDidOpen<'_>| {
         remember_ids(event.editor, event.doc);
         fold_on_open(event.editor, event.doc);
+        Ok(())
+    });
+    // A column view is only useful if it is current.
+    register_hook!(move |event: &mut DocumentDidChange<'_>| {
+        if event.doc.org_columns_on {
+            crate::roam::refresh_columns(event.doc);
+        }
         Ok(())
     });
     // A source block's editing buffer is a temporary file; closing it is

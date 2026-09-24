@@ -339,7 +339,50 @@ forgotten.
   asks on restart, here it simply stays running until clocked out); clock
   history; effort warnings; reports across files (`:scope agenda`); and the
   per-headline time overlays of `org-clock-display`.
-- [ ] Attachments and column view.
+- [x] Attachments and column view.
+
+  **Attachments.** `:org-attach <file>` copies a file into the entry's
+  attachment directory, `:org-attach-open` lists that directory in a file
+  picker, and `[[attachment:name]]` links open from the entry they are in.
+  The directory follows Org's defaults since 9.3, as I remember them: a
+  `:DIR:` property, or else `data/` next to the file and then the entry's
+  `:ID:` split after two characters (`data/6b/a7b810-…`). The entry gets an
+  `:ID:` if it has none, and the `ATTACH` tag. Checked in the editor: the
+  file was copied, the entry was tagged, and the link opened it.
+
+  This found a bug in Task 1.10's `org-id` creation. On an entry that
+  already had a property drawer, it added a *second* `:PROPERTIES:` drawer
+  for the `:ID:`, which Org does not read. The id now goes into the
+  existing drawer, before its `:END:`.
+
+  Not built: other attach methods (`mv`, links, symlinks), deleting
+  attachments, attaching from a URL, inheriting the directory from a parent
+  entry, and `attachment:` links in export.
+
+  **Column view.** `:org-columns` shows each headline's row after its text,
+  from `#+COLUMNS:` or Org's default `%25ITEM %TODO %3PRIORITY %TAGS`.
+  - *Values:* `ITEM`, `TODO`, `PRIORITY`, `TAGS`, `CLOCKSUM` (from Task
+    1.9's clocks), and any property.
+  - *Summaries:* on a headline with children, a summarised column shows the
+    summary of its children rather than its own value: `{:}` adds
+    durations, `{+}` numbers, and `{min}`/`{max}` pick one.
+
+  Org draws the table over the headlines with overlays, which Helix does
+  not have. Its virtual text does the same job here: each row is appended
+  after the headline and padded so the columns line up. The view is
+  recomputed on every change while it shows. Checked in the editor:
+  changing `:Effort: 1:30` to `3:45` by hand moved the entry's cell and its
+  parent's summary (`3:30` → `5:45`) as it was typed.
+
+  Differences from Org:
+  - *Header:* the column titles show in the status line when the view is
+    switched on, not as a header line.
+  - *Editing cells:* a cell is not edited in place; editing the drawer, or
+    `:org-set-property`, updates it.
+  - *Wide characters:* widths are counted in characters, so a headline with
+    double-width characters pushes its row out of line.
+  - *Not read:* `{X}` checkbox summaries, `{mean}`, time-stamp summaries,
+    and `COLUMNS` as a property of a subtree.
 
 ### Task 1.10: Links
 
@@ -686,6 +729,11 @@ The panel showed backlinks in one list. It now has sections.
   index: re-indexing is asynchronous, so a count that updated itself would
   need an event the editor does not raise, and reading the graph every frame
   to find out costs a lock and a scan of the buffer sixty times a second.
+
+  Since Task 1.9's column view, the counts at least stay where they belong:
+  an edit moves them with the headline they sit on, as it moves folds.
+  Before, typing above a headline left its count where the headline used to
+  be.
 
 - [x] Diagnose the node at point: what the index believes about it, which is
       the only way to tell a parser bug from a malformed drawer.

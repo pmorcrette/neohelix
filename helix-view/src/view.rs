@@ -479,6 +479,11 @@ impl View {
             text_annotations.add_inline_annotations(&doc.roam_counts, style);
         }
 
+        if !doc.org_columns.is_empty() {
+            let style = theme.and_then(|t| t.find_highlight("ui.virtual.inlay-hint"));
+            text_annotations.add_inline_annotations(&doc.org_columns, style);
+        }
+
         if let Some(labels) = doc.jump_labels.get(&self.id) {
             let style = theme.and_then(|t| t.find_highlight("ui.virtual.jump-label"));
             text_annotations.add_overlay(labels, style);

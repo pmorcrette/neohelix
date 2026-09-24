@@ -1343,14 +1343,22 @@ pub fn ensure_id(text: &str, line: usize, new_id: Uuid) -> Result<IdOutcome, Err
         return Ok(IdOutcome::Existing(id));
     }
 
-    lines.splice(
-        insert_at..insert_at,
-        [
-            ":PROPERTIES:".to_string(),
-            format!(":ID:       {new_id}"),
-            ":END:".to_string(),
-        ],
-    );
+    // An entry that already has a drawer gets the id in it: a second
+    // `:PROPERTIES:` drawer is not a drawer Org reads, so the id would be
+    // lost to every other tool.
+    match drawer_range(&lines, headline.map_or(0, |at| at + 1)) {
+        Some((_, end)) => lines.insert(end, format!(":ID:       {new_id}")),
+        None => {
+            lines.splice(
+                insert_at..insert_at,
+                [
+                    ":PROPERTIES:".to_string(),
+                    format!(":ID:       {new_id}"),
+                    ":END:".to_string(),
+                ],
+            );
+        }
+    }
 
     Ok(IdOutcome::Created {
         text: rejoin(&lines, text),

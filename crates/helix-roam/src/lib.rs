@@ -6,10 +6,12 @@
 //! at it.
 
 pub mod agenda;
+pub mod attach;
 pub mod babel;
 pub mod capture;
 pub mod clip;
 pub mod clock;
+pub mod columns;
 pub mod date;
 pub mod dynamic;
 pub mod export;

@@ -2405,6 +2405,20 @@ roam_buffer_command!(org_clock_cancel, crate::roam::clock_cancel);
 roam_buffer_command!(org_clock_goto, crate::roam::clock_goto);
 roam_buffer_command!(org_clock_report, crate::roam::clock_report);
 roam_buffer_command!(org_babel_execute, crate::roam::babel_execute);
+roam_buffer_command!(org_columns, crate::roam::toggle_columns);
+roam_component_command!(org_attach_open, crate::roam::attachment_picker);
+
+/// `:org-attach <file>`.
+fn org_attach(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let path = args
+        .first()
+        .ok_or_else(|| anyhow!("give the file to attach"))?;
+    crate::roam::attach(cx.editor, path);
+    Ok(())
+}
 
 /// `:org-export md|html|latex`.
 fn org_export(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
@@ -4992,6 +5006,39 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Run the source block at the cursor and write its results (needs workspace trust).",
         fun: org_babel_execute,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-columns",
+        aliases: &[],
+        doc: "Show or hide the column view of the buffer, from its #+COLUMNS:.",
+        fun: org_columns,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-attach",
+        aliases: &[],
+        doc: "Copy a file into the attachment directory of the entry at the cursor.",
+        fun: org_attach,
+        completer: CommandCompleter::positional(&[completers::filename]),
+        signature: Signature {
+            positionals: (1, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-attach-open",
+        aliases: &[],
+        doc: "Pick one of the files attached to the entry at the cursor.",
+        fun: org_attach_open,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

@@ -508,6 +508,9 @@ impl MappableCommand {
         org_export_html, "Export the buffer to HTML next to its file",
         org_export_latex, "Export the buffer to LaTeX next to its file",
         org_babel_execute, "Run the source block at the cursor and write its results (needs workspace trust)",
+        org_columns, "Show or hide the column view of the buffer, from its #+COLUMNS:",
+        org_attach, "Copy a file into the attachment directory of the entry",
+        org_attach_open, "Pick one of the files attached to the entry",
         org_copy_subtree, "Copy the subtree at the cursor",
         org_cut_subtree, "Cut the subtree at the cursor",
         org_paste_subtree, "Paste the copied subtree at the cursor's level",
@@ -4426,6 +4429,30 @@ fn org_export_latex(cx: &mut Context) {
 
 fn org_babel_execute(cx: &mut Context) {
     crate::roam::babel_execute(cx.editor);
+}
+
+fn org_columns(cx: &mut Context) {
+    crate::roam::toggle_columns(cx.editor);
+}
+
+fn org_attach(cx: &mut Context) {
+    let prompt = ui::Prompt::new(
+        "Attach: ".into(),
+        None,
+        ui::completers::filename,
+        |cx, input, event| {
+            if event == PromptEvent::Validate {
+                crate::roam::attach(cx.editor, input);
+            }
+        },
+    );
+    cx.push_layer(Box::new(prompt));
+}
+
+fn org_attach_open(cx: &mut Context) {
+    if let Some(picker) = crate::roam::attachment_picker(cx.editor) {
+        cx.push_layer(picker);
+    }
 }
 
 /// Asks which emphasis to toggle, completing over the six.

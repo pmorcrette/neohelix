@@ -357,6 +357,9 @@ pub fn follow_link(editor: &mut Editor) {
         helix_roam::LinkKind::Target(target) => {
             follow_in_buffer(editor, &text, &format!("<<{target}>>"), "target")
         }
+        helix_roam::LinkKind::Other { scheme, rest } if scheme == "attachment" => {
+            follow_attachment(editor, &text, offset, &rest);
+        }
         helix_roam::LinkKind::Other { scheme, .. } => {
             editor.set_error(format!("Links of type `{scheme}:` are not handled"));
         }
@@ -3665,5 +3668,163 @@ fn finish_block(
         ));
     } else {
         editor.set_status(format!("Ran in {took}"));
+    }
+}
+
+// ── Column view ───────────────────────────────────────────────────────────
+
+/// Recomputes a document's column view from its text, returning the header.
+pub fn refresh_columns(doc: &mut helix_view::Document) -> String {
+    let rope = doc.text().clone();
+    let text = rope.to_string();
+    let columns = helix_roam::columns::format_of(&text);
+    let (header, rows) = helix_roam::columns::layout(&text, &columns);
+
+    doc.org_columns = rows
+        .into_iter()
+        .map(|(line, row)| {
+            // At the headline's end, before its newline, like backlink counts.
+            let at = if line + 1 < rope.len_lines() {
+                rope.line_to_char(line + 1) - 1
+            } else {
+                rope.len_chars()
+            };
+            helix_core::text_annotations::InlineAnnotation::new(at, row)
+        })
+        .collect();
+    header
+}
+
+/// Shows or hides the column view of the buffer.
+///
+/// While it shows, it is recomputed on every change, so setting a property
+/// or a TODO state updates its row as it happens.
+pub fn toggle_columns(editor: &mut Editor) {
+    let doc = doc_mut!(editor);
+    if doc.org_columns_on {
+        doc.org_columns_on = false;
+        doc.org_columns.clear();
+        editor.set_status("Column view off");
+        return;
+    }
+    doc.org_columns_on = true;
+    let header = refresh_columns(doc);
+    editor.set_status(format!("Columns: {header}"));
+}
+
+// ── Attachments ───────────────────────────────────────────────────────────
+
+/// The directory of the Org file in the focused buffer.
+fn org_dir(editor: &Editor) -> Option<PathBuf> {
+    doc!(editor)
+        .path()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+}
+
+/// Copies a file into the attachment directory of the entry at the cursor.
+///
+/// The entry gets an `:ID:` first if it has none, since that is what names
+/// the directory, and the `ATTACH` tag, as in Org. The original stays where
+/// it is: Org's default is to copy.
+pub fn attach(editor: &mut Editor, input: &str) {
+    let source = helix_stdx::path::expand_tilde(Path::new(input.trim())).to_path_buf();
+    if input.trim().is_empty() {
+        return;
+    }
+    if !source.is_file() {
+        editor.set_error(format!("{} is not a file", source.display()));
+        return;
+    }
+    let Some(base) = org_dir(editor) else {
+        editor.set_error("Save the buffer first: attachments live next to it");
+        return;
+    };
+
+    let (mut text, line) = text_and_line(editor);
+    if let Ok(helix_roam::restructure::IdOutcome::Created { text: with_id, .. }) =
+        helix_roam::restructure::ensure_id(&text, line, helix_roam::Uuid::new_v4())
+    {
+        text = with_id;
+    }
+    let Some(dir) = helix_roam::attach::attach_dir(&text, line, &base) else {
+        editor.set_error("The entry has no :ID: or :DIR: to attach to");
+        return;
+    };
+
+    let Some(name) = source.file_name() else {
+        editor.set_error(format!("{} has no file name", source.display()));
+        return;
+    };
+    let target = dir.join(name);
+    let replaced = target.exists();
+    if let Err(err) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::copy(&source, &target)) {
+        editor.set_error(format!("Could not attach to {}: {err}", dir.display()));
+        return;
+    }
+
+    if let Ok(Some(tagged)) =
+        helix_roam::restructure::edit_tag(&text, line, helix_roam::attach::TAG, true)
+    {
+        text = tagged;
+    }
+    let shown = dir
+        .strip_prefix(&base)
+        .unwrap_or(&dir)
+        .display()
+        .to_string();
+    let done = format!(
+        "{} {} in {shown}",
+        if replaced { "Replaced" } else { "Attached" },
+        name.to_string_lossy()
+    );
+    apply_to_buffer(editor, done.clone(), text);
+    // Nothing to change in the buffer (a second file on a tagged entry)
+    // still attached something, and should say so.
+    editor.set_status(done);
+}
+
+/// A picker over the files attached to the entry at the cursor.
+pub fn attachment_picker(editor: &mut Editor) -> Option<Box<dyn crate::compositor::Component>> {
+    let Some(base) = org_dir(editor) else {
+        editor.set_error("Save the buffer first: attachments live next to it");
+        return None;
+    };
+    let (text, line) = text_and_line(editor);
+    let Some(dir) = helix_roam::attach::attach_dir(&text, line, &base) else {
+        editor.set_error("The entry has no :ID: or :DIR:, so nothing is attached to it");
+        return None;
+    };
+    if helix_roam::attach::list(&dir).is_empty() {
+        editor.set_error(format!("Nothing attached in {}", dir.display()));
+        return None;
+    }
+    Some(Box::new(crate::ui::overlay::overlaid(
+        crate::ui::file_picker(editor, dir),
+    )))
+}
+
+/// Opens `[[attachment:name]]` from the entry the link is in.
+fn follow_attachment(editor: &mut Editor, text: &str, offset: usize, name: &str) {
+    let Some(base) = org_dir(editor) else {
+        editor.set_error("Save the buffer first: attachments live next to it");
+        return;
+    };
+    let line = text[..offset.min(text.len())].matches('\n').count();
+    let Some(dir) = helix_roam::attach::attach_dir(text, line, &base) else {
+        editor.set_error("The entry this link is in has no :ID: or :DIR:");
+        return;
+    };
+    let path = dir.join(name.trim());
+    if !path.exists() {
+        editor.set_error(format!(
+            "No attachment {} in {}",
+            name.trim(),
+            dir.display()
+        ));
+        return;
+    }
+    if let Err(err) = editor.open(&path, helix_view::editor::Action::Replace) {
+        editor.set_error(format!("Could not open {}: {err}", path.display()));
     }
 }
