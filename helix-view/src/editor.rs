@@ -581,6 +581,10 @@ pub struct RoamConfig {
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub templates: Vec<RoamTemplate>,
+    /// Whether an entry with an open child can be marked done. Org's
+    /// `org-enforce-todo-dependencies`, off by default as it is there.
+    /// `:ORDERED:` and `:BLOCKER:` apply either way.
+    pub todo_dependencies: bool,
 }
 
 /// A template for a new Org-Roam node.
@@ -607,6 +611,7 @@ impl Default for RoamConfig {
             dailies_directory: PathBuf::from("daily"),
             agenda_files: Vec::new(),
             templates: Vec::new(),
+            todo_dependencies: false,
         }
     }
 }

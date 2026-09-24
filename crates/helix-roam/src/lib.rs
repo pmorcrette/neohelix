@@ -13,6 +13,7 @@ pub mod clip;
 pub mod clock;
 pub mod columns;
 pub mod date;
+pub mod dependencies;
 pub mod dynamic;
 pub mod export;
 mod graph;

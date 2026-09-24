@@ -636,8 +636,27 @@ Org ships a long list of optional modules. Most are links into Emacs
 applications and mean nothing here; these are the ones that do.
 
 - [ ] Habits: a repeating task with a consistency graph in the agenda.
-- [ ] TODO dependencies: an entry that cannot be done before its children or a
+- [x] TODO dependencies: an entry that cannot be done before its children or a
       named other entry.
+
+  Marking an entry done is refused, with the reason, when:
+  - *a child is still open,* if the new `todo-dependencies` setting is on
+    (Org's `org-enforce-todo-dependencies`, off by default there too);
+  - *an earlier sibling is open under an `:ORDERED:` parent,* including
+    through a parent's own ordering;
+  - *an entry named in `:BLOCKER:` is open.* The property is read in
+    `org-depend`'s form (`id1 id2`, `previous-sibling`) and in `org-edna`'s
+    (`ids(…)`). A named entry is looked up in the index, since it can be in
+    any file, and one the index does not know blocks rather than passing
+    unchecked.
+
+  `:ORDERED:` and `:BLOCKER:` apply whatever the setting says, which is a
+  choice: they are written into the entry, and a property that blocked
+  nothing would be misleading. Reopening is never blocked. Checked in the
+  editor: `Blocked by "Prerequisite"` across a `:BLOCKER:`, and
+  `Blocked by the earlier "One"` under `:ORDERED:`. Not read: the rest of
+  `org-edna`'s language (triggers, `children`, conditions), and greying
+  out blocked entries in the agenda.
 - [ ] Inline tasks: a task that does not break the outline it sits in.
 - [ ] Encrypted subtrees.
 - [ ] A protocol handler, so a browser or another program can capture into the

@@ -1409,6 +1409,17 @@ fn cycle_todo(editor: &mut Editor, forward: bool) {
             return;
         }
     };
+    let finishing = next
+        .as_deref()
+        .is_some_and(|state| settings.done_keywords.iter().any(|done| done == state));
+    if finishing {
+        let blocked = open_blockers(editor, &text, line, &settings);
+        if !blocked.is_empty() {
+            editor.set_error(format!("Blocked by {}", blocked.join(", ")));
+            return;
+        }
+    }
+
     let changed =
         helix_roam::logging::change_state(&text, line, &settings, &startup, next.as_deref(), now());
 
@@ -1429,6 +1440,41 @@ fn cycle_todo(editor: &mut Editor, forward: bool) {
         }
         Err(err) => editor.set_error(err.to_string()),
     }
+}
+
+/// What keeps the entry at `line` from being done, described for a message.
+///
+/// An entry named in `:BLOCKER:` may be in any file, so it is looked up in
+/// the index. One the index does not know blocks: an entry that cannot be
+/// checked is not known to be done.
+fn open_blockers(
+    editor: &Editor,
+    text: &str,
+    line: usize,
+    settings: &helix_roam::FileSettings,
+) -> Vec<String> {
+    use helix_roam::dependencies::Blocker;
+
+    let children = editor.config().roam.todo_dependencies;
+    let graph = editor.roam.read();
+    helix_roam::dependencies::blockers(text, line, settings, children)
+        .into_iter()
+        .filter_map(|blocker| match blocker {
+            Blocker::Child(title) => Some(format!("the open child \"{title}\"")),
+            Blocker::Sibling(title) => Some(format!("the earlier \"{title}\"")),
+            Blocker::Unreadable(word) => {
+                Some(format!("\"{word}\" in :BLOCKER:, which is not an id"))
+            }
+            Blocker::Named(id) => match graph.get_node(&id) {
+                None => Some(format!("{id}, which is not in the index")),
+                Some(node) => node
+                    .todo
+                    .as_ref()
+                    .filter(|state| !state.done)
+                    .map(|_| format!("\"{}\"", node.title)),
+            },
+        })
+        .collect()
 }
 
 /// The date and time a log line records.
