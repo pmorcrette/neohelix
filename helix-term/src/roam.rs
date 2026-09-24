@@ -3445,3 +3445,225 @@ pub fn export_html(editor: &mut Editor) {
 pub fn export_latex(editor: &mut Editor) {
     export(editor, helix_roam::export::Backend::Latex);
 }
+
+// ── Babel ─────────────────────────────────────────────────────────────────
+
+/// How long a block may run before it is killed. A block that hangs would
+/// otherwise hold a process nobody can see.
+const BABEL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Runs the source block at the cursor and writes its results under it.
+///
+/// Two gates, both required. The workspace must be trusted for code
+/// execution — `:workspace-trust`, the same grant that allows its local
+/// config; the default trust level, which starts language servers on its
+/// own, does not reach this. And every run is confirmed, naming the program
+/// and the directory, as Org does by default with `org-confirm-babel-evaluate`.
+pub fn babel_execute(editor: &mut Editor) {
+    let (text, line, blocks) = source_blocks(editor);
+    let Some(block) = helix_roam::source::block_at(&blocks, line).cloned() else {
+        editor.set_error("Not in a source block");
+        return;
+    };
+    let doc = doc!(editor);
+    let Some(org_path) = doc.path().map(Path::to_path_buf) else {
+        editor.set_error("Save the buffer first: a block runs in its file's directory");
+        return;
+    };
+
+    let workspace = doc.workspace_root().to_path_buf();
+    let trusted = editor
+        .workspace_trust
+        .query(
+            &workspace,
+            helix_loader::workspace_trust::TrustQuery::CodeExecution,
+        )
+        .is_trusted();
+    if !trusted {
+        editor.set_error(format!(
+            "Running code is not trusted in {}; :workspace-trust allows it",
+            workspace.display()
+        ));
+        return;
+    }
+
+    let plan = match helix_roam::babel::plan(&text, &block, &org_path) {
+        Ok(plan) => plan,
+        Err(err) => {
+            editor.set_error(format!("Not run: {err}"));
+            return;
+        }
+    };
+
+    let doc_id = doc.id();
+    let body = helix_roam::source::body(&text, &block);
+    let lines = body.lines().count();
+    let question = format!(
+        "Run the {} block ({lines} line{}) with {} in {}? [y/N] ",
+        plan.language,
+        if lines == 1 { "" } else { "s" },
+        plan.program.join(" "),
+        plan.dir.display()
+    );
+
+    crate::job::dispatch_blocking(move |_editor, compositor| {
+        let mut pending = Some((plan, body));
+        let prompt = crate::ui::Prompt::new(
+            question.into(),
+            None,
+            |_editor, _input| Vec::new(),
+            move |cx, input, event| {
+                if event != crate::ui::PromptEvent::Validate {
+                    return;
+                }
+                if !matches!(input.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+                    cx.editor.set_status("Not run");
+                    return;
+                }
+                if let Some((plan, body)) = pending.take() {
+                    run_block(cx.editor, doc_id, block.begin, body, plan);
+                }
+            },
+        );
+        compositor.push(Box::new(prompt));
+    });
+}
+
+/// Starts the block's program in the background; the results are written
+/// when it finishes.
+fn run_block(
+    editor: &mut Editor,
+    doc_id: helix_view::DocumentId,
+    begin: usize,
+    body: String,
+    plan: helix_roam::babel::Plan,
+) {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join("neohelix-babel").join(format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let script = dir.join(format!("block.{}", plan.extension));
+    let value = dir.join("value");
+    if let Err(err) =
+        std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&script, &plan.script))
+    {
+        editor.set_error(format!("Could not write the script: {err}"));
+        return;
+    }
+
+    editor.set_status(format!("Running the {} block…", plan.language));
+    tokio::spawn(async move {
+        let started = std::time::Instant::now();
+        let mut command = tokio::process::Command::new(&plan.program[0]);
+        command
+            .args(&plan.program[1..])
+            .arg(&script)
+            .current_dir(&plan.dir)
+            .stdin(std::process::Stdio::null())
+            .kill_on_drop(true);
+        if plan.value_file {
+            command.arg(&value);
+        }
+        command.args(&plan.args);
+
+        let outcome = match tokio::time::timeout(BABEL_TIMEOUT, command.output()).await {
+            Err(_) => Err(format!(
+                "{} did not finish within {} s and was stopped",
+                plan.program[0],
+                BABEL_TIMEOUT.as_secs()
+            )),
+            Ok(Err(err)) => Err(format!("could not start {}: {err}", plan.program[0])),
+            Ok(Ok(output)) => {
+                let stdout = if plan.value_file {
+                    std::fs::read_to_string(&value).unwrap_or_default()
+                } else {
+                    String::from_utf8_lossy(&output.stdout).to_string()
+                };
+                Ok((
+                    output.status,
+                    stdout,
+                    String::from_utf8_lossy(&output.stderr).to_string(),
+                ))
+            }
+        };
+        let elapsed = started.elapsed();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        crate::job::dispatch(move |editor, _| {
+            finish_block(editor, doc_id, begin, &body, &plan, outcome, elapsed);
+        })
+        .await;
+    });
+}
+
+type BlockOutcome = Result<(std::process::ExitStatus, String, String), String>;
+
+/// Writes a finished block's results, and says how it went.
+fn finish_block(
+    editor: &mut Editor,
+    doc_id: helix_view::DocumentId,
+    begin: usize,
+    body: &str,
+    plan: &helix_roam::babel::Plan,
+    outcome: BlockOutcome,
+    elapsed: std::time::Duration,
+) {
+    let (status, stdout, stderr) = match outcome {
+        Ok(done) => done,
+        Err(err) => {
+            editor.set_error(err);
+            return;
+        }
+    };
+    let failed = !status.success();
+
+    // Results are written for a failed run only if it printed something:
+    // replacing good results with nothing would lose them for no gain.
+    if !(failed && stdout.trim().is_empty()) {
+        let Some(doc) = editor.documents.get(&doc_id) else {
+            editor.set_error("The buffer was closed while the block ran");
+            return;
+        };
+        let text = doc.text().to_string();
+        let blocks = helix_roam::source::blocks(&text);
+        let Some(block) = blocks
+            .iter()
+            .filter(|block| helix_roam::source::body(&text, block) == body)
+            .min_by_key(|block| block.begin.abs_diff(begin))
+        else {
+            editor.set_error("The block changed while it ran; its results were not written");
+            return;
+        };
+        let results = helix_roam::babel::results_lines(&stdout, plan);
+        let after = helix_roam::babel::write_results(&text, block, &results);
+        if let Err(err) = apply_to_document(editor, doc_id, &after) {
+            editor.set_error(err);
+            return;
+        }
+    }
+
+    let took = format!("{:.2} s", elapsed.as_secs_f64());
+    if failed {
+        let how = match status.code() {
+            Some(code) => format!("exited with code {code}"),
+            None => "was killed by a signal".to_string(),
+        };
+        // The last line: a traceback ends with what went wrong, and a shell
+        // error is usually one line anyway.
+        let why = stderr
+            .lines()
+            .rfind(|line| !line.trim().is_empty())
+            .map(|line| format!(": {line}"))
+            .unwrap_or_default();
+        editor.set_error(format!("{} {how} after {took}{why}", plan.program[0]));
+    } else if helix_roam::babel::value_is_output(plan) {
+        editor.set_status(format!(
+            "Ran in {took}; {} blocks give their output, not a value (:results output)",
+            plan.language
+        ));
+    } else {
+        editor.set_status(format!("Ran in {took}"));
+    }
+}

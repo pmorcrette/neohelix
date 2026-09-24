@@ -6,6 +6,7 @@
 //! at it.
 
 pub mod agenda;
+pub mod babel;
 pub mod capture;
 pub mod clip;
 pub mod clock;

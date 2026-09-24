@@ -337,10 +337,25 @@ fn parse_header_args(args: &str) -> Vec<(String, String)> {
     let mut value: Vec<String> = Vec::new();
     let mut key: Option<String> = None;
 
+    let finish = |key: String, value: &[String]| {
+        let joined = value.join(" ");
+        // A value that is one quoted string is that string; quotes inside a
+        // longer value (`:var who="you"`, `:cmdline a "b c"`) are part of
+        // what it says, and whoever reads it needs them.
+        let unquoted = match joined
+            .strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix('"'))
+        {
+            Some(inner) if !inner.contains('"') => inner.to_string(),
+            _ => joined,
+        };
+        (key, unquoted)
+    };
+
     for token in split_quoted(args) {
         if let Some(name) = token.strip_prefix(':').filter(|name| !name.is_empty()) {
             if let Some(key) = key.take() {
-                pairs.push((key, value.join(" ")));
+                pairs.push(finish(key, &value));
             }
             key = Some(name.to_ascii_lowercase());
             value.clear();
@@ -349,36 +364,33 @@ fn parse_header_args(args: &str) -> Vec<(String, String)> {
         }
     }
     if let Some(key) = key {
-        pairs.push((key, value.join(" ")));
+        pairs.push(finish(key, &value));
     }
 
     pairs
 }
 
-/// Splits on whitespace, keeping a double-quoted run as one token without its
-/// quotes.
+/// Splits on whitespace outside double quotes, keeping the quotes.
 fn split_quoted(text: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut quoted = false;
-    let mut had_quotes = false;
 
     for c in text.chars() {
         match c {
             '"' => {
                 quoted = !quoted;
-                had_quotes = true;
+                current.push(c);
             }
             c if c.is_whitespace() && !quoted => {
-                if !current.is_empty() || had_quotes {
+                if !current.is_empty() {
                     tokens.push(std::mem::take(&mut current));
                 }
-                had_quotes = false;
             }
             c => current.push(c),
         }
     }
-    if !current.is_empty() || had_quotes {
+    if !current.is_empty() {
         tokens.push(current);
     }
     tokens

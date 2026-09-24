@@ -256,8 +256,63 @@ forgotten.
   of a subtree alone. Headlines deeper than a format has levels for
   (5 in LaTeX, 6 in HTML) are flattened to the deepest one rather than
   turned into lists as Org does.
-- [ ] Source block execution (Babel), which is an arbitrary-code-execution
+- [x] Source block execution (Babel), which is an arbitrary-code-execution
       surface and needs a trust decision before a single line is written.
+
+  **The trust decision.** A block runs only on `:org-babel-execute`, from
+  the cursor. Nothing else runs one: not opening a file, not exporting it
+  (Org's export evaluates blocks by default, and this fork's does not), not
+  tangling. Two gates must both pass:
+  - *Workspace trust.* A new `TrustQuery::CodeExecution` in Helix's
+    workspace-trust system. Unlike language servers, it is not implied by
+    the default `servers` level: a server is a binary the user installed,
+    while a block is code someone wrote into a file, which is what
+    `.helix/` config is too. So it takes the same explicit
+    `:workspace-trust`, and a stale grant (changed `.helix/`) demotes it,
+    as it does local config.
+  - *A confirmation for every run,* naming the language, the program and
+    the directory, as `org-confirm-babel-evaluate` does by default.
+
+  Checked in the editor:
+  - untrusted, the error names the workspace and `:workspace-trust`;
+  - trusted and answered `n`, nothing ran and nothing was written;
+  - answered `y`, a shell block with `:var` printed its variable and its
+    directory, a named Python block wrote `#+RESULTS: answer` / `: 42` from
+    its `return`, and a failing one wrote what it printed and reported
+    `python3 exited with code 1 after 0.02 s: ValueError: bad input`;
+  - `:workspace-untrust` brought the refusal back.
+
+  How blocks run: in the background, killed after 60 seconds. Languages:
+  `sh`, `bash`, `zsh`, `fish`, `python` (as `python3`), `ruby`, `perl`,
+  `lua`, `node`, `awk`, `R` and `julia`. The script goes in a temporary
+  file, removed afterwards. Results are written by finding the block again
+  by its body, since the buffer may change while the block runs.
+
+  Header arguments read:
+  - `:results` — `output`, `value` (Python's from `return`, as Org wraps
+    it; a shell's is its output; any other language says it gives its
+    output instead), `silent`, `raw`;
+  - `:dir`, `:cmdline`, and `:var` with numbers and quoted strings.
+
+  Results follow Org's layout: `: ` lines, or an example block from ten
+  lines on (`org-babel-min-lines-for-block-output`), replacing the old
+  ones.
+
+  Not built:
+  - sessions;
+  - compiled languages;
+  - `:var` references to other blocks or tables;
+  - tables and lists as results;
+  - `:results file`, `append`, `prepend`;
+  - `:cache`;
+  - inline `src_lang{…}` and `call_` lines;
+  - a way to turn the confirmation off;
+  - a timeout set per block. The 60-second limit was not tested live.
+
+  Also found and fixed on the way: the header-argument reader from Task
+  1.15 dropped every quote, so `:var who="you"` reached the script as
+  `who=you` and `:cmdline a "b c"` as three words. It now removes quotes
+  only from a value that is one quoted string.
 - [x] Clocking: clock in and out, `:LOGBOOK:` drawers, and time reports.
 
   `:org-clock-in`, `:org-clock-out`, `:org-clock-cancel`, `:org-clock-goto`

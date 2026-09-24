@@ -2404,6 +2404,7 @@ roam_buffer_command!(org_clock_out, crate::roam::clock_out);
 roam_buffer_command!(org_clock_cancel, crate::roam::clock_cancel);
 roam_buffer_command!(org_clock_goto, crate::roam::clock_goto);
 roam_buffer_command!(org_clock_report, crate::roam::clock_report);
+roam_buffer_command!(org_babel_execute, crate::roam::babel_execute);
 
 /// `:org-export md|html|latex`.
 fn org_export(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
@@ -4983,6 +4984,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         }]),
         signature: Signature {
             positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-babel-execute",
+        aliases: &[],
+        doc: "Run the source block at the cursor and write its results (needs workspace trust).",
+        fun: org_babel_execute,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
             ..Signature::DEFAULT
         },
     },

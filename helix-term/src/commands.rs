@@ -507,6 +507,7 @@ impl MappableCommand {
         org_export_markdown, "Export the buffer to Markdown next to its file",
         org_export_html, "Export the buffer to HTML next to its file",
         org_export_latex, "Export the buffer to LaTeX next to its file",
+        org_babel_execute, "Run the source block at the cursor and write its results (needs workspace trust)",
         org_copy_subtree, "Copy the subtree at the cursor",
         org_cut_subtree, "Cut the subtree at the cursor",
         org_paste_subtree, "Paste the copied subtree at the cursor's level",
@@ -4421,6 +4422,10 @@ fn org_export_html(cx: &mut Context) {
 
 fn org_export_latex(cx: &mut Context) {
     crate::roam::export_latex(cx.editor);
+}
+
+fn org_babel_execute(cx: &mut Context) {
+    crate::roam::babel_execute(cx.editor);
 }
 
 /// Asks which emphasis to toggle, completing over the six.
