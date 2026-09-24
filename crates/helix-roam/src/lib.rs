@@ -26,6 +26,7 @@ pub mod markup;
 mod node;
 pub mod outline;
 pub mod parser;
+pub mod protocol;
 pub mod query;
 pub mod restructure;
 pub mod scanner;

@@ -704,8 +704,36 @@ applications and mean nothing here; these are the ones that do.
   tree-sitter grammar's sections, and that grammar knows nothing of inline
   tasks, so it folds one as a section of its own.
 - [ ] Encrypted subtrees.
-- [ ] A protocol handler, so a browser or another program can capture into the
+- [x] A protocol handler, so a browser or another program can capture into the
       notes directory. Org-Roam users lean on this heavily.
+
+  Emacs receives `org-protocol://` URLs through `emacsclient`. Helix has no
+  server to hand one to, so the fork takes the URL as an argument,
+  `hx 'org-protocol://…'`, and `contrib/Helix-org-protocol.desktop`
+  registers that as the handler for the scheme. The file passes
+  `desktop-file-validate`, and its comments give the install steps and a
+  capture bookmarklet. The query form and the older path form are both
+  read. What each request does:
+  - `capture` appends the page to `inbox.org` in the notes directory: a
+    link headline, a `:CAPTURED:` stamp, and the selected text as a quote.
+    With `template=` naming a configured node template, it makes a node
+    from that template instead.
+  - `roam-ref` opens the note whose `:ROAM_REFS:` already has the page, or
+    makes one, as Org-Roam's default ref template does.
+  - `roam-node` opens a node.
+  - `store-link` keeps the link for `:org-insert-link`.
+
+  The index is still being built when the URL arrives, so notes are found
+  by reading the directory. Checked in the editor with each request: the
+  inbox entry, with a selected line starting `*` escaped in the quote; an
+  existing ref found in `rust.org`; a new ref node written as
+  `zig-language.org`; `roam-node` landing on the node's `:ID:` line; and
+  `open-source` refused by name.
+
+  Not built: `open-source` (it needs a mapping from web addresses to local
+  files), capture templates in Org's own format (`%a`, `%i`, `%:link`)
+  rather than the fork's node templates, and handing a URL to an editor
+  that is already running: each URL starts a new one.
 
 *What is left after Task 1.16 is Emacs, not Org: link types into Gnus, BBDB,
 Rmail, VM, MH-E, w3m, Eshell and the macOS applications, mouse support, the

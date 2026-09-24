@@ -141,6 +141,10 @@ impl Application {
 
         let jobs = Jobs::new();
 
+        // A URL handed over by a browser is what the editor was started for,
+        // so it opens after any files and ends up in front.
+        let org_protocol = args.org_protocol.clone();
+
         if args.load_tutor {
             let path = helix_loader::runtime_file(Path::new("tutor"));
             editor.open(&path, Action::VerticalSplit)?;
@@ -247,6 +251,10 @@ impl Application {
             signal::SIGINT,
         ])
         .context("build signal handler")?;
+
+        if let Some(url) = org_protocol {
+            crate::roam::handle_protocol(&mut editor, &url);
+        }
 
         crate::roam::start_initial_index(&editor);
 

@@ -4053,3 +4053,164 @@ pub fn insert_inline_task(editor: &mut Editor, title: &str) {
     }
     apply_and_go(editor, "Inserted an inline task".to_string(), after, at);
 }
+
+// ── org-protocol ──────────────────────────────────────────────────────────
+
+/// Opens `path` with the cursor at the start of `line`.
+fn open_at(editor: &mut Editor, path: &Path, line: usize) -> bool {
+    if let Err(err) = editor.open(path, helix_view::editor::Action::Replace) {
+        editor.set_error(format!("could not open {}: {err}", path.display()));
+        return false;
+    }
+    let text = doc!(editor).text().clone();
+    let at = text.line_to_char(line.min(text.len_lines().saturating_sub(1)));
+    let view_id = view!(editor).id;
+    doc_mut!(editor).set_selection(view_id, helix_core::Selection::point(at));
+    true
+}
+
+/// Acts on an `org-protocol://` URL the editor was started with.
+///
+/// * `capture` appends the page — a link and the selected text as a quote —
+///   to `inbox.org` in the notes directory, or, when `template=` names one
+///   of the configured node templates, makes a node from it.
+/// * `roam-ref` opens the node whose `:ROAM_REFS:` has the page, or makes
+///   one, as Org-Roam does.
+/// * `roam-node` opens a node.
+/// * `store-link` keeps the link for `:org-insert-link`.
+///
+/// The index is still being built when this runs, so nodes are found by
+/// reading the notes directory.
+pub fn handle_protocol(editor: &mut Editor, url: &str) {
+    use helix_roam::protocol::Request;
+
+    let request = match helix_roam::protocol::parse(url) {
+        Ok(request) => request,
+        Err(err) => {
+            editor.set_error(format!("org-protocol: {err}"));
+            return;
+        }
+    };
+    let notes = notes_directory(editor);
+
+    match request {
+        Request::StoreLink { url, title } => {
+            let title = (!title.is_empty()).then_some(title.as_str());
+            let stored = helix_roam::hyperlink::format_link(&url, title);
+            match editor.registers.write(LINK_REGISTER, vec![stored.clone()]) {
+                Ok(()) => editor.set_status(format!("Stored {stored}")),
+                Err(err) => editor.set_error(err.to_string()),
+            }
+        }
+        Request::Capture {
+            template,
+            url,
+            title,
+            body,
+        } => {
+            let addition = helix_roam::protocol::capture_addition(&url, &title, &body);
+            let chosen = template.and_then(|key| {
+                capture_templates(editor)
+                    .into_iter()
+                    .find(|template| template.key == key)
+            });
+            if let Some(template) = chosen {
+                let name = if title.trim().is_empty() {
+                    url.as_str()
+                } else {
+                    title.as_str()
+                };
+                capture_node(editor, &template, name);
+                let text = doc!(editor).text().to_string();
+                let joined = if text.ends_with('\n') || text.is_empty() {
+                    format!("{text}{addition}")
+                } else {
+                    format!("{text}\n{addition}")
+                };
+                apply_to_buffer(editor, format!("Captured {name}"), joined);
+                return;
+            }
+
+            let inbox = notes.join("inbox.org");
+            let mut text = std::fs::read_to_string(&inbox)
+                .unwrap_or_else(|_| "#+title: Inbox\n\n".to_string());
+            if !text.ends_with('\n') {
+                text.push('\n');
+            }
+            let line = text.lines().count();
+            let (date, time) = now();
+            text.push_str(&helix_roam::protocol::inbox_entry(
+                &url,
+                &title,
+                &body,
+                &helix_roam::date::log_stamp(date, time),
+            ));
+            if let Err(err) =
+                std::fs::create_dir_all(&notes).and_then(|()| std::fs::write(&inbox, &text))
+            {
+                editor.set_error(format!("could not write {}: {err}", inbox.display()));
+                return;
+            }
+            if open_at(editor, &inbox, line) {
+                editor.set_status(format!("Captured into {}", inbox.display()));
+            }
+        }
+        Request::RoamRef {
+            reference,
+            title,
+            body,
+        } => {
+            if let Some((path, line)) =
+                helix_roam::protocol::find_property(&notes, "ROAM_REFS", &reference)
+            {
+                if open_at(editor, &path, line) {
+                    editor.set_status(format!("Already a note about {reference}"));
+                }
+                return;
+            }
+            let name = if title.trim().is_empty() {
+                &reference
+            } else {
+                &title
+            };
+            let slug = helix_roam::capture::slugify(name);
+            let slug = if slug.is_empty() {
+                "ref".to_string()
+            } else {
+                slug
+            };
+            let mut path = notes.join(format!("{slug}.org"));
+            let mut n = 1;
+            while path.exists() {
+                n += 1;
+                path = notes.join(format!("{slug}-{n}.org"));
+            }
+            let content = helix_roam::protocol::ref_node(
+                helix_roam::Uuid::new_v4(),
+                &reference,
+                &title,
+                &body,
+            );
+            if let Err(err) =
+                std::fs::create_dir_all(&notes).and_then(|()| std::fs::write(&path, &content))
+            {
+                editor.set_error(format!("could not write {}: {err}", path.display()));
+                return;
+            }
+            helix_roam::reindex_file(&mut editor.roam.write(), &path, &content);
+            if open_at(editor, &path, content.lines().count()) {
+                editor.set_status(format!("New note about {reference}"));
+            }
+        }
+        Request::RoamNode(id) => {
+            match helix_roam::protocol::find_property(&notes, "ID", &id.to_string()) {
+                Some((path, line)) => {
+                    open_at(editor, &path, line);
+                }
+                None => {
+                    editor.set_error(format!("org-protocol: no node {id} in {}", notes.display()))
+                }
+            }
+        }
+    }
+}
