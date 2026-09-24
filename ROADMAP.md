@@ -1637,11 +1637,37 @@ terminal output since the harness's text rendering cannot show them.
 
 Small dispatch entries with nowhere else to sit; each is short on its own.
 
-- [ ] Clone (`C`) and init (`I`).
-- [ ] Jump to a section of the status buffer (`j`), and switch between the
+- [x] Clone (`C`) and init (`I`).
+- [x] Jump to a section of the status buffer (`j`), and switch between the
       fork's Git buffers (`J`).
-- [ ] Run an arbitrary git command in the repository (`Q`) and a shell command
+- [x] Run an arbitrary git command in the repository (`Q`) and a shell command
       (`!`), both reporting into Task 2.9's process buffer.
+
+*Done.* `<space>m` outside any repository used to stop at "no git repository
+found"; it now opens a menu with clone and init. Both are in the main menu too
+(`C`, `I`), and run from the editor's directory rather than inside the
+repository the menu belongs to; clone asks for the URL and an optional
+directory, init for an optional directory, and once either succeeds its status
+opens. `Q` asks for a git command line and `!` for a shell one (run by `sh -c`
+in the repository, with pagers, editors and credential prompts off as for every
+command here); the line is split as a shell would split it — quotes, escapes —
+and both go through the process buffer (`$`), where a command shows quoted as it
+ran. Two keys differ from Magit, because in the fork's views `j` moves down as
+everywhere in Helix: jumping to a section of the status buffer is `'`, then the
+section's key (`u` unstaged, `s` staged, `n` untracked, `z` stashes, `p`
+unpushed, `f` unpulled, `r` recent, `m` unmerged, `w` worktrees, `o`
+submodules); `J` lists the Git views open now — status, log, commit, diff,
+refs, cherries, blame — and brings the one chosen to the front, opening the
+status or the log when they are not open. The status line no longer reports
+git's `hint:` lines as what happened (init's summary was a hint about branch
+names).
+
+Checked in the editor: init in a directory outside any repository (the setup
+menu, then the new repository's status), a clone into a named directory
+(its status opened), a quoted `git tag` typed with `Q` (git's own refusal
+shown, the command quoted as typed), a shell command with a redirection and a
+pipe via `!`, a jump to the untracked section, and switching between the status
+and the log with `J`.
 
 ### Task 2.14: The Transient Arguments Left Out
 

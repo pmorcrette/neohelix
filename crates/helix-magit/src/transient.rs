@@ -156,6 +156,17 @@ pub enum MagitCommand {
     FileLog,
     FileBlame,
 
+    /// Start a repository: clone one, or make one in a directory.
+    Clone,
+    Init,
+    /// A git command or a shell command typed in, run in the repository.
+    RunGit,
+    RunShell,
+    /// Move the status buffer's cursor to a section.
+    JumpTo(JumpTarget),
+    /// Bring one of the open Git views to the front, or open it.
+    SwitchTo(GitView),
+
     /// Apply the diff menu's arguments to the open diffs.
     ApplyDiffSettings,
     /// Diffs the editor opens: between two revisions, a revision against
@@ -177,6 +188,60 @@ pub enum MagitCommand {
     Refresh,
     /// Close the transient without running anything.
     Quit,
+}
+
+/// A section of the status buffer to jump to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum JumpTarget {
+    Unmerged,
+    Untracked,
+    Unstaged,
+    Staged,
+    Stashes,
+    Unpulled,
+    Unpushed,
+    Recent,
+    Worktrees,
+    Submodules,
+}
+
+impl JumpTarget {
+    pub const ALL: [(char, JumpTarget, &'static str); 10] = [
+        ('m', JumpTarget::Unmerged, "Unmerged"),
+        ('n', JumpTarget::Untracked, "Untracked"),
+        ('u', JumpTarget::Unstaged, "Unstaged"),
+        ('s', JumpTarget::Staged, "Staged"),
+        ('z', JumpTarget::Stashes, "Stashes"),
+        ('f', JumpTarget::Unpulled, "Unpulled"),
+        ('p', JumpTarget::Unpushed, "Unpushed"),
+        ('r', JumpTarget::Recent, "Recent commits"),
+        ('w', JumpTarget::Worktrees, "Worktrees"),
+        ('o', JumpTarget::Submodules, "Submodules"),
+    ];
+}
+
+/// The fork's Git views, for switching between them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GitView {
+    Status,
+    Log,
+    Commit,
+    Diff,
+    Refs,
+    Cherries,
+    Blame,
+}
+
+impl GitView {
+    pub const ALL: [(char, GitView, &'static str); 7] = [
+        ('s', GitView::Status, "Status"),
+        ('l', GitView::Log, "Log"),
+        ('c', GitView::Commit, "Commit"),
+        ('d', GitView::Diff, "Diff"),
+        ('y', GitView::Refs, "Refs"),
+        ('Y', GitView::Cherries, "Cherries"),
+        ('b', GitView::Blame, "Blame"),
+    ];
 }
 
 /// The transients this crate ships.
@@ -215,10 +280,16 @@ pub enum MenuKind {
     /// Which diff to show (`d`), and how to show diffs (`D`).
     Diff,
     DiffSettings,
+    /// The status buffer's sections, to jump to (`'`).
+    Jump,
+    /// The open Git views, to switch between (`J`).
+    Views,
+    /// What `:magit` offers outside any repository: clone and init.
+    Setup,
 }
 
 impl MenuKind {
-    pub const ALL: [MenuKind; 28] = [
+    pub const ALL: [MenuKind; 31] = [
         MenuKind::Main,
         MenuKind::Commit,
         MenuKind::Push,
@@ -247,6 +318,9 @@ impl MenuKind {
         MenuKind::File,
         MenuKind::Diff,
         MenuKind::DiffSettings,
+        MenuKind::Jump,
+        MenuKind::Views,
+        MenuKind::Setup,
     ];
 
     /// The key that opens this menu, in the main menu and the status
@@ -278,6 +352,9 @@ impl MenuKind {
             MenuKind::Ignore => 'i',
             MenuKind::Diff => 'd',
             MenuKind::DiffSettings => 'D',
+            MenuKind::Jump => '\'',
+            MenuKind::Views => 'J',
+            MenuKind::Setup => return None,
             MenuKind::BranchConfig
             | MenuKind::RemoteConfig
             | MenuKind::Resolve
@@ -323,6 +400,9 @@ impl MenuKind {
             MenuKind::File => file_menu(),
             MenuKind::Diff => diff_menu(),
             MenuKind::DiffSettings => diff_settings_menu(&crate::diff::DiffOptions::default()),
+            MenuKind::Jump => jump_menu(),
+            MenuKind::Views => views_menu(&GitView::ALL.map(|(_, view, _)| view)),
+            MenuKind::Setup => setup_menu(),
         }
     }
 }
@@ -676,6 +756,13 @@ pub fn main_menu() -> TransientMenu {
             open(MenuKind::FormatPatch, "Format patches"),
             open(MenuKind::Ignore, "Ignore"),
             TransientAction::new('$', "Process output", MagitCommand::ShowProcess),
+        ]),
+        TransientGroup::new("Repository").with_actions([
+            TransientAction::new('C', "Clone", MagitCommand::Clone),
+            TransientAction::new('I', "Init", MagitCommand::Init),
+            TransientAction::new('Q', "Run a git command", MagitCommand::RunGit),
+            TransientAction::new('!', "Run a shell command", MagitCommand::RunShell),
+            open(MenuKind::Views, "Switch view"),
         ]),
         TransientGroup::new("Essential").with_actions([
             TransientAction::new('s', "Status", MagitCommand::Status),
@@ -1139,6 +1226,38 @@ pub fn diff_settings_menu(options: &crate::diff::DiffOptions) -> TransientMenu {
             MagitCommand::ApplyDiffSettings,
         )]),
     ])
+}
+
+pub fn setup_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::Setup, "No repository here").with_groups([
+        TransientGroup::new("Start one").with_actions([
+            TransientAction::new('C', "Clone", MagitCommand::Clone),
+            TransientAction::new('I', "Init", MagitCommand::Init),
+        ]),
+        TransientGroup::new("Then").with_actions([TransientAction::new(
+            'q',
+            "Quit",
+            MagitCommand::Quit,
+        )]),
+    ])
+}
+
+pub fn jump_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::Jump, "Jump to").with_groups([TransientGroup::new("Section")
+        .with_actions(JumpTarget::ALL.map(|(key, target, label)| {
+            TransientAction::new(key, label, MagitCommand::JumpTo(target))
+        }))])
+}
+
+/// The views to switch between: the ones in `open`, listed with their keys.
+pub fn views_menu(open: &[GitView]) -> TransientMenu {
+    let actions: Vec<TransientAction> = GitView::ALL
+        .into_iter()
+        .filter(|(_, view, _)| *view == GitView::Status || open.contains(view))
+        .map(|(key, view, label)| TransientAction::new(key, label, MagitCommand::SwitchTo(view)))
+        .collect();
+    TransientMenu::new(MenuKind::Views, "Switch view")
+        .with_groups([TransientGroup::new("Open").with_actions(actions)])
 }
 
 pub fn log_menu() -> TransientMenu {

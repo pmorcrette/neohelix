@@ -3637,10 +3637,12 @@ pub fn magit_overlay(editor: &mut Editor) -> Option<Box<dyn Component>> {
             repository.head_description(),
             repository.workdir().to_path_buf(),
         ))),
-        Err(err) => {
-            editor.set_error(err.to_string());
-            None
-        }
+        // No repository: what can start one.
+        Err(_) => Some(Box::new(ui::transient::TransientOverlay::new(
+            helix_magit::transient::setup_menu(),
+            from.display().to_string(),
+            from,
+        ))),
     }
 }
 

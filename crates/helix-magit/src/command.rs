@@ -137,6 +137,8 @@ pub enum Special {
     MarkResolved,
     /// `--continue` for whichever operation stopped.
     Continue,
+    /// A shell command line, `args[0]`, run by `sh -c` in the repository.
+    Shell,
 }
 
 /// What an action would do, before anything is run.
@@ -244,6 +246,9 @@ impl Plan {
 
     /// The command line as it would be typed, for display.
     pub fn command_line(&self) -> String {
+        if self.special == Some(Special::Shell) {
+            return format!("$ {}", self.args.join(" "));
+        }
         if self.special == Some(Special::Continue) {
             return "git … --continue".to_string();
         }
@@ -252,7 +257,10 @@ impl Plan {
         }
         std::iter::once(&self.args)
             .chain(&self.then)
-            .map(|args| format!("git {}", args.join(" ")))
+            .map(|args| {
+                let words: Vec<String> = args.iter().map(|arg| quote_for_display(arg)).collect();
+                format!("git {}", words.join(" "))
+            })
             .collect::<Vec<_>>()
             .join(" && ")
     }
@@ -288,10 +296,27 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
         | MagitCommand::FileDiff
         | MagitCommand::FileLog
         | MagitCommand::FileBlame
+        | MagitCommand::RunGit
+        | MagitCommand::RunShell
+        | MagitCommand::JumpTo(_)
+        | MagitCommand::SwitchTo(_)
         | MagitCommand::ApplyDiffSettings
         | MagitCommand::DiffRange
         | MagitCommand::DiffWorktree
         | MagitCommand::DiffCommit => return None,
+
+        // Run from the editor's directory rather than a repository's.
+        MagitCommand::Clone => Plan::new(["clone", "{0}", "{1}"], "Clone").asking([
+            Ask::required(AskKind::Text, "Clone from (URL or path)"),
+            Ask::optional(
+                AskKind::Path,
+                "Into directory (empty for the repository's name)",
+            ),
+        ]),
+        MagitCommand::Init => Plan::new(["init", "{0}"], "Init").asking([Ask::optional(
+            AskKind::Path,
+            "Make a repository in (empty for here)",
+        )]),
 
         MagitCommand::FileStage => Plan::new(["add", "--", "{0}"], "Stage the file")
             .asking([Ask::required(AskKind::Path, "Stage file")]),
@@ -762,6 +787,104 @@ fn subtree(action: &'static str, summary: &str) -> Plan {
     ])
 }
 
+/// An argument as it would have to be typed: quoted when it has spaces or
+/// quotes in it, so a shown command line reads back the way it ran.
+fn quote_for_display(arg: &str) -> String {
+    if arg.is_empty() {
+        "''".to_string()
+    } else if arg
+        .chars()
+        .any(|c| c.is_whitespace() || matches!(c, '\'' | '"' | '\\'))
+    {
+        format!("'{}'", arg.replace('\'', r"'\''"))
+    } else {
+        arg.to_string()
+    }
+}
+
+/// Splits a command line typed in into arguments, as a shell would for
+/// the simple cases: words, `'…'` taken literally, `"…"` with `\"` and `\\`
+/// escapes, and `\` escaping the next character outside quotes.
+pub fn split_args(line: &str) -> Result<Vec<String>, String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut in_word = false;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                in_word = true;
+                loop {
+                    match chars.next() {
+                        Some('\'') => break,
+                        Some(c) => current.push(c),
+                        None => return Err("an unclosed ' quote".into()),
+                    }
+                }
+            }
+            '"' => {
+                in_word = true;
+                loop {
+                    match chars.next() {
+                        Some('"') => break,
+                        Some('\\') => match chars.next() {
+                            Some(c @ ('"' | '\\')) => current.push(c),
+                            Some(c) => {
+                                current.push('\\');
+                                current.push(c);
+                            }
+                            None => return Err("an unclosed \" quote".into()),
+                        },
+                        Some(c) => current.push(c),
+                        None => return Err("an unclosed \" quote".into()),
+                    }
+                }
+            }
+            '\\' => {
+                in_word = true;
+                if let Some(c) = chars.next() {
+                    current.push(c);
+                }
+            }
+            c if c.is_whitespace() => {
+                if in_word {
+                    args.push(std::mem::take(&mut current));
+                    in_word = false;
+                }
+            }
+            c => {
+                in_word = true;
+                current.push(c);
+            }
+        }
+    }
+    if in_word {
+        args.push(current);
+    }
+    Ok(args)
+}
+
+/// A plan for a git command typed in: its words after `git`.
+pub fn typed_git(line: &str) -> Result<Plan, String> {
+    let mut args = split_args(line)?;
+    if args.first().map(String::as_str) == Some("git") {
+        args.remove(0);
+    }
+    if args.is_empty() {
+        return Err("no git command given".into());
+    }
+    let summary = format!("git {}", args.join(" "));
+    Ok(Plan::new(args, &summary))
+}
+
+/// A plan for a shell command typed in.
+pub fn typed_shell(line: &str) -> Result<Plan, String> {
+    if line.trim().is_empty() {
+        return Err("no command given".into());
+    }
+    Ok(Plan::new([line.trim().to_string()], "Shell command").special(Special::Shell))
+}
+
 /// Appends the menu's arguments to a fixed prefix.
 fn with(prefix: impl IntoIterator<Item = &'static str>, args: &[String]) -> Vec<String> {
     prefix
@@ -807,12 +930,26 @@ impl GitOutput {
         // Progress is drawn with carriage returns and erase-line escapes:
         // what a terminal would end up showing is the text after the last
         // return, without the escapes.
+        // git's `hint:` lines advise; they are not what happened.
         source
             .lines()
             .map(|line| line.rsplit('\r').next().unwrap_or(line))
             .map(|line| line.replace("\x1b[K", ""))
             .map(|line| line.trim().to_string())
-            .find(|line| !line.is_empty())
+            .find(|line| !line.is_empty() && !line.starts_with("hint:"))
+            .or_else(|| {
+                // Nothing but hints: then the other stream says it.
+                let other = if std::ptr::eq(source, &self.stderr) {
+                    &self.stdout
+                } else {
+                    &self.stderr
+                };
+                other
+                    .lines()
+                    .map(str::trim)
+                    .find(|line| !line.is_empty() && !line.starts_with("hint:"))
+                    .map(str::to_string)
+            })
             .unwrap_or_else(|| if self.success { "done" } else { "failed" }.to_string())
     }
 }
@@ -914,6 +1051,24 @@ pub fn run_plan(workdir: &Path, plan: &Plan) -> std::io::Result<GitOutput> {
         Some(Special::MarkResolved) => {
             let path = plan.args.first().cloned().unwrap_or_default();
             mark_resolved(workdir, Path::new(&path), &mut log)?;
+        }
+        Some(Special::Shell) => {
+            let line = plan.args.first().cloned().unwrap_or_default();
+            let output = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&line)
+                .current_dir(workdir)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .env("GIT_EDITOR", "true")
+                .env("GIT_PAGER", "cat")
+                .env("PAGER", "cat")
+                .stdin(std::process::Stdio::null())
+                .output()?;
+            return Ok(GitOutput {
+                success: output.status.success(),
+                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            });
         }
         Some(Special::Continue) => {
             let operation = crate::status::git_dir(workdir)
@@ -1402,6 +1557,29 @@ mod tests {
     }
 
     #[test]
+    fn typed_command_lines_are_split_as_a_shell_would() {
+        assert_eq!(
+            split_args(r#"commit -m "two words" --author='A B <a@b>' x\ y"#).unwrap(),
+            ["commit", "-m", "two words", "--author=A B <a@b>", "x y"]
+        );
+        assert_eq!(
+            split_args(r#"say "a \"quote\"""#).unwrap(),
+            ["say", r#"a "quote""#]
+        );
+        assert_eq!(split_args("  ").unwrap(), Vec::<String>::new());
+        assert_eq!(split_args(r#"-m ''"#).unwrap(), ["-m", ""]);
+        assert!(split_args("'open").is_err());
+
+        let tag = typed_git(r#"tag -a v9 -m "nine nine""#).unwrap();
+        assert_eq!(tag.command_line(), "git tag -a v9 -m 'nine nine'");
+        let plan = typed_git("git log --oneline -3").unwrap();
+        assert_eq!(plan.args, ["log", "--oneline", "-3"]);
+        assert!(typed_git("git").is_err());
+        let shell = typed_shell("ls | wc -l").unwrap();
+        assert_eq!(shell.command_line(), "$ ls | wc -l");
+    }
+
+    #[test]
     fn an_answer_that_would_be_an_option_is_refused() {
         let tag = Ask::required(AskKind::Text, "Tag name");
         assert!(tag.refuse("-v1").is_some());
@@ -1482,6 +1660,19 @@ mod tests {
         let switched = plan(MagitCommand::RebaseOntoUpstream, &["--interactive"]);
         assert_eq!(switched.args, ["rebase", "--interactive"]);
         assert_eq!(switched.requirement, Requirement::TodoList);
+    }
+
+    #[test]
+    fn hints_are_not_the_summary() {
+        let output = GitOutput {
+            success: true,
+            stdout: "Initialized empty Git repository in /x/.git/\n".into(),
+            stderr: "hint: Using 'master' as the name\nhint: more\n".into(),
+        };
+        assert_eq!(
+            output.summary(),
+            "Initialized empty Git repository in /x/.git/"
+        );
     }
 
     #[test]

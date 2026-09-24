@@ -531,13 +531,143 @@ fn spawn_run(plan: Plan, workdir: PathBuf) {
     tokio::task::spawn_blocking(move || {
         let outcome = command::run_plan(&workdir, &plan);
         crate::job::dispatch_blocking(move |editor, compositor| match outcome {
-            Ok(output) => report(editor, compositor, &line, output),
+            Ok(output) => {
+                let made = output
+                    .success
+                    .then(|| new_repository(&workdir, &plan))
+                    .flatten();
+                report(editor, compositor, &line, output);
+                // A repository just cloned or made: its status, at once.
+                if let Some(path) = made {
+                    match DiffView::new(&path) {
+                        Ok(view) => {
+                            close_views(compositor);
+                            compositor.push(Box::new(view));
+                        }
+                        Err(err) => editor.set_error(err.to_string()),
+                    }
+                }
+            }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 editor.set_error("git was not found on PATH".to_string());
             }
             Err(err) => editor.set_error(format!("{line}: {err}")),
         });
     });
+}
+
+/// Where `git clone` or `git init` put the repository it made.
+fn new_repository(workdir: &std::path::Path, plan: &Plan) -> Option<PathBuf> {
+    match plan.args.first().map(String::as_str)? {
+        "init" => Some(workdir.join(plan.args.get(1).map_or(".", String::as_str))),
+        "clone" => {
+            let target = match plan.args.get(2) {
+                Some(dir) => dir.clone(),
+                // git's own choice: the last part of the URL, less `.git`.
+                None => {
+                    let url = plan.args.get(1)?.trim_end_matches('/');
+                    let name = url.rsplit(['/', ':']).next()?;
+                    name.strip_suffix(".git").unwrap_or(name).to_string()
+                }
+            };
+            Some(workdir.join(target))
+        }
+        _ => None,
+    }
+}
+
+/// Asks for a git command line, or a shell one, and runs it in the
+/// repository; the process buffer (`$`) keeps what it printed.
+pub fn command_prompt(workdir: PathBuf, shell: bool) -> crate::ui::Prompt {
+    crate::ui::Prompt::new(
+        if shell { "$ " } else { "git " }.into(),
+        None,
+        |_, _| Vec::new(),
+        move |cx, input, event| {
+            if event != crate::ui::PromptEvent::Validate {
+                return;
+            }
+            let plan = if shell {
+                command::typed_shell(input)
+            } else {
+                command::typed_git(input)
+            };
+            match plan {
+                Ok(plan) => run(cx, plan, workdir.clone()),
+                Err(err) => cx.editor.set_error(err),
+            }
+        },
+    )
+}
+
+/// The Git views, by what they show, and the id each is found by.
+fn view_ids(view: helix_magit::transient::GitView) -> &'static [&'static str] {
+    use helix_magit::transient::GitView;
+    match view {
+        GitView::Status => &[DiffView::ID],
+        GitView::Log => &[crate::ui::log_view::LogView::ID],
+        GitView::Commit => &[DiffView::COMMIT_ID],
+        GitView::Diff => &[DiffView::RANGE_ID],
+        GitView::Refs => &[DiffView::REFS_ID],
+        GitView::Cherries => &[DiffView::CHERRIES_ID],
+        GitView::Blame => &[crate::ui::blame_view::BlameView::ID],
+    }
+}
+
+fn is_open(compositor: &mut Compositor, view: helix_magit::transient::GitView) -> bool {
+    use crate::ui::blame_view::BlameView;
+    use crate::ui::log_view::LogView;
+    view_ids(view).iter().any(|id| {
+        compositor.find_id::<DiffView>(id).is_some()
+            || compositor.find_id::<LogView>(id).is_some()
+            || compositor.find_id::<BlameView>(id).is_some()
+    })
+}
+
+/// `J`: a menu of the Git views open now, to bring one to the front.
+pub fn views_overlay(
+    compositor: &mut Compositor,
+    workdir: PathBuf,
+) -> crate::ui::transient::TransientOverlay {
+    use helix_magit::transient::GitView;
+    let open: Vec<GitView> = GitView::ALL
+        .into_iter()
+        .map(|(_, view, _)| view)
+        .filter(|view| is_open(compositor, *view))
+        .collect();
+    crate::ui::transient::TransientOverlay::new(
+        helix_magit::transient::views_menu(&open),
+        format!("{} open", open.len()),
+        workdir,
+    )
+}
+
+/// Brings a Git view to the front; the status and the log are opened when
+/// they are not open.
+pub fn switch_to(
+    compositor: &mut Compositor,
+    editor: &mut Editor,
+    view: helix_magit::transient::GitView,
+    workdir: &std::path::Path,
+) {
+    use helix_magit::transient::GitView;
+    for id in view_ids(view) {
+        if let Some(layer) = compositor.remove(id) {
+            compositor.push(layer);
+            return;
+        }
+    }
+    match view {
+        GitView::Status => match DiffView::new(workdir) {
+            Ok(status) => compositor.push(Box::new(status)),
+            Err(err) => editor.set_error(err.to_string()),
+        },
+        GitView::Log => compositor.push(Box::new(crate::ui::log_view::LogView::new(
+            workdir.to_path_buf(),
+            helix_magit::log::LogFilter::default(),
+        ))),
+        _ => editor.set_error("That view is not open"),
+    }
 }
 
 /// One command the process buffer lists.

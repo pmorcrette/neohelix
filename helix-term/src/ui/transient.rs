@@ -124,6 +124,7 @@ impl TransientOverlay {
             MenuKind::Resolve | MenuKind::File => return String::new(),
             MenuKind::Diff => "git diff",
             MenuKind::DiffSettings => "diff settings:",
+            MenuKind::Jump | MenuKind::Views | MenuKind::Setup => return String::new(),
         };
 
         if args.is_empty() {
@@ -329,6 +330,14 @@ impl Component for TransientOverlay {
 impl TransientOverlay {
     fn run(&mut self, command: MagitCommand, close: Callback) -> EventResult {
         match command {
+            MagitCommand::OpenMenu(MenuKind::Views) => {
+                let workdir = self.workdir.clone();
+                EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                    compositor.remove(TransientOverlay::ID);
+                    let overlay = crate::magit::views_overlay(compositor, workdir);
+                    compositor.push(Box::new(overlay));
+                })))
+            }
             MagitCommand::OpenMenu(kind) => {
                 self.menu = kind.menu();
                 EventResult::Consumed(None)
@@ -461,6 +470,34 @@ impl TransientOverlay {
                     compositor.push(Box::new(crate::ui::log_view::range_prompt(workdir, filter)));
                 })))
             }
+            MagitCommand::RunGit | MagitCommand::RunShell => {
+                let workdir = self.workdir.clone();
+                let shell = command == MagitCommand::RunShell;
+                EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                    compositor.remove(TransientOverlay::ID);
+                    compositor.push(Box::new(crate::magit::command_prompt(workdir, shell)));
+                })))
+            }
+            MagitCommand::JumpTo(target) => {
+                EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                    compositor.remove(TransientOverlay::ID);
+                    match compositor.find_id::<DiffView>(DiffView::ID) {
+                        Some(status) => {
+                            if !status.jump_to(target) {
+                                cx.editor.set_status("That section is empty");
+                            }
+                        }
+                        None => cx.editor.set_error("Jumping needs the status buffer"),
+                    }
+                })))
+            }
+            MagitCommand::SwitchTo(view) => {
+                let workdir = self.workdir.clone();
+                EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                    compositor.remove(TransientOverlay::ID);
+                    crate::magit::switch_to(compositor, cx.editor, view, &workdir);
+                })))
+            }
             // The status buffer replaces the menu rather than stacking on it.
             MagitCommand::Status | MagitCommand::Refresh => {
                 let workdir = self.workdir.clone();
@@ -486,7 +523,13 @@ impl TransientOverlay {
                         plan.preset(value, *kind);
                     }
                 }
-                let workdir = self.workdir.clone();
+                // A repository is cloned or made where the editor is, not
+                // inside the one the menu belongs to.
+                let workdir = if matches!(command, MagitCommand::Clone | MagitCommand::Init) {
+                    helix_stdx::env::current_working_dir()
+                } else {
+                    self.workdir.clone()
+                };
 
                 // The menu goes away first, so a confirmation or a prompt is
                 // not stacked on top of it.
@@ -615,6 +658,10 @@ mod tests {
                         | MagitCommand::FileLog
                         | MagitCommand::FileBlame
                         | MagitCommand::ApplyDiffSettings
+                        | MagitCommand::RunGit
+                        | MagitCommand::RunShell
+                        | MagitCommand::JumpTo(_)
+                        | MagitCommand::SwitchTo(_)
                         | MagitCommand::DiffRange
                         | MagitCommand::DiffWorktree
                         | MagitCommand::DiffCommit

@@ -404,6 +404,19 @@ impl Component for LogView {
                 };
                 self.reload();
             }
+            (KeyCode::Char('J'), _) => {
+                let workdir = self.workdir.clone();
+                return EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                    let overlay = crate::magit::views_overlay(compositor, workdir);
+                    compositor.push(Box::new(overlay));
+                })));
+            }
+            (KeyCode::Char(key @ ('Q' | '!')), _) => {
+                let workdir = self.workdir.clone();
+                return EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                    compositor.push(Box::new(crate::magit::command_prompt(workdir, key == '!')));
+                })));
+            }
             // Every menu by its dispatch key, aimed at the commit under the
             // cursor: `A` then `A` cherry-picks it, `V` then `V` reverts it,
             // `X` resets to it, `r` rebases from it.

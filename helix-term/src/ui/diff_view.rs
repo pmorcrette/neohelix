@@ -1255,6 +1255,33 @@ impl DiffView {
         .then(|| section.items.get(item).map(|item| item.label.clone()))?
     }
 
+    /// Moves the cursor to a section's header. Returns false when the
+    /// section is empty, and so not shown.
+    pub fn jump_to(&mut self, target: helix_magit::transient::JumpTarget) -> bool {
+        use helix_magit::transient::JumpTarget;
+        let kind = match target {
+            JumpTarget::Unmerged => SectionKind::Unmerged,
+            JumpTarget::Untracked => SectionKind::Untracked,
+            JumpTarget::Unstaged => SectionKind::Unstaged,
+            JumpTarget::Staged => SectionKind::Staged,
+            JumpTarget::Stashes => SectionKind::Stashes,
+            JumpTarget::Unpulled => SectionKind::Unpulled,
+            JumpTarget::Unpushed => SectionKind::Unpushed,
+            JumpTarget::Recent => SectionKind::Recent,
+            JumpTarget::Worktrees => SectionKind::Worktrees,
+            JumpTarget::Submodules => SectionKind::Submodules,
+        };
+        let Some(row) = self.rows.iter().position(
+            |row| matches!(row, Row::Section { section } if self.sections[*section].kind == kind),
+        ) else {
+            return false;
+        };
+        self.cursor = row;
+        // Shown near the top rather than wherever scrolling left it.
+        self.scroll = row;
+        true
+    }
+
     /// The conflicted path under the cursor.
     fn unmerged_at_cursor(&self) -> Option<String> {
         let Some(Row::Item { section, item }) = self.current_row() else {
@@ -1641,6 +1668,19 @@ impl Component for DiffView {
                 );
                 return EventResult::Consumed(Some(Box::new(move |compositor, _| {
                     compositor.push(Box::new(overlay));
+                })));
+            }
+            (KeyCode::Char('J'), _) => {
+                let workdir = self.workdir.clone();
+                return EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                    let overlay = crate::magit::views_overlay(compositor, workdir);
+                    compositor.push(Box::new(overlay));
+                })));
+            }
+            (KeyCode::Char(key @ ('Q' | '!')), _) => {
+                let workdir = self.workdir.clone();
+                return EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                    compositor.push(Box::new(crate::magit::command_prompt(workdir, key == '!')));
                 })));
             }
             (KeyCode::Char('y'), KeyModifiers::NONE) => {
