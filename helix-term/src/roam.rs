@@ -1481,49 +1481,173 @@ pub fn move_subtree_down(editor: &mut Editor) {
 }
 
 /// Moves the headline to the next state its file declares.
-fn cycle_todo(editor: &mut Editor, forward: bool) {
-    let settings = file_settings(editor);
-    let startup = helix_roam::startup::Startup::of(&settings);
-    let (text, line) = text_and_line(editor);
+/// A change worked out on some text: the new text, what to say about it,
+/// and the note it waits for, if any.
+struct Edited {
+    text: String,
+    done: String,
+    note: Option<helix_roam::logging::PendingNote>,
+}
 
-    let (_, next) = match helix_roam::restructure::todo_step(&text, line, &settings, forward) {
-        Ok(step) => step,
-        Err(err) => {
-            editor.set_error(err.to_string());
-            return;
-        }
-    };
+/// Moves the entry at `line` in `text` to its next or previous state,
+/// recording what the file asks for and refusing what its dependencies
+/// block. Which buffer, if any, the text is in is the caller's business.
+fn state_change(
+    editor: &Editor,
+    text: &str,
+    line: usize,
+    settings: &helix_roam::FileSettings,
+    forward: bool,
+) -> Result<Edited, String> {
+    let startup = helix_roam::startup::Startup::of(settings);
+    let (_, next) = helix_roam::restructure::todo_step(text, line, settings, forward)
+        .map_err(|err| err.to_string())?;
     let finishing = next
         .as_deref()
         .is_some_and(|state| settings.done_keywords.iter().any(|done| done == state));
     if finishing {
-        let blocked = open_blockers(editor, &text, line, &settings);
+        let blocked = open_blockers(editor, text, line, settings);
         if !blocked.is_empty() {
-            editor.set_error(format!("Blocked by {}", blocked.join(", ")));
-            return;
+            return Err(format!("Blocked by {}", blocked.join(", ")));
         }
     }
 
-    let changed =
-        helix_roam::logging::change_state(&text, line, &settings, &startup, next.as_deref(), now());
+    let change =
+        helix_roam::logging::change_state(text, line, settings, &startup, next.as_deref(), now())
+            .map_err(|err| err.to_string())?;
+    let done = match (change.repeated, &change.state) {
+        (true, state) => format!(
+            "Repeated: back to {}, dates moved on",
+            state.as_deref().unwrap_or("no state")
+        ),
+        (false, Some(state)) => format!("State {state}"),
+        (false, None) => "Cleared the state".to_string(),
+    };
+    Ok(Edited {
+        text: change.text,
+        done,
+        note: change.note,
+    })
+}
 
-    match changed {
-        Ok(change) => {
-            let done = match (change.repeated, &change.state) {
-                (true, state) => format!(
-                    "Repeated: back to {}, dates moved on",
-                    state.as_deref().unwrap_or("no state")
-                ),
-                (false, Some(state)) => format!("State {state}"),
-                (false, None) => "Cleared the state".to_string(),
-            };
-            apply_to_buffer(editor, done, change.text);
-            if let Some(pending) = change.note {
-                ask_for_note(pending);
+fn cycle_todo(editor: &mut Editor, forward: bool) {
+    let settings = file_settings(editor);
+    let (text, line) = text_and_line(editor);
+
+    match state_change(editor, &text, line, &settings, forward) {
+        Ok(edited) => {
+            apply_to_buffer(editor, edited.done, edited.text);
+            if let Some(pending) = edited.note {
+                ask_for_note(pending, None);
             }
         }
-        Err(err) => editor.set_error(err.to_string()),
+        Err(err) => editor.set_error(err),
     }
+}
+
+/// Changes the file at `path` — its buffer if it is open, the file on disk
+/// if not — and re-indexes it from the result, so a view built from the
+/// index, like the agenda, shows the change at once.
+fn edit_file(
+    editor: &mut Editor,
+    path: &Path,
+    edit: impl FnOnce(&Editor, &str) -> Result<String, String>,
+) -> Result<(), String> {
+    let open = editor
+        .document_by_path(path)
+        .map(|doc| (doc.id(), doc.text().to_string()));
+    let text = match &open {
+        Some((_, text)) => text.clone(),
+        None => std::fs::read_to_string(path)
+            .map_err(|err| format!("could not read {}: {err}", path.display()))?,
+    };
+    let after = edit(editor, &text)?;
+    if after == text {
+        return Ok(());
+    }
+    match open {
+        Some((id, _)) => apply_to_document(editor, id, &after)?,
+        None => std::fs::write(path, &after)
+            .map_err(|err| format!("could not write {}: {err}", path.display()))?,
+    }
+    helix_roam::reindex_file(&mut editor.roam.write(), path, &after);
+    Ok(())
+}
+
+/// What the agenda can do to the entry on a line of it.
+pub enum AgendaAction {
+    /// Its next state, or its previous one.
+    State(bool),
+    /// Priority up, or down.
+    Priority(bool),
+    Schedule(String),
+    Deadline(String),
+    ClockIn,
+}
+
+/// Acts on the entry at `line` of `path` without opening it, returning what
+/// to say about it. This is what lets the agenda stay on screen.
+pub fn agenda_act(
+    editor: &mut Editor,
+    path: &Path,
+    line: usize,
+    action: AgendaAction,
+) -> Result<String, String> {
+    let mut said = String::new();
+    let mut note = None;
+    let mut clocked = false;
+
+    edit_file(editor, path, |editor, text| {
+        let settings = helix_roam::FileSettings::scan_at(text, path);
+        match action {
+            AgendaAction::State(forward) => {
+                let edited = state_change(editor, text, line, &settings, forward)?;
+                said = edited.done;
+                note = edited.note;
+                Ok(edited.text)
+            }
+            AgendaAction::Priority(raise) => {
+                said = if raise {
+                    "Priority up"
+                } else {
+                    "Priority down"
+                }
+                .to_string();
+                helix_roam::restructure::change_priority(text, line, &settings, raise)
+                    .map_err(|err| err.to_string())
+            }
+            AgendaAction::Schedule(ref input) | AgendaAction::Deadline(ref input) => {
+                let which = match action {
+                    AgendaAction::Schedule(_) => helix_roam::restructure::Planning::Scheduled,
+                    _ => helix_roam::restructure::Planning::Deadline,
+                };
+                let date = parse_date_input(input.trim()).ok_or_else(|| {
+                    format!("{input:?} is not a date; try today, +3, or 2026-09-18")
+                })?;
+                let stamp = format!("<{} {}>", date.to_iso(), date.weekday());
+                let startup = helix_roam::startup::Startup::of(&settings);
+                let replanned =
+                    helix_roam::logging::replan(text, line, which, Some(&stamp), &startup, now())
+                        .map_err(|err| err.to_string())?;
+                said = format!("Set {stamp}");
+                note = replanned.note;
+                Ok(replanned.text)
+            }
+            AgendaAction::ClockIn => {
+                clocked = true;
+                said = "Clocked in".to_string();
+                helix_roam::clock::clock_in(text, line, now_moment()).map_err(|err| err.to_string())
+            }
+        }
+    })?;
+
+    if clocked {
+        editor.org_clock = Some(path.to_path_buf());
+    }
+    if let Some(pending) = note {
+        ask_for_note(pending, Some(path.to_path_buf()));
+    }
+    Ok(said)
 }
 
 /// What keeps the entry at `line` from being done, described for a message.
@@ -1572,7 +1696,7 @@ fn now() -> (helix_roam::Date, helix_roam::date::Time) {
 /// the result of a prompt, which has no compositor to push onto. Escaping the
 /// prompt records nothing, as aborting the note does in Org; the change it
 /// followed stays made.
-fn ask_for_note(pending: helix_roam::logging::PendingNote) {
+fn ask_for_note(pending: helix_roam::logging::PendingNote, file: Option<PathBuf>) {
     let label = if pending.heading.starts_with("CLOSING NOTE") {
         "Closing note: "
     } else {
@@ -1588,9 +1712,24 @@ fn ask_for_note(pending: helix_roam::logging::PendingNote) {
                 if event != crate::ui::PromptEvent::Validate {
                     return;
                 }
-                let text = doc!(cx.editor).text().to_string();
-                let after = helix_roam::logging::write_note(&text, &pending, input);
-                apply_to_buffer(cx.editor, "Noted".to_string(), after);
+                // A note asked for from the agenda belongs in the entry's
+                // file, not in whatever buffer is behind the agenda.
+                match &file {
+                    Some(path) => {
+                        let result = edit_file(cx.editor, path, |_, text| {
+                            Ok(helix_roam::logging::write_note(text, &pending, input))
+                        });
+                        match result {
+                            Ok(()) => cx.editor.set_status("Noted"),
+                            Err(err) => cx.editor.set_error(err),
+                        }
+                    }
+                    None => {
+                        let text = doc!(cx.editor).text().to_string();
+                        let after = helix_roam::logging::write_note(&text, &pending, input);
+                        apply_to_buffer(cx.editor, "Noted".to_string(), after);
+                    }
+                }
             },
         );
         compositor.push(Box::new(prompt));
@@ -1673,7 +1812,7 @@ fn set_planning(editor: &mut Editor, which: helix_roam::restructure::Planning, i
             };
             apply_to_buffer(editor, done, replanned.text);
             if let Some(pending) = replanned.note {
-                ask_for_note(pending);
+                ask_for_note(pending, None);
             }
         }
         Err(err) => editor.set_error(err.to_string()),

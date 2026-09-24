@@ -4265,7 +4265,12 @@ pub fn org_agenda_picker(editor: &mut Editor, days: i64) -> Option<Box<dyn Compo
         editor.set_status("Nothing on the agenda");
         return None;
     }
-    Some(agenda_picker(editor, lines, "when"))
+    Some(agenda_view(
+        editor,
+        lines,
+        "when",
+        Box::new(move |editor| crate::roam::agenda_lines(editor, days)),
+    ))
 }
 
 /// Shows everything unfinished, dated or not.
@@ -4283,7 +4288,168 @@ pub fn org_filtered_todo_picker(
         editor.set_status("Nothing to do");
         return None;
     }
-    Some(agenda_picker(editor, lines, "state"))
+    let filter = filter.clone();
+    Some(agenda_view(
+        editor,
+        lines,
+        "state",
+        Box::new(move |editor| crate::roam::filtered_todo_lines(editor, &filter)),
+    ))
+}
+
+/// Rebuilds an agenda's lines from the index, after an action changed it.
+type AgendaLines = Box<dyn Fn(&Editor) -> Vec<crate::roam::AgendaLine>>;
+
+/// An agenda view: the picker, and keys that act on the selected entry
+/// without leaving it, as Org's agenda buffer does.
+///
+/// The picker is upstream's and consumes its own keys, so the actions are
+/// taken before it sees the event, on Alt keys it does not use: `Alt-t` and
+/// `Alt-T` step the state, `Alt-s` and `Alt-d` schedule and set a deadline,
+/// `Alt-+` and `Alt--` move the priority, `Alt-i` clocks in. After each,
+/// the view is rebuilt from the index, on the same entry.
+pub struct AgendaView {
+    picker: ui::overlay::Overlay<Picker<crate::roam::AgendaLine, PathStyleConfig>>,
+    lines: AgendaLines,
+    first: &'static str,
+}
+
+impl AgendaView {
+    fn selected(&self) -> Option<(PathBuf, usize)> {
+        self.picker
+            .content
+            .selection()
+            .map(|line| (line.path.clone(), line.line))
+    }
+
+    /// Rebuilds the view, keeping the cursor on `keep` if it is still there.
+    fn refresh(&mut self, editor: &Editor, keep: Option<(PathBuf, usize)>) {
+        let lines = (self.lines)(editor);
+        let cursor = keep
+            .and_then(|(path, line)| {
+                lines
+                    .iter()
+                    .position(|item| item.path == path && item.line == line)
+            })
+            .unwrap_or(0);
+        self.picker =
+            overlaid(agenda_picker(editor, lines, self.first).with_initial_cursor(cursor as u32));
+    }
+
+    fn act(&mut self, editor: &mut Editor, action: crate::roam::AgendaAction) {
+        let Some((path, line)) = self.selected() else {
+            return;
+        };
+        match crate::roam::agenda_act(editor, &path, line, action) {
+            Ok(said) => editor.set_status(said),
+            Err(err) => editor.set_error(err),
+        }
+        self.refresh(editor, Some((path, line)));
+    }
+}
+
+impl Component for AgendaView {
+    fn handle_event(
+        &mut self,
+        event: &compositor::Event,
+        cx: &mut compositor::Context,
+    ) -> compositor::EventResult {
+        use crate::roam::AgendaAction;
+
+        if let compositor::Event::Key(key) = event {
+            let action = match *key {
+                crate::alt!('t') => Some(AgendaAction::State(true)),
+                crate::alt!('T') => Some(AgendaAction::State(false)),
+                crate::alt!('+') => Some(AgendaAction::Priority(true)),
+                crate::alt!('-') => Some(AgendaAction::Priority(false)),
+                crate::alt!('i') => Some(AgendaAction::ClockIn),
+                _ => None,
+            };
+            if let Some(action) = action {
+                self.act(cx.editor, action);
+                return compositor::EventResult::Consumed(None);
+            }
+
+            let schedule = match *key {
+                crate::alt!('s') => Some(true),
+                crate::alt!('d') => Some(false),
+                _ => None,
+            };
+            if let (Some(schedule), Some((path, line))) = (schedule, self.selected()) {
+                let label = if schedule {
+                    "Scheduled (today, +3, 2026-09-18): "
+                } else {
+                    "Deadline (today, +3, 2026-09-18): "
+                };
+                let prompt = Prompt::new(
+                    label.into(),
+                    None,
+                    ui::completers::none,
+                    move |cx, input, event| {
+                        if event != PromptEvent::Validate {
+                            return;
+                        }
+                        let action = if schedule {
+                            AgendaAction::Schedule(input.to_string())
+                        } else {
+                            AgendaAction::Deadline(input.to_string())
+                        };
+                        match crate::roam::agenda_act(cx.editor, &path, line, action) {
+                            Ok(said) => cx.editor.set_status(said),
+                            Err(err) => cx.editor.set_error(err),
+                        }
+                        let keep = (path.clone(), line);
+                        job::dispatch_blocking(move |editor, compositor| {
+                            if let Some(view) = compositor.find::<AgendaView>() {
+                                view.refresh(editor, Some(keep));
+                            }
+                        });
+                    },
+                );
+                return compositor::EventResult::Consumed(Some(Box::new(
+                    move |compositor: &mut Compositor, _| compositor.push(Box::new(prompt)),
+                )));
+            }
+        }
+        self.picker.handle_event(event, cx)
+    }
+
+    fn render(
+        &mut self,
+        area: helix_view::graphics::Rect,
+        surface: &mut tui::buffer::Buffer,
+        cx: &mut compositor::Context,
+    ) {
+        self.picker.render(area, surface, cx);
+    }
+
+    fn cursor(
+        &self,
+        area: helix_view::graphics::Rect,
+        editor: &Editor,
+    ) -> (
+        Option<helix_core::Position>,
+        helix_view::graphics::CursorKind,
+    ) {
+        self.picker.cursor(area, editor)
+    }
+}
+
+/// An agenda view over `lines`, rebuilt with `rebuild` after an action.
+fn agenda_view(
+    editor: &mut Editor,
+    lines: Vec<crate::roam::AgendaLine>,
+    first: &'static str,
+    rebuild: AgendaLines,
+) -> Box<dyn Component> {
+    editor.set_status(
+        "Alt-t state · Alt-s schedule · Alt-d deadline · Alt-+/- priority · Alt-i clock in",
+    );
+    Box::new(AgendaView {
+        picker: overlaid(agenda_picker(editor, lines, first)),
+        lines: rebuild,
+        first,
+    })
 }
 
 /// The picker both views share: a column of context, then the entry.
@@ -4291,7 +4457,7 @@ fn agenda_picker(
     editor: &Editor,
     lines: Vec<crate::roam::AgendaLine>,
     first: &'static str,
-) -> Box<dyn Component> {
+) -> Picker<crate::roam::AgendaLine, PathStyleConfig> {
     let columns = [
         ui::PickerColumn::new(
             first,
@@ -4333,7 +4499,7 @@ fn agenda_picker(
         },
     );
 
-    Box::new(overlaid(picker))
+    picker
 }
 
 /// Picks a heading in the current buffer by name.

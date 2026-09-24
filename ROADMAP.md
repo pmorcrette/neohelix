@@ -164,14 +164,33 @@ people use Org at all. It needs Task 1.5's timestamps to exist first.
 - [x] An agenda buffer: a day and a week view, built from the whole notes
       directory rather than the open file.
 - [x] A global TODO list, filtered by keyword, tag and priority.
-- [ ] Jump from an agenda line to its headline, and act on it in place
+- [x] Jump from an agenda line to its headline, and act on it in place
       (change state, reschedule) without losing the agenda.
 
-  Jumping works. Acting *in place* does not, and the reason is structural
-  rather than unfinished: Helix's `Picker` consumes its own keys and offers no
-  hook for an action that leaves it open, so this needs either a patch to an
-  upstream file or an agenda component of the fork's own — which is the
-  agenda buffer Org has, and what Phase 5's docked pane would host.
+  Jumping works. Acting *in place* did not, because Helix's `Picker`
+  consumes its own keys and offers no hook for an action that leaves it
+  open. The way out turned out to need neither a patch to the upstream
+  file nor a whole agenda component. The fork's `AgendaView` wraps the
+  picker, takes the few keys it acts on before the picker sees them, and
+  rebuilds the picker afterwards, on the same entry. The keys are Org
+  agenda's letters on Alt, which the picker does not use: `Alt-t`/`Alt-T`
+  state, `Alt-s` schedule, `Alt-d` deadline, `Alt-+`/`Alt--` priority,
+  `Alt-i` clock in. The status line lists them when the agenda opens.
+
+  An action edits the entry's file without opening it: its buffer if it is
+  open (left unsaved), else the file on disk. The file is then re-indexed,
+  which is what the rebuilt view reads. The action goes through the same
+  code as the commands — logging, repeaters, `:BLOCKER:`s — and a note it
+  asks for goes into that file, not into the buffer behind the agenda.
+
+  Checked in the editor, with the agenda open throughout:
+  - on a file not open, `Alt-+`, a reschedule of `+3` and `Alt-t` gave
+    `[#A]`, the new date and `DONE` on disk, and the finished task left
+    the list;
+  - on the open file, `Alt-t` changed the buffer, marked it modified, and
+    left the disk alone.
+
+  The picker's typed filter is lost when the view is rebuilt.
 - [x] Decide where the agenda lives on screen — it is another pane, so it
       shares Phase 5's blocker.
 
