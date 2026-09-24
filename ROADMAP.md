@@ -1201,9 +1201,9 @@ and async process handling, none of which the menu system itself covers.
       free of a `git` dependency, but the user's credential helpers, SSH agent
       configuration and `~/.gitconfig` `url.*.insteadOf` rules come for free
       only with the binary. This decision gates the whole group.
-- [ ] `Rebase`: `--interactive` needs `GIT_SEQUENCE_EDITOR` pointed back at
+- [x] `Rebase`: `--interactive` needs `GIT_SEQUENCE_EDITOR` pointed back at
       Helix, which means the integrated terminal or a spawned instance; decide
-      which before starting.
+      which before starting. *(Neither: see Task 2.7.)*
 - [x] Refresh the `DiffView` after any command that changes the index, HEAD or
       the working tree.
 - [x] Guard destructive actions (`--force`, `branch -d`, `rebase --abort`)
@@ -1303,16 +1303,52 @@ editor waiting on a terminal that is not there. That setting accepts the
 todo-list unchanged, which means `rebase --interactive` currently runs but
 cannot be steered.
 
-- [ ] Decide how git reaches back into Helix for the todo-list: the integrated
+- [x] Decide how git reaches back into Helix for the todo-list: the integrated
       terminal, a spawned instance, or an edit-server the fork runs. This gates
       the rest, and the same mechanism would serve `commit --verbose` and any
       other command wanting an editor.
-- [ ] A todo-list buffer: reorder commits, and set pick, reword, edit, squash,
+- [x] A todo-list buffer: reorder commits, and set pick, reword, edit, squash,
       fixup and drop.
-- [ ] Drive a rebase that stops: show why it stopped, and offer continue, skip
+- [x] Drive a rebase that stops: show why it stopped, and offer continue, skip
       and abort from the status buffer.
-- [ ] `--autosquash`, so the `Fixup` action Task 2.4 already produces has
+- [x] `--autosquash`, so the `Fixup` action Task 2.4 already produces has
       something that consumes it.
+
+*Done. Decision: git does not reach back into Helix at all.* The rebase runs
+twice (`helix_magit::rebase`). The first run's sequence editor is a shell
+command that copies git's todo-list out and empties it; an empty list is git's
+documented way to cancel, so git stops with "nothing to do" and the repository
+is exactly as before, autostash included. Because the list is git's own,
+`--autosquash`, `--rebase-merges` and the rest shape it as they would anywhere.
+The list opens in a split (`.git/helix/git-rebase-todo`, so it gets the
+`git-rebase` grammar); `:w` runs git again with a sequence editor that copies
+the edited list in, and `:q!` or an empty list cancels. HEAD is recorded at the
+first run and the second is refused if it moved. This needs no server, no
+second instance and no terminal, and it works for any command whose input can
+be prepared before git runs; it would not serve `commit --verbose`, whose diff
+git writes into the message file itself.
+
+`:rebase-todo <action>` sets the selected lines to pick, reword, edit, squash,
+fixup or drop, and `:rebase-todo up` / `down` moves them; the list is also
+ordinary text. `reword` needs a message editor mid-rebase, and every git
+subprocess runs with `GIT_EDITOR=true`, so it runs as `edit`: the rebase stops,
+the message is amended with the commit menu (`c a`), and the rebase continued
+(`r c`). The status buffer now opens the menus by Magit's dispatch keys (`c`,
+`r`, `P`, `F`, `b`, `?`); `r` on a commit makes an interactive rebase start
+from it (its parent, or `--root`), otherwise it asks. A stopped rebase shows
+where it stopped, the unmerged paths, and `r then c to continue, s to skip, z to
+abort`; `Skip` is new in the rebase menu, behind a confirmation, and
+`--autosquash` (`-A`) is a switch there. The plain rebase with the
+`--interactive` switch goes through the same list instead of running with an
+editor that accepts it unchanged. Checked in the editor: autosquash ordering,
+moving and dropping lines, a reword stopped, amended and continued, and a
+conflict stopped and skipped.
+
+Doing this found that the transient menus looked arguments and actions up by
+the same key, arguments first, so the commit menu's Amend (`a`) and Extend (`e`)
+could never run — `--all` and `--allow-empty` took the keys. Arguments are now
+reached through `-` as in Magit (`-a` toggles `--all`, `a` amends), and the
+menus show them that way.
 
 ### Task 2.8: The Log
 

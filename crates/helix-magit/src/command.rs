@@ -33,6 +33,9 @@ pub enum Requirement {
     BranchName,
     /// A remote has to be chosen.
     Remote,
+    /// An interactive rebase: its todo-list has to be edited first, and
+    /// where to rebase from may still have to be asked.
+    TodoList,
 }
 
 /// What an action would do, before anything is run.
@@ -141,14 +144,32 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
                 .destructive()
         }
 
+        // With the `--interactive` switch on, this is the interactive
+        // rebase, which has to go through the todo-list rather than run
+        // with an editor that accepts it unchanged.
+        MagitCommand::RebaseOntoUpstream if args.iter().any(|arg| arg == "--interactive") => {
+            return resolve(MagitCommand::RebaseInteractive, args);
+        }
         MagitCommand::RebaseOntoUpstream => {
             Plan::new(with(["rebase"], args), "Rebase onto upstream").destructive()
         }
+        // The edited todo-list is the confirmation: nothing is rewritten
+        // until it is written, and quitting it cancels.
         MagitCommand::RebaseInteractive => Plan::new(
-            with(["rebase", "--interactive"], args),
+            with(
+                ["rebase", "--interactive"],
+                &args
+                    .iter()
+                    .filter(|arg| *arg != "--interactive")
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            ),
             "Rebase interactively",
         )
-        .destructive(),
+        .requiring(Requirement::TodoList),
+        MagitCommand::RebaseSkip => {
+            Plan::new(["rebase", "--skip"], "Skip this commit").destructive()
+        }
         MagitCommand::RebaseContinue => Plan::new(["rebase", "--continue"], "Continue the rebase"),
         // Aborting throws away everything the rebase has replayed so far.
         MagitCommand::RebaseAbort => {
@@ -184,12 +205,16 @@ impl GitOutput {
         } else {
             &self.stderr
         };
+        // Progress is drawn with carriage returns and erase-line escapes:
+        // what a terminal would end up showing is the text after the last
+        // return, without the escapes.
         source
             .lines()
-            .map(str::trim)
+            .map(|line| line.rsplit('\r').next().unwrap_or(line))
+            .map(|line| line.replace("\x1b[K", ""))
+            .map(|line| line.trim().to_string())
             .find(|line| !line.is_empty())
-            .unwrap_or(if self.success { "done" } else { "failed" })
-            .to_string()
+            .unwrap_or_else(|| if self.success { "done" } else { "failed" }.to_string())
     }
 }
 
@@ -198,6 +223,8 @@ impl GitOutput {
 pub struct GitCommand {
     pub args: Vec<String>,
     pub working_directory: PathBuf,
+    /// Set after the defaults, so it can override them.
+    pub env: Vec<(String, String)>,
 }
 
 impl GitCommand {
@@ -205,7 +232,15 @@ impl GitCommand {
         Self {
             args,
             working_directory: working_directory.into(),
+            env: Vec::new(),
         }
+    }
+
+    /// Sets an environment variable for the process, over the defaults —
+    /// how the interactive rebase supplies its own sequence editor.
+    pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env.push((key.into(), value.into()));
+        self
     }
 
     /// Builds the process, with the environment that keeps it non-interactive.
@@ -230,6 +265,9 @@ impl GitCommand {
             .env("GIT_PAGER", "cat")
             .env("NO_COLOR", "1")
             .stdin(std::process::Stdio::null());
+        for (key, value) in &self.env {
+            command.env(key, value);
+        }
         command
     }
 
@@ -367,8 +405,9 @@ mod tests {
     fn a_menus_switches_reach_the_plan_unchanged() {
         // The arguments a real menu produces, end to end.
         let mut menu = pull_menu();
-        menu.handle_key('r');
-        menu.handle_key('a');
+        for key in ['-', 'r', '-', 'a'] {
+            menu.handle_key(key);
+        }
 
         let from_menu = resolve(MagitCommand::Pull, &menu.args()).unwrap();
         assert_eq!(from_menu.command_line(), "git pull --rebase --autostash");
@@ -412,6 +451,7 @@ mod tests {
 
         // And it comes out of the real menu the same way.
         let mut menu = push_menu();
+        menu.handle_key('-');
         menu.handle_key('F');
         let from_menu = resolve(MagitCommand::Push, &menu.args()).unwrap();
         assert!(from_menu.destructive, "args were {:?}", menu.args());
@@ -459,6 +499,33 @@ mod tests {
 
         let aborted = plan(MagitCommand::RebaseAbort, &["--interactive"]);
         assert_eq!(aborted.args, ["rebase", "--abort"]);
+    }
+
+    #[test]
+    fn an_interactive_rebase_goes_through_its_todo_list() {
+        let interactive = plan(MagitCommand::RebaseInteractive, &["--autosquash"]);
+        assert_eq!(
+            interactive.args,
+            ["rebase", "--interactive", "--autosquash"]
+        );
+        assert_eq!(interactive.requirement, Requirement::TodoList);
+        // The list is the confirmation.
+        assert!(!interactive.destructive);
+
+        // The switch on the plain rebase makes it the interactive one, once.
+        let switched = plan(MagitCommand::RebaseOntoUpstream, &["--interactive"]);
+        assert_eq!(switched.args, ["rebase", "--interactive"]);
+        assert_eq!(switched.requirement, Requirement::TodoList);
+    }
+
+    #[test]
+    fn a_summary_shows_what_progress_output_ends_on() {
+        let output = GitOutput {
+            success: true,
+            stdout: String::new(),
+            stderr: "Rebasing (1/2)\rRebasing (2/2)\r\x1b[KSuccessfully rebased.\n".into(),
+        };
+        assert_eq!(output.summary(), "Successfully rebased.");
     }
 
     #[test]

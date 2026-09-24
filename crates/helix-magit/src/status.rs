@@ -206,8 +206,7 @@ pub fn read(workdir: &Path) -> Overview {
         .map(|text| parse_stashes(&text))
         .unwrap_or_default();
 
-    let in_progress = git(workdir, &["rev-parse", "--absolute-git-dir"])
-        .map(|dir| PathBuf::from(dir.trim()))
+    let in_progress = git_dir(workdir)
         .and_then(|git_dir| in_progress(&git_dir, &|rev| log(workdir, rev, 1).pop()));
 
     Overview {
@@ -221,6 +220,14 @@ pub fn read(workdir: &Path) -> Overview {
         recent,
         stashes,
     }
+}
+
+/// The repository's git directory — `.git`, or elsewhere for a linked
+/// worktree or a submodule.
+pub fn git_dir(workdir: &Path) -> Option<PathBuf> {
+    git(workdir, &["rev-parse", "--absolute-git-dir"])
+        .map(|dir| PathBuf::from(dir.trim()))
+        .filter(|dir| !dir.as_os_str().is_empty())
 }
 
 fn read_trimmed(path: &Path) -> Option<String> {

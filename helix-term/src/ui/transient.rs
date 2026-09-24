@@ -26,6 +26,9 @@ pub struct TransientOverlay {
     context: String,
     /// The repository the menu acts on, so it can open the status buffer.
     workdir: PathBuf,
+    /// Where an interactive rebase starts when the menu was opened on a
+    /// commit, so it is not asked for.
+    rebase_base: Option<String>,
 }
 
 impl TransientOverlay {
@@ -36,7 +39,14 @@ impl TransientOverlay {
             menu,
             context: context.into(),
             workdir,
+            rebase_base: None,
         }
+    }
+
+    /// Makes an interactive rebase from this menu start at `base`.
+    pub fn with_rebase_base(mut self, base: String) -> Self {
+        self.rebase_base = Some(base);
+        self
     }
 
     /// The menu currently shown.
@@ -163,7 +173,7 @@ impl Component for TransientOverlay {
                     surface.set_string_truncated(
                         x,
                         y,
-                        &format!(" {} ", argument.key()),
+                        &format!("-{} ", argument.key()),
                         3,
                         |_| key_style,
                         false,
@@ -242,7 +252,9 @@ impl Component for TransientOverlay {
                 code: KeyCode::Char(c),
                 ..
             } => match self.menu.handle_key(*c) {
-                TransientEvent::Toggled => return EventResult::Consumed(None),
+                TransientEvent::Toggled | TransientEvent::ArgumentPrefix => {
+                    return EventResult::Consumed(None)
+                }
                 TransientEvent::Run(command) => return self.run(command, close),
                 // An unbound key does nothing rather than leaking through to
                 // the editor, which is what makes the menu modal.
@@ -279,9 +291,12 @@ impl TransientOverlay {
                 })))
             }
             command => {
-                let Some(plan) = helix_magit::resolve(command, &self.menu.args()) else {
+                let Some(mut plan) = helix_magit::resolve(command, &self.menu.args()) else {
                     return EventResult::Consumed(Some(close));
                 };
+                if plan.requirement == helix_magit::Requirement::TodoList {
+                    plan.args.extend(self.rebase_base.clone());
+                }
                 let workdir = self.workdir.clone();
 
                 // The menu goes away first, so a confirmation or a prompt is
@@ -309,10 +324,12 @@ mod tests {
         let mut overlay = overlay(pull_menu());
         assert_eq!(overlay.command_preview(), "git pull");
 
-        overlay.menu.handle_key('r');
-        overlay.menu.handle_key('a');
+        for key in ['-', 'r', '-', 'a'] {
+            overlay.menu.handle_key(key);
+        }
         assert_eq!(overlay.command_preview(), "git pull --rebase --autostash");
 
+        overlay.menu.handle_key('-');
         overlay.menu.handle_key('r');
         assert_eq!(overlay.command_preview(), "git pull --autostash");
     }

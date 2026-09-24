@@ -38,6 +38,7 @@ pub enum MagitCommand {
     RebaseInteractive,
     RebaseAbort,
     RebaseContinue,
+    RebaseSkip,
 
     /// Open or refresh the status buffer.
     Status,
@@ -255,6 +256,8 @@ impl TransientGroup {
 pub enum TransientEvent {
     /// A switch or option was toggled; the menu stays open.
     Toggled,
+    /// `-` was pressed: the next key names an argument.
+    ArgumentPrefix,
     /// An action fired.
     Run(MagitCommand),
     /// No entry uses this key.
@@ -267,6 +270,9 @@ pub struct TransientMenu {
     pub kind: MenuKind,
     pub title: String,
     pub groups: Vec<TransientGroup>,
+    /// Set by `-`: the next key toggles an argument rather than running an
+    /// action.
+    pub argument_prefix: bool,
 }
 
 impl TransientMenu {
@@ -275,6 +281,7 @@ impl TransientMenu {
             kind,
             title: title.into(),
             groups: Vec::new(),
+            argument_prefix: false,
         }
     }
 
@@ -287,14 +294,26 @@ impl TransientMenu {
     ///
     /// Arguments are matched before actions, mirroring Magit: a menu may bind
     /// the same letter to a switch and, in another group, to an action.
+    ///
+    /// As in Magit, arguments are reached through `-`: `-a` toggles
+    /// `--all` in the commit menu while `a` amends. Without the prefix the
+    /// two share keys, and one of them could never be reached.
     pub fn handle_key(&mut self, key: char) -> TransientEvent {
-        for group in &mut self.groups {
-            for argument in &mut group.arguments {
-                if argument.key() == key {
-                    argument.toggle();
-                    return TransientEvent::Toggled;
+        if std::mem::take(&mut self.argument_prefix) {
+            for group in &mut self.groups {
+                for argument in &mut group.arguments {
+                    if argument.key() == key {
+                        argument.toggle();
+                        return TransientEvent::Toggled;
+                    }
                 }
             }
+            return TransientEvent::Unhandled;
+        }
+
+        if key == '-' && self.groups.iter().any(|group| !group.arguments.is_empty()) {
+            self.argument_prefix = true;
+            return TransientEvent::ArgumentPrefix;
         }
 
         for group in &self.groups {
@@ -440,8 +459,15 @@ pub fn rebase_menu() -> TransientMenu {
         TransientGroup::new("Arguments").with_arguments([
             switch('a', "--autostash", "Stash uncommitted changes first"),
             switch('i', "--interactive", "Interactive"),
+            switch(
+                'A',
+                "--autosquash",
+                "Move fixup! and squash! commits into place",
+            ),
             switch('k', "--keep-empty", "Keep empty commits"),
-            option('s', "--strategy=", "Merge strategy"),
+            // `S`, so `s` stays free for skipping: an argument's key shadows
+            // an action's.
+            option('S', "--strategy=", "Merge strategy"),
         ]),
         TransientGroup::new("Rebase").with_actions([
             TransientAction::new('u', "Onto upstream", MagitCommand::RebaseOntoUpstream),
@@ -449,6 +475,7 @@ pub fn rebase_menu() -> TransientMenu {
         ]),
         TransientGroup::new("In progress").with_actions([
             TransientAction::new('c', "Continue", MagitCommand::RebaseContinue),
+            TransientAction::new('s', "Skip", MagitCommand::RebaseSkip),
             TransientAction::new('z', "Abort", MagitCommand::RebaseAbort),
         ]),
     ])
@@ -459,29 +486,55 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
+    /// `-` then the key, as typed.
+    fn toggle(menu: &mut TransientMenu, key: char) -> TransientEvent {
+        assert_eq!(menu.handle_key('-'), TransientEvent::ArgumentPrefix);
+        menu.handle_key(key)
+    }
+
+    #[test]
+    fn an_argument_key_without_the_prefix_is_not_an_argument() {
+        let mut menu = pull_menu();
+        // `r` alone is not `--rebase`.
+        let _ = menu.handle_key('r');
+        assert!(menu.args().is_empty());
+        // And the prefix lasts for one key only.
+        assert_eq!(menu.handle_key('-'), TransientEvent::ArgumentPrefix);
+        assert_eq!(menu.handle_key('Z'), TransientEvent::Unhandled);
+        assert!(!menu.argument_prefix);
+    }
+
     #[test]
     fn toggling_a_switch_adds_its_flag() {
         let mut menu = pull_menu();
         assert!(menu.args().is_empty());
 
-        assert_eq!(menu.handle_key('r'), TransientEvent::Toggled);
+        assert_eq!(toggle(&mut menu, 'r'), TransientEvent::Toggled);
         assert_eq!(menu.args(), ["--rebase"]);
 
-        assert_eq!(menu.handle_key('a'), TransientEvent::Toggled);
+        assert_eq!(toggle(&mut menu, 'a'), TransientEvent::Toggled);
         assert_eq!(menu.args(), ["--rebase", "--autostash"]);
 
         // Toggling again removes it.
-        assert_eq!(menu.handle_key('r'), TransientEvent::Toggled);
+        assert_eq!(toggle(&mut menu, 'r'), TransientEvent::Toggled);
         assert_eq!(menu.args(), ["--autostash"]);
     }
 
     #[test]
     fn an_action_key_reports_its_command() {
         let mut menu = commit_menu();
-        // 'a' is both the --all switch and the Amend action; Magit resolves
-        // that in favour of the switch, and so do we.
-        assert_eq!(menu.handle_key('a'), TransientEvent::Toggled);
+        // 'a' is both the --all switch and the Amend action: `-a` is the
+        // switch, `a` the action, as in Magit.
+        assert_eq!(toggle(&mut menu, 'a'), TransientEvent::Toggled);
         assert_eq!(menu.args(), ["--all"]);
+        assert_eq!(
+            menu.handle_key('a'),
+            TransientEvent::Run(MagitCommand::CommitAmend)
+        );
+        assert_eq!(
+            menu.handle_key('e'),
+            TransientEvent::Run(MagitCommand::CommitExtend)
+        );
 
         assert_eq!(
             menu.handle_key('c'),
@@ -505,11 +558,11 @@ mod tests {
         let mut menu = rebase_menu();
         assert!(menu.args().is_empty());
 
-        assert!(menu.set_option('s', Some("ours".to_string())));
+        assert!(menu.set_option('S', Some("ours".to_string())));
         assert_eq!(menu.args(), ["--strategy=ours"]);
 
         // Toggling an option clears it, since a value cannot be guessed.
-        assert_eq!(menu.handle_key('s'), TransientEvent::Toggled);
+        assert_eq!(toggle(&mut menu, 'S'), TransientEvent::Toggled);
         assert!(menu.args().is_empty());
 
         assert!(!menu.set_option('Z', Some("x".to_string())));

@@ -28,8 +28,257 @@ pub fn execute(compositor: &mut Compositor, cx: &mut Context, plan: Plan, workdi
         }
         Requirement::BranchName => ask_for(compositor, plan, workdir, "Branch: "),
         Requirement::Remote => ask_for(compositor, plan, workdir, "Remote: "),
-        Requirement::CommitMessage { amend } => compose(cx, plan, workdir, amend),
+        Requirement::CommitMessage { amend } => {
+            // The status buffer covers the editor; the message must be seen.
+            compositor.remove(DiffView::ID);
+            compose(cx, plan, workdir, amend)
+        }
+        Requirement::TodoList => start_rebase(compositor, cx, plan, workdir),
     }
+}
+
+// ── Interactive rebase ──────────────────────────────────────────────────
+//
+// See `helix_magit::rebase` for why git runs twice rather than calling
+// back into Helix for the todo-list.
+
+/// Whether the rebase's command line already names where to start from.
+fn has_base(args: &[String]) -> bool {
+    // `rebase --interactive [--flags…] [base]`: the first two are fixed.
+    // `--root` rebases from the very first commit, and is a base too.
+    args.iter()
+        .skip(2)
+        .any(|arg| !arg.starts_with('-') || arg == "--root")
+}
+
+/// Asks where to rebase from, unless the command line says already.
+fn start_rebase(compositor: &mut Compositor, cx: &mut Context, plan: Plan, workdir: PathBuf) {
+    if has_base(&plan.args) {
+        capture_todo(cx, plan, workdir);
+        return;
+    }
+    let prompt = crate::ui::Prompt::new(
+        "Rebase from (commit, empty for the upstream): ".into(),
+        None,
+        |_, _| Vec::new(),
+        move |cx, input, event| {
+            if event != crate::ui::PromptEvent::Validate {
+                return;
+            }
+            let mut plan = plan.clone();
+            if !input.trim().is_empty() {
+                plan.args.push(input.trim().to_string());
+            }
+            capture_todo(cx, plan, workdir.clone());
+        },
+    );
+    compositor.push(Box::new(prompt));
+}
+
+/// First run: git writes its todo-list, which is kept and opened for
+/// editing while the rebase itself is cancelled.
+fn capture_todo(cx: &mut Context, plan: Plan, workdir: PathBuf) {
+    use helix_magit::rebase;
+
+    let Some(git_dir) = helix_magit::status::git_dir(&workdir) else {
+        cx.editor.set_error("Not in a git repository");
+        return;
+    };
+    let dir = git_dir.join("helix");
+    // Named as git names it, so the buffer gets the git-rebase language.
+    let todo_path = dir.join("git-rebase-todo");
+    if let Err(err) = std::fs::create_dir_all(&dir) {
+        cx.editor
+            .set_error(format!("could not prepare the todo-list: {err}"));
+        return;
+    }
+    let _ = std::fs::remove_file(&todo_path);
+
+    let line = plan.command_line();
+    let command = rebase::capture_command(&workdir, plan.args.clone(), &todo_path);
+    cx.editor.set_status(format!("Preparing {line}…"));
+
+    cx.jobs.callback(async move {
+        let head = {
+            let workdir = workdir.clone();
+            tokio::task::spawn_blocking(move || rebase::head(&workdir))
+                .await
+                .ok()
+                .flatten()
+        };
+        let outcome = tokio::task::spawn_blocking(move || command.run()).await;
+
+        Ok(Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                let output = match outcome {
+                    Ok(Ok(output)) => output,
+                    Ok(Err(err)) => return editor.set_error(format!("{line}: {err}")),
+                    Err(err) => return editor.set_error(format!("{line}: {err}")),
+                };
+                let todo = std::fs::read_to_string(&todo_path).unwrap_or_default();
+                if output.success || !rebase::captured(&output.stderr) || todo.is_empty() {
+                    // git never asked for the list: it refused, or had
+                    // nothing to rebase. Either way its own words say why.
+                    return report(editor, compositor, &line, output);
+                }
+
+                let with_help = format!("{}\n{}", todo.trim_end(), rebase::HELP);
+                if let Err(err) = std::fs::write(&todo_path, with_help) {
+                    return editor.set_error(format!("could not write the todo-list: {err}"));
+                }
+                if let Err(err) =
+                    editor.open(&todo_path, helix_view::editor::Action::HorizontalSplit)
+                {
+                    return editor.set_error(format!("could not open the todo-list: {err}"));
+                }
+                // The status buffer covers the editor; the list must be seen.
+                compositor.remove(DiffView::ID);
+                editor.pending_rebase = Some(helix_view::editor::PendingRebase {
+                    todo_path,
+                    args: plan.args,
+                    working_directory: workdir,
+                    head,
+                });
+                editor.set_status("Edit the todo-list, then `:w` to rebase (`:q!` cancels)");
+            },
+        )))
+    });
+}
+
+/// Second run, when the todo-list is written: the edited list replaces
+/// git's and the rebase goes ahead.
+///
+/// Returns whether the write belonged to a pending rebase.
+pub fn rebase_if_written(editor: &mut Editor, path: &std::path::Path) -> bool {
+    use helix_magit::rebase;
+
+    let Some(pending) = editor.pending_rebase.take() else {
+        return false;
+    };
+    if path != pending.todo_path {
+        editor.pending_rebase = Some(pending);
+        return false;
+    }
+
+    let todo = std::fs::read_to_string(&pending.todo_path).unwrap_or_default();
+    if rebase::is_empty(&todo) {
+        close_message_buffer(editor, &pending.todo_path);
+        editor.set_status("Rebase cancelled: the todo-list is empty");
+        return true;
+    }
+    if rebase::head(&pending.working_directory) != pending.head {
+        editor.set_error("HEAD moved since the todo-list was made; start the rebase again");
+        return true;
+    }
+
+    let (prepared, rewords) = rebase::prepare(&todo);
+    let run_path = pending.todo_path.with_file_name("git-rebase-todo.run");
+    if let Err(err) = std::fs::write(&run_path, prepared) {
+        editor.set_error(format!("could not write the todo-list: {err}"));
+        return true;
+    }
+
+    let line = format!("git {}", pending.args.join(" "));
+    let command = rebase::install_command(&pending.working_directory, pending.args, &run_path);
+    let todo_path = pending.todo_path;
+    editor.set_status(format!("Running {line}…"));
+
+    tokio::task::spawn_blocking(move || {
+        let outcome = command.run();
+        crate::job::dispatch_blocking(move |editor, compositor| match outcome {
+            Ok(output) => {
+                close_message_buffer(editor, &todo_path);
+                report(editor, compositor, &line, output);
+                if rewords > 0 {
+                    editor.set_status(format!(
+                        "{rewords} reword(s) run as edit: amend the message (c a), then continue (r c)"
+                    ));
+                }
+            }
+            Err(err) => editor.set_error(format!("{line}: {err}")),
+        });
+    });
+    true
+}
+
+/// `:rebase-todo <action>`: sets the action of the selected lines of a
+/// todo-list, or moves them with `up` and `down`.
+pub fn rebase_todo(editor: &mut Editor, action: &str) -> Result<(), String> {
+    use helix_core::{Selection, Transaction};
+
+    let (view, doc) = helix_view::current!(editor);
+    let text = doc.text().clone();
+    let slice = text.slice(..);
+    let primary = doc.selection(view.id).primary();
+    let (first, last) = primary.line_range(slice);
+    let line_text = |line: usize| -> String {
+        let line = text.line(line).to_string();
+        line.trim_end_matches(['\n', '\r']).to_string()
+    };
+
+    let (from, to, replacement, shift): (usize, usize, Vec<String>, isize) = match action {
+        "up" | "down" => {
+            let up = action == "up";
+            if (up && first == 0) || (!up && last + 1 >= text.len_lines().saturating_sub(1)) {
+                return Err("Nothing to move past".to_string());
+            }
+            let block: Vec<String> = (first..=last).map(line_text).collect();
+            if up {
+                let above = line_text(first - 1);
+                let shift = -(text.line(first - 1).len_chars() as isize);
+                let mut lines = block;
+                lines.push(above);
+                (first - 1, last, lines, shift)
+            } else {
+                let below = line_text(last + 1);
+                let shift = text.line(last + 1).len_chars() as isize;
+                let mut lines = vec![below];
+                lines.extend(block);
+                (first, last + 1, lines, shift)
+            }
+        }
+        action => {
+            let mut changed = false;
+            let lines = (first..=last)
+                .map(|line| {
+                    let old = line_text(line);
+                    match helix_magit::rebase::set_action(&old, action) {
+                        Some(new) => {
+                            changed = true;
+                            new
+                        }
+                        None => old,
+                    }
+                })
+                .collect();
+            if !changed {
+                return Err(format!(
+                    "`{action}` is not pick, reword, edit, squash, fixup, drop, up or down, \
+                     or no selected line is a commit"
+                ));
+            }
+            (first, last, lines, 0)
+        }
+    };
+
+    let start = text.line_to_char(from);
+    let end = text.line_to_char(to) + line_text(to).chars().count();
+    let transaction = Transaction::change(
+        &text,
+        [(start, end, Some(replacement.join("\n").into()))].into_iter(),
+    );
+    let moved = |pos: usize| (pos as isize + shift).max(0) as usize;
+    let transaction = if shift != 0 {
+        transaction.with_selection(Selection::single(
+            moved(primary.anchor),
+            moved(primary.head),
+        ))
+    } else {
+        transaction
+    };
+    doc.apply(&transaction, view.id);
+    doc.append_changes_to_history(view);
+    Ok(())
 }
 
 /// Puts a destructive plan behind a single-key confirmation.
@@ -273,4 +522,22 @@ fn close_message_buffer(editor: &mut Editor, path: &std::path::Path) {
         return;
     };
     let _ = editor.close_document(id, true);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_base;
+
+    #[test]
+    fn a_rebase_base_is_the_first_argument_that_is_not_a_flag() {
+        let args = |list: &[&str]| -> Vec<String> { list.iter().map(|a| a.to_string()).collect() };
+        assert!(!has_base(&args(&["rebase", "--interactive"])));
+        assert!(!has_base(&args(&[
+            "rebase",
+            "--interactive",
+            "--autosquash"
+        ])));
+        assert!(has_base(&args(&["rebase", "--interactive", "abc123^"])));
+        assert!(has_base(&args(&["rebase", "--interactive", "--root"])));
+    }
 }

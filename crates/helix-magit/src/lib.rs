@@ -7,6 +7,7 @@
 pub mod command;
 pub mod diff;
 pub mod patch;
+pub mod rebase;
 pub mod repository;
 pub mod status;
 pub mod transient;

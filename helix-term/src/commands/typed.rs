@@ -2421,6 +2421,13 @@ roam_buffer_command!(org_columns, crate::roam::toggle_columns);
 roam_component_command!(roam_dailies_directory, crate::roam::dailies_picker);
 
 /// `:roam-dailies-capture <entry>`, or a prompt for it.
+fn rebase_todo(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    crate::magit::rebase_todo(cx.editor, &args[0]).map_err(|err| anyhow::anyhow!(err))
+}
+
 fn roam_dailies_capture(
     cx: &mut compositor::Context,
     args: Args,
@@ -4160,6 +4167,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "rebase-todo",
+        aliases: &[],
+        doc: "In a rebase todo-list, set the selected lines to pick, reword, edit, squash, fixup or drop, or move them up or down.",
+        fun: rebase_todo,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (1, Some(1)),
             ..Signature::DEFAULT
         },
     },

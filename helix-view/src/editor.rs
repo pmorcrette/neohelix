@@ -555,6 +555,18 @@ pub struct PendingCommit {
     pub working_directory: PathBuf,
 }
 
+/// An interactive rebase whose todo-list the user is editing.
+#[derive(Debug, Clone)]
+pub struct PendingRebase {
+    /// The buffer holding the list.
+    pub todo_path: PathBuf,
+    /// The `rebase --interactive …` arguments, run again once it is written.
+    pub args: Vec<String>,
+    pub working_directory: PathBuf,
+    /// HEAD when the list was made; the list is refused if it moved.
+    pub head: Option<String>,
+}
+
 /// Org-Roam knowledge graph configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
@@ -1538,6 +1550,9 @@ pub struct Editor {
     /// that closing it is what decides whether the commit happens.
     pub pending_commit: Option<PendingCommit>,
 
+    /// An interactive rebase waiting for its todo-list to be written.
+    pub pending_rebase: Option<PendingRebase>,
+
     /// The integrated terminal, kept here so that hiding its view does not
     /// kill the shell running in it.
     ///
@@ -1682,6 +1697,7 @@ impl Editor {
             org_clock: None,
             org_clip: None,
             pending_commit: None,
+            pending_rebase: None,
             agenda_restriction: None,
         }
     }

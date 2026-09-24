@@ -20,6 +20,8 @@ use tui::widgets::{Block, Widget};
 
 use crate::compositor::{Component, Compositor, Context, Event, EventResult};
 use crate::ui::confirm::Confirm;
+use crate::ui::transient::TransientOverlay;
+use helix_magit::transient::MenuKind;
 
 /// What a section lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -134,9 +136,16 @@ fn header_lines(overview: &Overview) -> Vec<HeaderLine> {
             label: "State:",
             parts: vec![(state.description.clone(), Tone::Emphasis)],
         });
+        let hint = match state.operation {
+            // The rebase menu has all three.
+            helix_magit::status::Operation::Rebase => {
+                "r then c to continue, s to skip, z to abort".to_string()
+            }
+            operation => operation.hint().to_string(),
+        };
         lines.push(HeaderLine {
             label: "",
-            parts: vec![(state.operation.hint().to_string(), Tone::Dim)],
+            parts: vec![(hint, Tone::Dim)],
         });
     }
     lines
@@ -752,6 +761,40 @@ impl DiffView {
         }))
     }
 
+    /// Where an interactive rebase from the commit under the cursor starts:
+    /// its parent, so the commit itself is in the list; `--root` for the
+    /// first commit.
+    fn rebase_base_at_cursor(&self) -> Option<String> {
+        let Some(Row::Item { section, item }) = self.current_row() else {
+            return None;
+        };
+        let section = self.sections.get(section)?;
+        if !matches!(
+            section.kind,
+            SectionKind::Unpushed | SectionKind::Unpulled | SectionKind::Recent
+        ) {
+            return None;
+        }
+        let hash = &section.items.get(item)?.label;
+        let parent = format!("{hash}^");
+        let has_parent = helix_magit::GitCommand::new(
+            &self.workdir,
+            vec![
+                "rev-parse".into(),
+                "--verify".into(),
+                "--quiet".into(),
+                parent.clone(),
+            ],
+        )
+        .run()
+        .is_ok_and(|output| output.success);
+        Some(if has_parent {
+            parent
+        } else {
+            "--root".to_string()
+        })
+    }
+
     /// Where `RET` on a change goes: the file in the working tree, at the
     /// line under the cursor. A 1-based line.
     fn visit_target(&self) -> Result<(PathBuf, usize), String> {
@@ -1010,6 +1053,27 @@ impl Component for DiffView {
                         )
                     }
                 }
+            }
+            // Magit's status buffer opens the menus by their dispatch keys.
+            (KeyCode::Char(key @ ('c' | 'r' | 'P' | 'F' | 'b' | '?')), _) => {
+                let kind = match key {
+                    'c' => MenuKind::Commit,
+                    'r' => MenuKind::Rebase,
+                    'P' => MenuKind::Push,
+                    'F' => MenuKind::Pull,
+                    'b' => MenuKind::Branch,
+                    _ => MenuKind::Main,
+                };
+                let mut overlay =
+                    TransientOverlay::new(kind.menu(), self.head.clone(), self.workdir.clone());
+                if kind == MenuKind::Rebase {
+                    if let Some(base) = self.rebase_base_at_cursor() {
+                        overlay = overlay.with_rebase_base(base);
+                    }
+                }
+                return EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                    compositor.push(Box::new(overlay));
+                })));
             }
             (KeyCode::Char('S'), _) => self.apply_all(true),
             (KeyCode::Char('U'), _) => self.apply_all(false),
