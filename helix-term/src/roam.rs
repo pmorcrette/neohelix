@@ -4279,8 +4279,8 @@ pub fn insert_inline_task(editor: &mut Editor, title: &str) {
 
 // ── org-protocol ──────────────────────────────────────────────────────────
 
-/// Opens `path` with the cursor at the start of `line`.
-fn open_at(editor: &mut Editor, path: &Path, line: usize) -> bool {
+/// Opens `path` with the cursor at the start of `line` (0-based), centred.
+pub(crate) fn open_at(editor: &mut Editor, path: &Path, line: usize) -> bool {
     if let Err(err) = editor.open(path, helix_view::editor::Action::Replace) {
         editor.set_error(format!("could not open {}: {err}", path.display()));
         return false;
@@ -4289,6 +4289,8 @@ fn open_at(editor: &mut Editor, path: &Path, line: usize) -> bool {
     let at = text.line_to_char(line.min(text.len_lines().saturating_sub(1)));
     let view_id = view!(editor).id;
     doc_mut!(editor).set_selection(view_id, helix_core::Selection::point(at));
+    let (view, doc) = current!(editor);
+    helix_view::align_view(doc, view, helix_view::Align::Center);
     true
 }
 

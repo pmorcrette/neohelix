@@ -81,8 +81,114 @@ pub fn build_partial_patch(file: &FileDiff, selection: &Selection) -> Option<Fil
             .filter(|line| line.kind != DiffLineKind::Deletion)
             .count() as u32;
 
+        // An empty side is anchored at the line before it rather than
+        // 1-based, so go through 0-based positions: a pure insertion after
+        // line 3 is `-3,0 +4,n`, a whole-file deletion `-1,n +0,0`.
         let old_start = hunk.header.old_start;
-        let new_start = (old_start as i64 + offset).max(0) as u32;
+        let old_first = if old_count == 0 {
+            old_start as i64
+        } else {
+            old_start as i64 - 1
+        };
+        let new_first = old_first + offset;
+        let new_start = if new_count == 0 {
+            new_first
+        } else {
+            new_first + 1
+        }
+        .max(0) as u32;
+        offset += new_count as i64 - old_count as i64;
+
+        renumber(&mut lines, old_start, new_start);
+
+        hunks.push(DiffHunk {
+            header: HunkHeader {
+                old_start,
+                old_count,
+                new_start,
+                new_count,
+                section: hunk.header.section.clone(),
+            },
+            lines,
+            folded: hunk.folded,
+        });
+    }
+
+    if hunks.is_empty() {
+        return None;
+    }
+
+    Some(FileDiff {
+        hunks,
+        ..file.clone()
+    })
+}
+
+/// Builds the patch of only the selected changes, for applying *in
+/// reverse* to the diff's new side — unstaging from the index, discarding
+/// from the working tree.
+///
+/// [`build_partial_patch`] rewrites the unselected changes so the patch
+/// fits the old side. Reversed, it is matched against the new side, where
+/// the unselected changes have already happened, so the rule mirrors:
+///
+/// * an **unselected addition becomes context** — it is in the new file
+///   and stays there,
+/// * an **unselected deletion is dropped** — it is not in the new file.
+///
+/// Each hunk keeps its `new_start`, since that is where it sits in the file
+/// the patch is applied to; `old_start` is shifted by the included hunks
+/// before it, and is only for display.
+pub fn build_reverse_patch(file: &FileDiff, selection: &Selection) -> Option<FileDiff> {
+    let mut hunks = Vec::new();
+    let mut offset: i64 = 0;
+
+    for (hunk_index, hunk) in file.hunks.iter().enumerate() {
+        let selects_a_change = hunk.lines.iter().enumerate().any(|(index, line)| {
+            line.kind != DiffLineKind::Context && selection.covers(hunk_index, index)
+        });
+        if !selects_a_change {
+            continue;
+        }
+
+        let mut lines: Vec<DiffLine> = Vec::with_capacity(hunk.lines.len());
+        for (line_index, line) in hunk.lines.iter().enumerate() {
+            let selected = selection.covers(hunk_index, line_index);
+            match line.kind {
+                DiffLineKind::Context => lines.push(line.clone()),
+                DiffLineKind::Deletion if selected => lines.push(line.clone()),
+                DiffLineKind::Deletion => continue,
+                DiffLineKind::Addition if selected => lines.push(line.clone()),
+                DiffLineKind::Addition => lines.push(DiffLine {
+                    kind: DiffLineKind::Context,
+                    ..line.clone()
+                }),
+            }
+        }
+
+        let old_count = lines
+            .iter()
+            .filter(|line| line.kind != DiffLineKind::Addition)
+            .count() as u32;
+        let new_count = lines
+            .iter()
+            .filter(|line| line.kind != DiffLineKind::Deletion)
+            .count() as u32;
+
+        // The same 0-based detour as the forward direction, the other way.
+        let new_start = hunk.header.new_start;
+        let new_first = if new_count == 0 {
+            new_start as i64
+        } else {
+            new_start as i64 - 1
+        };
+        let old_first = new_first - offset;
+        let old_start = if old_count == 0 {
+            old_first
+        } else {
+            old_first + 1
+        }
+        .max(0) as u32;
         offset += new_count as i64 - old_count as i64;
 
         renumber(&mut lines, old_start, new_start);

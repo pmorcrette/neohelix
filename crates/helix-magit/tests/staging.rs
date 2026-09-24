@@ -311,3 +311,94 @@ fn staging_a_hunk_of_a_partly_staged_file_works() {
 
     assert_eq!(index_content(dir.path(), "f.txt"), FAR_APART_NEW);
 }
+
+#[test]
+fn staging_a_deleted_file_removes_it_from_the_index() {
+    let dir = fixture_or_skip!("a\nb\n");
+    fs::remove_file(dir.path().join("f.txt")).unwrap();
+
+    let repo = Repository::discover(dir.path()).unwrap();
+    let diffs = repo.worktree_diff().unwrap();
+    repo.stage(&diffs[0], &Selection::File).unwrap();
+
+    // Exactly as after `git rm`: staged as a deletion, nothing unstaged.
+    assert_eq!(
+        git(dir.path(), &["status", "--porcelain"]).unwrap(),
+        "D  f.txt\n"
+    );
+}
+
+#[test]
+fn unstaging_a_new_file_makes_it_untracked_again() {
+    let dir = fixture_or_skip!("a\n");
+    fs::write(dir.path().join("new.txt"), "fresh\n").unwrap();
+    git(dir.path(), &["add", "new.txt"]).unwrap();
+
+    let repo = Repository::discover(dir.path()).unwrap();
+    let staged = repo.staged_diff().unwrap();
+    repo.unstage(&staged[0], &Selection::File).unwrap();
+
+    assert_eq!(
+        git(dir.path(), &["status", "--porcelain"]).unwrap(),
+        "?? new.txt\n"
+    );
+}
+
+#[test]
+fn a_staged_deletion_is_listed_and_can_be_unstaged() {
+    let dir = fixture_or_skip!("a\nb\n");
+    git(dir.path(), &["rm", "-q", "f.txt"]).unwrap();
+
+    let repo = Repository::discover(dir.path()).unwrap();
+    let staged = repo.staged_diff().unwrap();
+    assert_eq!(staged.len(), 1);
+    assert_eq!(staged[0].status, helix_magit::FileStatus::Deleted);
+
+    repo.unstage(&staged[0], &Selection::File).unwrap();
+    // Back in the index, still gone from the working tree.
+    assert_eq!(
+        git(dir.path(), &["status", "--porcelain"]).unwrap(),
+        " D f.txt\n"
+    );
+}
+
+#[test]
+fn unstaging_a_pure_insertion_removes_exactly_those_lines() {
+    let dir = fixture_or_skip!("a\nb\nc\nd\ne\nf\ng\nh\n");
+    fs::write(dir.path().join("f.txt"), "a\nb\nc\nd\nNEW\ne\nf\ng\nh\n").unwrap();
+    git(dir.path(), &["add", "f.txt"]).unwrap();
+
+    let repo = Repository::discover(dir.path()).unwrap();
+    let staged = repo.staged_diff().unwrap();
+    repo.unstage(&staged[0], &Selection::Hunk(0)).unwrap();
+
+    assert_eq!(
+        index_content(dir.path(), "f.txt"),
+        "a\nb\nc\nd\ne\nf\ng\nh\n"
+    );
+}
+
+#[test]
+fn unstaging_one_line_of_a_hunk_keeps_the_rest_staged() {
+    let dir = fixture_or_skip!("one\ntwo\n");
+    fs::write(dir.path().join("f.txt"), "one\nTWO\nthree\n").unwrap();
+    git(dir.path(), &["add", "f.txt"]).unwrap();
+
+    let repo = Repository::discover(dir.path()).unwrap();
+    let staged = repo.staged_diff().unwrap();
+    let added = staged[0].hunks[0]
+        .lines
+        .iter()
+        .position(|line| line.content == "three")
+        .unwrap();
+    repo.unstage(
+        &staged[0],
+        &Selection::Lines {
+            hunk: 0,
+            lines: vec![added],
+        },
+    )
+    .unwrap();
+
+    assert_eq!(index_content(dir.path(), "f.txt"), "one\nTWO\n");
+}

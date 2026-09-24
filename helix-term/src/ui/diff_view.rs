@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use helix_magit::diff::{DiffLineKind, FileDiff};
 use helix_magit::status::Overview;
-use helix_magit::{Repository, Selection, Unmerged};
+use helix_magit::{Plan, Repository, Requirement, Selection, Unmerged};
 use helix_view::graphics::Rect;
 use helix_view::input::{KeyCode, KeyModifiers};
 use helix_view::Editor;
@@ -18,7 +18,8 @@ use tui::buffer::Buffer as Surface;
 use tui::text::Text;
 use tui::widgets::{Block, Widget};
 
-use crate::compositor::{Component, Context, Event, EventResult};
+use crate::compositor::{Component, Compositor, Context, Event, EventResult};
+use crate::ui::confirm::Confirm;
 
 /// What a section lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -222,6 +223,33 @@ fn build_sections(
             commits(&overview.recent),
         ),
     ]
+}
+
+/// The new-side line number of line `index` of a hunk. A deleted line is
+/// not in the file; the line now in its place is the nearest one that is.
+fn new_line_near(hunk: &helix_magit::DiffHunk, index: usize) -> u32 {
+    let index = index.min(hunk.lines.len());
+    hunk.lines[index..]
+        .iter()
+        .find_map(|line| line.new_line)
+        .or_else(|| {
+            hunk.lines[..index]
+                .iter()
+                .rev()
+                .find_map(|line| line.new_line)
+        })
+        .unwrap_or(hunk.header.new_start)
+}
+
+/// What `x` throws away, once confirmed.
+enum Discard {
+    Change {
+        file: FileDiff,
+        selection: Selection,
+        staged: bool,
+    },
+    Untracked(PathBuf),
+    Stash(String),
 }
 
 /// One rendered line, and what it stands for.
@@ -543,6 +571,223 @@ impl DiffView {
         self.rebuild_rows();
     }
 
+    /// What `x` would throw away, and how to ask about it.
+    fn discard_target(&self) -> Result<(String, Discard), String> {
+        let row = self
+            .current_row()
+            .ok_or_else(|| "Nothing here".to_string())?;
+        let section = row
+            .section()
+            .and_then(|section| self.sections.get(section))
+            .ok_or_else(|| "Move to a change or a stash first".to_string())?;
+
+        if let Row::Item { item, .. } = row {
+            let item = &section.items[item];
+            return match section.kind {
+                SectionKind::Stashes => Ok((
+                    format!("Drop {} ({})? (y/N)", item.label, item.text),
+                    Discard::Stash(item.label.clone()),
+                )),
+                _ => Err("Commits cannot be discarded; see the reset menu".to_string()),
+            };
+        }
+
+        let file = self
+            .file_at(row)
+            .ok_or_else(|| "Move to a file, hunk or line first".to_string())?;
+        let selection = self
+            .selection_at(row)
+            .ok_or_else(|| "Move to a file, hunk or line first".to_string())?;
+        let path = file.path.display();
+
+        if section.kind == SectionKind::Untracked && selection == Selection::File {
+            return Ok((
+                format!("Delete untracked file {path}? (y/N)"),
+                Discard::Untracked(file.path.clone()),
+            ));
+        }
+        let what = match &selection {
+            Selection::File => format!("all changes to {path}"),
+            Selection::Hunk(_) => format!("this hunk of {path}"),
+            Selection::Lines { .. } => format!("this line of {path}"),
+        };
+        let staged = section.kind.staged() == Some(true);
+        let question = if staged {
+            format!("Discard {what}, staged and in the working tree? (y/N)")
+        } else {
+            format!("Discard {what}? (y/N)")
+        };
+        Ok((
+            question,
+            Discard::Change {
+                file: file.clone(),
+                selection,
+                staged,
+            },
+        ))
+    }
+
+    /// Throws away what the confirmation agreed to, then refreshes.
+    fn discard(&mut self, target: Discard, editor: &mut Editor) {
+        self.error = None;
+        let repository = match Repository::discover(&self.workdir) {
+            Ok(repository) => repository,
+            Err(err) => {
+                self.error = Some(err.to_string());
+                return;
+            }
+        };
+        let outcome = match &target {
+            Discard::Change {
+                file,
+                selection,
+                staged,
+            } => repository.discard(file, selection, *staged),
+            Discard::Untracked(path) => repository.discard_untracked(path),
+            Discard::Stash(name) => {
+                match helix_magit::GitCommand::new(
+                    &self.workdir,
+                    vec!["stash".into(), "drop".into(), name.clone()],
+                )
+                .run()
+                {
+                    Ok(output) if output.success => Ok(()),
+                    Ok(output) => Err(helix_magit::repository::Error::Git(output.summary())),
+                    Err(err) => Err(err.into()),
+                }
+            }
+        };
+        match outcome {
+            Ok(()) => editor.set_status("Discarded"),
+            Err(err) => self.error = Some(err.to_string()),
+        }
+        if let Err(err) = self.reload(&repository) {
+            self.error = Some(err.to_string());
+        }
+    }
+
+    /// `S` and `U`: every tracked change staged, or everything unstaged.
+    fn apply_all(&mut self, stage: bool) {
+        self.error = None;
+        let repository = match Repository::discover(&self.workdir) {
+            Ok(repository) => repository,
+            Err(err) => {
+                self.error = Some(err.to_string());
+                return;
+            }
+        };
+        let outcome = if stage {
+            repository.stage_all()
+        } else {
+            repository.unstage_all()
+        };
+        if let Err(err) = outcome {
+            self.error = Some(err.to_string());
+        }
+        if let Err(err) = self.reload(&repository) {
+            self.error = Some(err.to_string());
+        }
+    }
+
+    /// `v`: a staged change reversed out of the working tree, the index left
+    /// as it is.
+    fn reverse_change(&mut self) {
+        self.error = None;
+        let Some(row) = self.current_row() else {
+            return;
+        };
+        let staged = row
+            .section()
+            .and_then(|section| self.sections.get(section))
+            .and_then(|section| section.kind.staged());
+        let (Some(file), Some(selection)) = (self.file_at(row).cloned(), self.selection_at(row))
+        else {
+            self.error = Some("Move to a change or a commit first".to_string());
+            return;
+        };
+        if staged != Some(true) {
+            self.error = Some("Unstaged changes cannot be reversed — use x to discard".to_string());
+            return;
+        }
+        let outcome = Repository::discover(&self.workdir).and_then(|repository| {
+            repository.reverse(&file, &selection)?;
+            self.reload(&repository)
+        });
+        if let Err(err) = outcome {
+            self.error = Some(err.to_string());
+        }
+    }
+
+    /// The git command `a` (apply) or `v` (reverse) runs on the commit or
+    /// stash under the cursor: Magit's cherry-apply, stash-apply and revert
+    /// without committing.
+    fn item_command(&self, reverse: bool) -> Option<Result<Plan, String>> {
+        let Some(Row::Item { section, item }) = self.current_row() else {
+            return None;
+        };
+        let section = self.sections.get(section)?;
+        let label = section.items.get(item)?.label.clone();
+        let (args, summary): (&[&str], &str) = match (section.kind, reverse) {
+            (SectionKind::Unmerged, _) => {
+                return Some(Err(
+                    "Resolve the conflict in the file (RET visits it)".into()
+                ))
+            }
+            (SectionKind::Stashes, false) => (&["stash", "apply"], "Apply stash"),
+            (SectionKind::Stashes, true) => {
+                return Some(Err(
+                    "Reversing a stash is not supported; apply or drop it".into()
+                ))
+            }
+            (_, false) => (&["cherry-pick", "--no-commit"], "Apply commit"),
+            (_, true) => (&["revert", "--no-commit"], "Reverse commit"),
+        };
+        let mut args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+        args.push(label);
+        Some(Ok(Plan {
+            args,
+            requirement: Requirement::None,
+            destructive: false,
+            summary: summary.to_string(),
+        }))
+    }
+
+    /// Where `RET` on a change goes: the file in the working tree, at the
+    /// line under the cursor. A 1-based line.
+    fn visit_target(&self) -> Result<(PathBuf, usize), String> {
+        let row = self
+            .current_row()
+            .ok_or_else(|| "Nothing here".to_string())?;
+        if let Row::Item { section, item } = row {
+            let section = &self.sections[section];
+            if section.kind == SectionKind::Unmerged {
+                return Ok((PathBuf::from(&section.items[item].text), 1));
+            }
+        }
+        let file = self
+            .file_at(row)
+            .ok_or_else(|| "Move to a file, hunk or line first".to_string())?;
+        if !self.workdir.join(&file.path).exists() {
+            return Err(format!("{} is deleted", file.path.display()));
+        }
+        let line = match row {
+            // The first changed line, rather than the context above it.
+            Row::Hunk { hunk, .. } => file.hunks.get(hunk).map(|hunk| {
+                let first = hunk
+                    .lines
+                    .iter()
+                    .position(|line| line.kind != DiffLineKind::Context)
+                    .unwrap_or(0);
+                new_line_near(hunk, first)
+            }),
+            Row::Line { hunk, line, .. } => {
+                file.hunks.get(hunk).map(|hunk| new_line_near(hunk, line))
+            }
+            _ => file.hunks.first().map(|hunk| hunk.header.new_start),
+        };
+        Ok((file.path.clone(), line.unwrap_or(1).max(1) as usize))
+    }
+
     /// Stages or unstages what the cursor is on, then refreshes.
     fn apply(&mut self, stage: bool) {
         self.error = None;
@@ -711,7 +956,63 @@ impl Component for DiffView {
                         crate::magit::show(cx, workdir, args);
                     })));
                 }
+                match self.visit_target() {
+                    Ok((path, line)) => {
+                        let path = self.workdir.join(path);
+                        return EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                            compositor.remove(DiffView::ID);
+                            crate::roam::open_at(cx.editor, &path, line - 1);
+                        })));
+                    }
+                    Err(err) => self.error = Some(err),
+                }
             }
+            (KeyCode::Char('x'), KeyModifiers::NONE) => match self.discard_target() {
+                Ok((question, target)) => {
+                    self.error = None;
+                    return EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                        compositor.push(Box::new(Confirm::new(
+                            question,
+                            "This cannot be undone",
+                            move |cx| {
+                                cx.jobs.callback(async move {
+                                    Ok(crate::job::Callback::EditorCompositor(Box::new(
+                                        move |editor: &mut Editor, compositor: &mut Compositor| {
+                                            if let Some(view) =
+                                                compositor.find_id::<DiffView>(DiffView::ID)
+                                            {
+                                                view.discard(target, editor);
+                                            }
+                                        },
+                                    )))
+                                });
+                            },
+                        )));
+                    })));
+                }
+                Err(err) => self.error = Some(err),
+            },
+            (KeyCode::Char('a' | 'v'), KeyModifiers::NONE) => {
+                let reverse = key.code == KeyCode::Char('v');
+                match self.item_command(reverse) {
+                    Some(Ok(plan)) => {
+                        let workdir = self.workdir.clone();
+                        return EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                            crate::magit::execute(compositor, cx, plan, workdir);
+                        })));
+                    }
+                    Some(Err(err)) => self.error = Some(err),
+                    None if reverse => self.reverse_change(),
+                    None => {
+                        self.error = Some(
+                            "A change here is already in the working tree; a applies commits and stashes"
+                                .to_string(),
+                        )
+                    }
+                }
+            }
+            (KeyCode::Char('S'), _) => self.apply_all(true),
+            (KeyCode::Char('U'), _) => self.apply_all(false),
             (KeyCode::Char('s'), KeyModifiers::NONE) => self.apply(true),
             (KeyCode::Char('u'), KeyModifiers::NONE) => self.apply(false),
             _ => {}
@@ -1057,10 +1358,17 @@ mod tests {
 
     /// A view over a fixed model, with no repository behind it.
     fn make_view(unstaged: Vec<FileDiff>, staged: Vec<FileDiff>) -> DiffView {
-        make_full_view(Vec::new(), unstaged, staged, &Overview::default())
+        make_full_view(
+            Vec::new(),
+            Vec::new(),
+            unstaged,
+            staged,
+            &Overview::default(),
+        )
     }
 
     fn make_full_view(
+        unmerged: Vec<Unmerged>,
         untracked: Vec<FileDiff>,
         unstaged: Vec<FileDiff>,
         staged: Vec<FileDiff>,
@@ -1077,11 +1385,7 @@ mod tests {
             error: None,
         };
         view.replace_sections(build_sections(
-            Vec::new(),
-            untracked,
-            unstaged,
-            staged,
-            overview,
+            unmerged, untracked, unstaged, staged, overview,
         ));
         view
     }
@@ -1328,7 +1632,7 @@ mod tests {
     #[test]
     fn commits_and_stashes_have_sections_of_their_own() {
         let overview = overview();
-        let mut view = make_full_view(Vec::new(), Vec::new(), Vec::new(), &overview);
+        let mut view = make_full_view(Vec::new(), Vec::new(), Vec::new(), Vec::new(), &overview);
         view.header = header_lines(&overview);
         view.rebuild_rows();
 
@@ -1371,6 +1675,7 @@ mod tests {
     #[test]
     fn untracked_files_start_folded_and_stage_like_unstaged_ones() {
         let mut view = make_full_view(
+            Vec::new(),
             vec![file("new.rs", 1, 2)],
             Vec::new(),
             Vec::new(),
@@ -1407,5 +1712,137 @@ mod tests {
         assert!(view.sections[2].folded);
         assert!(view.sections[3].files[0].folded);
         assert!(view.sections[1].files[0].folded, "a new untracked file");
+    }
+
+    fn parsed(text: &str) -> FileDiff {
+        helix_magit::parse_unified_diff(text).remove(0)
+    }
+
+    const EDIT: &str = "diff --git a/f.txt b/f.txt\n--- a/f.txt\n+++ b/f.txt\n@@ -10,4 +10,4 @@\n ctx\n-old\n+new\n more\n";
+
+    #[test]
+    fn discarding_asks_about_exactly_what_it_will_throw_away() {
+        let mut view = make_view(vec![parsed(EDIT)], vec![parsed(EDIT)]);
+        let question = |view: &DiffView| view.discard_target().map(|(question, _)| question);
+
+        view.cursor = 1; // the unstaged file
+        assert_eq!(
+            question(&view).unwrap(),
+            "Discard all changes to f.txt? (y/N)"
+        );
+        view.cursor = 2;
+        assert_eq!(
+            question(&view).unwrap(),
+            "Discard this hunk of f.txt? (y/N)"
+        );
+        let staged_hunk = view
+            .rows
+            .iter()
+            .position(|row| matches!(row, Row::Hunk { section: 3, .. }))
+            .unwrap();
+        view.cursor = staged_hunk;
+        assert_eq!(
+            question(&view).unwrap(),
+            "Discard this hunk of f.txt, staged and in the working tree? (y/N)"
+        );
+        view.cursor = 0;
+        assert!(question(&view).is_err(), "a section header");
+
+        let untracked = make_full_view(
+            vec![],
+            vec![file("junk.txt", 1, 1)],
+            vec![],
+            vec![],
+            &Overview::default(),
+        );
+        let mut untracked = untracked;
+        untracked.cursor = 1;
+        assert!(matches!(
+            untracked.discard_target().unwrap().1,
+            Discard::Untracked(_)
+        ));
+    }
+
+    #[test]
+    fn visiting_lands_on_the_line_under_the_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.txt"), "x\n").unwrap();
+        let mut view = make_view(vec![parsed(EDIT)], Vec::new());
+        view.workdir = dir.path().to_path_buf();
+
+        let at = |view: &mut DiffView, cursor| {
+            view.cursor = cursor;
+            view.visit_target().unwrap().1
+        };
+        assert_eq!(at(&mut view, 1), 10, "the file: its first hunk");
+        assert_eq!(at(&mut view, 2), 11, "the hunk: its first change");
+        assert_eq!(at(&mut view, 3), 10, "a context line");
+        assert_eq!(at(&mut view, 4), 11, "a deleted line: what took its place");
+        assert_eq!(at(&mut view, 5), 11, "an added line");
+        assert_eq!(at(&mut view, 6), 12);
+
+        std::fs::remove_file(dir.path().join("f.txt")).unwrap();
+        view.cursor = 1;
+        assert!(view.visit_target().unwrap_err().contains("deleted"));
+    }
+
+    #[test]
+    fn a_and_v_apply_and_reverse_commits_and_stashes() {
+        let overview = overview();
+        let mut view = make_full_view(vec![], vec![], vec![], vec![], &overview);
+        let row_of = |view: &DiffView, kind| {
+            view.rows
+                .iter()
+                .position(|row| matches!(row, Row::Item { section, .. } if view.sections[*section].kind == kind))
+                .unwrap()
+        };
+
+        view.cursor = row_of(&view, SectionKind::Stashes);
+        assert_eq!(
+            view.item_command(false).unwrap().unwrap().args,
+            ["stash", "apply", "stash@{0}"]
+        );
+        assert!(view.item_command(true).unwrap().is_err());
+
+        view.cursor = row_of(&view, SectionKind::Unpushed);
+        assert_eq!(
+            view.item_command(false).unwrap().unwrap().args,
+            ["cherry-pick", "--no-commit", "abc1234"]
+        );
+        assert_eq!(
+            view.item_command(true).unwrap().unwrap().args,
+            ["revert", "--no-commit", "abc1234"]
+        );
+    }
+
+    #[test]
+    fn unstaged_changes_cannot_be_reversed() {
+        let mut view = make_view(vec![parsed(EDIT)], Vec::new());
+        view.cursor = 2;
+        assert_eq!(view.item_command(true), None);
+        view.reverse_change();
+        assert!(view.error.as_deref().unwrap().contains("use x to discard"));
+    }
+
+    #[test]
+    fn an_unmerged_path_is_visited_not_applied() {
+        let mut view = make_full_view(
+            vec![Unmerged {
+                path: PathBuf::from("src/conflict.rs"),
+                state: "both modified",
+            }],
+            vec![],
+            vec![],
+            vec![],
+            &Overview::default(),
+        );
+        assert_eq!(view.sections[0].title, "Unmerged paths");
+        view.cursor = 1;
+        assert_eq!(
+            view.visit_target().unwrap(),
+            (PathBuf::from("src/conflict.rs"), 1)
+        );
+        assert!(view.item_command(false).unwrap().is_err());
+        assert_eq!(view.show_args(), None);
     }
 }

@@ -334,8 +334,54 @@ impl Repository {
             }
         }
 
+        // A path HEAD has and the index does not is a staged deletion, and
+        // walking the index alone never meets it.
+        let in_index: std::collections::HashSet<Vec<u8>> = index
+            .entries()
+            .iter()
+            .map(|entry| entry.path(&index).to_vec())
+            .collect();
+        for (rela_path, id) in self.head_blobs() {
+            let key = gix::path::into_bstr(rela_path.as_path()).to_vec();
+            if in_index.contains(&key) {
+                continue;
+            }
+            let head = self.blob(id).unwrap_or_default();
+            let status_entry = StatusEntry {
+                path: rela_path,
+                status: FileStatus::Deleted,
+                untracked: false,
+            };
+            if let Some(diff) = self.diff_contents(&status_entry, &head, &[]) {
+                diffs.push(diff);
+            }
+        }
+
         diffs.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(diffs)
+    }
+
+    /// Every file in HEAD's tree, with its blob. Empty before the first
+    /// commit.
+    fn head_blobs(&self) -> Vec<(PathBuf, gix::ObjectId)> {
+        let Some(tree) = self
+            .inner
+            .head_commit()
+            .ok()
+            .and_then(|commit| commit.tree().ok())
+        else {
+            return Vec::new();
+        };
+        let mut recorder = gix::traverse::tree::Recorder::default();
+        if tree.traverse().breadthfirst(&mut recorder).is_err() {
+            return Vec::new();
+        }
+        recorder
+            .records
+            .into_iter()
+            .filter(|entry| entry.mode.is_blob_or_symlink())
+            .map(|entry| (PathBuf::from(entry.filepath.to_string()), entry.oid))
+            .collect()
     }
 
     /// The paths the index holds in conflict, with how they conflict.
@@ -382,6 +428,116 @@ impl Repository {
         self.update_index(file, selection, true)
     }
 
+    /// Throws away the selected part of `file`'s changes. They cannot be
+    /// got back, so the caller asks first.
+    ///
+    /// An unstaged change is reverse-applied to the working tree, leaving it
+    /// as the index has it. A staged change is removed from both the index
+    /// and the working tree, as Magit does; the working tree is checked
+    /// first, so when it has moved on from what was staged nothing changes.
+    pub fn discard(&self, file: &FileDiff, selection: &Selection, staged: bool) -> Result<()> {
+        if file.binary {
+            return self.discard_binary(file, selection, staged);
+        }
+        let reversed = self.worktree_reversed(file, selection)?;
+        if staged {
+            self.unstage(file, selection)?;
+        }
+        self.write_worktree(&file.path, reversed)
+    }
+
+    /// Reverse-applies the selected part of a staged change to the working
+    /// tree only, leaving the index alone: Magit's `v`.
+    pub fn reverse(&self, file: &FileDiff, selection: &Selection) -> Result<()> {
+        if file.binary {
+            return Err(Error::BinaryFile(file.path.clone()));
+        }
+        let reversed = self.worktree_reversed(file, selection)?;
+        self.write_worktree(&file.path, reversed)
+    }
+
+    /// Deletes a file git does not track.
+    pub fn discard_untracked(&self, rela_path: &Path) -> Result<()> {
+        std::fs::remove_file(self.workdir.join(rela_path))?;
+        Ok(())
+    }
+
+    /// What the working tree file becomes with the selection reversed out of
+    /// it; `None` when that leaves a new file with nothing in it, which is
+    /// then deleted rather than kept empty.
+    fn worktree_reversed(&self, file: &FileDiff, selection: &Selection) -> Result<Option<String>> {
+        let patch = crate::build_reverse_patch(file, selection).ok_or(Error::NothingSelected)?;
+        let current = match std::fs::read(self.workdir.join(&file.path)) {
+            Ok(content) => content,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(err) => return Err(err.into()),
+        };
+        let current =
+            String::from_utf8(current).map_err(|_| Error::BinaryFile(file.path.clone()))?;
+        let reversed = crate::apply_patch(&current, &patch, true)?;
+        let deletes = reversed.is_empty() && file.status == FileStatus::Added;
+        Ok((!deletes).then_some(reversed))
+    }
+
+    fn write_worktree(&self, rela_path: &Path, content: Option<String>) -> Result<()> {
+        let path = self.workdir.join(rela_path);
+        match content {
+            Some(content) => {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(path, content)?;
+            }
+            None => match std::fs::remove_file(path) {
+                Err(err) if err.kind() != std::io::ErrorKind::NotFound => return Err(err.into()),
+                _ => {}
+            },
+        }
+        Ok(())
+    }
+
+    /// A binary file can only be discarded whole, by putting back the
+    /// index's copy — or, for a staged change, HEAD's in both places.
+    fn discard_binary(&self, file: &FileDiff, selection: &Selection, staged: bool) -> Result<()> {
+        if *selection != Selection::File || staged {
+            return Err(Error::BinaryFile(file.path.clone()));
+        }
+        let path = self.workdir.join(&file.path);
+        match self.index_blob(&file.path) {
+            Some(content) => std::fs::write(path, content)?,
+            None => std::fs::remove_file(path)?,
+        }
+        Ok(())
+    }
+
+    /// `git add -u`: every change to a tracked file, staged.
+    pub fn stage_all(&self) -> Result<()> {
+        self.run_git(&["add", "--update", "--", "."])
+    }
+
+    /// Everything staged goes back to unstaged, the working tree untouched.
+    pub fn unstage_all(&self) -> Result<()> {
+        if self.inner.head_id().is_ok() {
+            self.run_git(&["reset", "--quiet", "--", "."])
+        } else {
+            // Before the first commit there is no HEAD to reset to.
+            self.run_git(&["rm", "-r", "--cached", "--quiet", "--", "."])
+        }
+    }
+
+    fn run_git(&self, args: &[&str]) -> Result<()> {
+        let output = crate::GitCommand::new(
+            &self.workdir,
+            args.iter().map(|arg| arg.to_string()).collect(),
+        )
+        .run()?;
+        if output.success {
+            Ok(())
+        } else {
+            Err(Error::Git(output.summary()))
+        }
+    }
+
     /// The shared half of staging and unstaging.
     ///
     /// Rather than shelling out to `git apply --cached`, the patch is applied
@@ -389,13 +545,39 @@ impl Repository {
     /// a blob and the index entry repointed at it. Nothing touches the working
     /// tree, so a failed apply cannot cost the user their edits.
     fn update_index(&self, file: &FileDiff, selection: &Selection, reverse: bool) -> Result<()> {
-        let patch = crate::build_partial_patch(file, selection).ok_or(Error::NothingSelected)?;
+        let patch = if reverse {
+            crate::build_reverse_patch(file, selection)
+        } else {
+            crate::build_partial_patch(file, selection)
+        }
+        .ok_or(Error::NothingSelected)?;
 
         let rela_path = file.path.clone();
         let base = self.index_blob(&rela_path).unwrap_or_default();
         let base = String::from_utf8(base).map_err(|_| Error::BinaryFile(rela_path.clone()))?;
 
         let updated = crate::apply_patch(&base, &patch, reverse)?;
+
+        // Staging all of a deletion, or unstaging all of an addition, takes
+        // the path out of the index — `git rm --cached` — rather than
+        // leaving an empty file tracked in its place.
+        let removes_path = updated.is_empty()
+            && match file.status {
+                FileStatus::Deleted => !reverse,
+                FileStatus::Added => reverse,
+                _ => false,
+            };
+        if removes_path {
+            let index = self.inner.index_or_empty().map_err(git)?;
+            let mut index = gix::fs::FileSnapshot::into_owned_or_cloned(index);
+            let path = gix::path::into_bstr(rela_path.as_path()).into_owned();
+            index.remove_entries(|_, entry_path, _| entry_path == path.as_slice());
+            index
+                .write(gix::index::write::Options::default())
+                .map_err(git)?;
+            return Ok(());
+        }
+
         let oid = self
             .inner
             .write_blob(updated.as_bytes())

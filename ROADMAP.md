@@ -1261,15 +1261,39 @@ like the rest of the refresh.
 
 Three holes in the daily loop the fork otherwise covers end to end.
 
-- [ ] Discard (`x`): throw away a hunk, a line selection or a whole file's
+- [x] Discard (`x`): throw away a hunk, a line selection or a whole file's
       changes. The patch machinery for this already exists — it is the same
       reverse-apply staging uses — but discarding cannot be undone, so it needs
       the confirmation Task 2.4 introduced.
-- [ ] Stage and unstage everything (`S`, `U`).
-- [ ] Visit the file at point (`RET`), landing on the line under the cursor
+- [x] Stage and unstage everything (`S`, `U`).
+- [x] Visit the file at point (`RET`), landing on the line under the cursor
       rather than at the top of the file.
-- [ ] Apply (`a`) and reverse (`v`) the hunk or selection at point, the two
+- [x] Apply (`a`) and reverse (`v`) the hunk or selection at point, the two
       operations that share discard's reverse-apply machinery.
+
+*Done.* `x` asks first, naming what goes ("Discard this hunk of f.txt?"),
+behind the same one-key confirmation as Task 2.4. An unstaged change is
+reverse-applied to the working tree; a staged one leaves both the index and the
+working tree, as in Magit, and the working tree is checked before either is
+touched, so a file that has moved on since it was staged is refused rather than
+half-discarded. `x` on a whole untracked file deletes it, and on a stash drops
+it. `S` is `git add -u` (tracked files only, as Magit's `S`) and `U` resets
+the index, with `git rm --cached` before the first commit. `RET` opens the file
+at the line under the cursor — for a deleted line, the line now in its place;
+for a hunk, its first change. `v` reverses a staged change out of the working
+tree and leaves the index. On a change in the status buffer `a` has nothing to
+do (the change is already in the working tree), so, as in Magit, `a` and `v`
+act on the commit or stash at point: `cherry-pick --no-commit`,
+`stash apply`, `revert --no-commit`.
+
+Writing this turned up four bugs in the staging Task 2.3 shipped, each now
+covered by a test against a real repository: reverse patches (unstaging, and
+now discarding) were built for the wrong side, so unstaging *some lines* of a
+hunk failed whenever the hunk had unselected changes; staging a whole deletion
+left an empty file in the index instead of removing the path, and unstaging a
+whole new file left it tracked and empty; and a staged deletion was invisible,
+because the staged section walked only the index and never met a path HEAD has
+and the index does not.
 
 ### Task 2.7: Interactive Rebase
 
