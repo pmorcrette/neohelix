@@ -630,6 +630,11 @@ impl Application {
         );
 
         crate::magit::commit_if_written(&mut self.editor, &doc_save_event.path);
+        crate::roam::sync_src_edit(
+            &mut self.editor,
+            &doc_save_event.path,
+            doc_save_event.text.to_string(),
+        );
 
         let lines = doc_save_event.text.len_lines();
         let size = doc_save_event.text.len_bytes();
@@ -1374,6 +1379,10 @@ impl Application {
         }
 
         self.editor.close_language_servers(None).await;
+
+        // `:q` closes a view, not its buffer, so a block's editing file is
+        // usually still open at exit and nothing else would remove it.
+        crate::roam::forget_all_src_edits(&mut self.editor);
 
         errs
     }

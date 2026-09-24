@@ -2394,6 +2394,11 @@ roam_buffer_command!(org_outline_path, crate::roam::show_outline_path);
 roam_buffer_command!(org_narrow, crate::roam::narrow_to_subtree);
 roam_buffer_command!(org_widen, crate::roam::widen);
 roam_buffer_command!(org_startup_visibility, crate::roam::startup_visibility);
+roam_buffer_command!(org_src_next, crate::roam::src_next);
+roam_buffer_command!(org_src_previous, crate::roam::src_previous);
+roam_buffer_command!(org_src_result, crate::roam::src_result);
+roam_buffer_command!(org_edit_src, crate::roam::edit_src);
+roam_buffer_command!(org_tangle, crate::roam::tangle);
 roam_component_command!(org_goto_heading, crate::commands::org_heading_picker);
 roam_component_command!(org_sparse_tree, |_editor| Some(
     crate::commands::org_sparse_tree_prompt()
@@ -4831,6 +4836,61 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Fold the buffer the way its #+STARTUP: says it opens.",
         fun: org_startup_visibility,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-src-next",
+        aliases: &[],
+        doc: "Move to the next source block.",
+        fun: org_src_next,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-src-previous",
+        aliases: &[],
+        doc: "Move to the previous source block.",
+        fun: org_src_previous,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-src-result",
+        aliases: &[],
+        doc: "Jump between a source block and its #+RESULTS:.",
+        fun: org_src_result,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-edit-src",
+        aliases: &[],
+        doc: "Edit the source block at the cursor in a buffer of its own.",
+        fun: org_edit_src,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-tangle",
+        aliases: &[],
+        doc: "Write every block with a :tangle target to its file.",
+        fun: org_tangle,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

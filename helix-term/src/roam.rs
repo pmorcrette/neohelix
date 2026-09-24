@@ -2850,3 +2850,326 @@ pub fn report_state(editor: &mut Editor) {
 
     editor.autoinfo = Some(helix_view::info::Info::new("Org-Roam state", &body));
 }
+
+// ── Source blocks ─────────────────────────────────────────────────────────
+
+/// The source blocks of the focused buffer and the line the cursor is on.
+fn source_blocks(editor: &Editor) -> (String, usize, Vec<helix_roam::source::SourceBlock>) {
+    let (text, line) = text_and_line(editor);
+    let blocks = helix_roam::source::blocks(&text);
+    (text, line, blocks)
+}
+
+/// Moves to the next source block's `#+begin_src` line.
+pub fn src_next(editor: &mut Editor) {
+    let (_, line, blocks) = source_blocks(editor);
+    match helix_roam::source::next_block(&blocks, line) {
+        Some(block) => goto_heading_line(editor, block.begin),
+        None => editor.set_status("No source block below"),
+    }
+}
+
+/// Moves to the previous source block's `#+begin_src` line.
+pub fn src_previous(editor: &mut Editor) {
+    let (_, line, blocks) = source_blocks(editor);
+    match helix_roam::source::previous_block(&blocks, line) {
+        Some(block) => goto_heading_line(editor, block.begin),
+        None => editor.set_status("No source block above"),
+    }
+}
+
+/// From a block to its `#+RESULTS:`, or from a result back to its block.
+pub fn src_result(editor: &mut Editor) {
+    let (text, line, blocks) = source_blocks(editor);
+
+    if let Some(block) = helix_roam::source::block_at(&blocks, line) {
+        match helix_roam::source::result_of(&text, block) {
+            Some(result) => goto_heading_line(editor, result),
+            None => editor.set_status("This block has no results"),
+        }
+        return;
+    }
+    match helix_roam::source::block_of_result(&text, &blocks, line) {
+        Some(block) => goto_heading_line(editor, block.begin),
+        None => editor.set_error("Not in a source block or on a #+RESULTS: line"),
+    }
+}
+
+/// Helix's name for an Org source block's language, where they differ.
+fn helix_language(org: &str) -> String {
+    match org {
+        "sh" | "shell" | "zsh" => "bash",
+        "emacs-lisp" | "elisp" => "elisp",
+        "C" => "c",
+        "C++" => "cpp",
+        "js" => "javascript",
+        "ts" => "typescript",
+        "py" => "python",
+        other => return other.to_ascii_lowercase(),
+    }
+    .to_string()
+}
+
+/// Opens the source block at the cursor in a buffer of its own, where the
+/// language's tooling — highlighting, its language server, formatting —
+/// sees ordinary code. Writing that buffer puts the code back in the block.
+///
+/// This is Org's `C-c '`. The buffer is a file in a temporary directory with
+/// the language's extension, because that is what a language server needs to
+/// take it on; the block itself is still only highlighted in place.
+pub fn edit_src(editor: &mut Editor) {
+    let (text, line, blocks) = source_blocks(editor);
+    let Some(block) = helix_roam::source::block_at(&blocks, line).cloned() else {
+        editor.set_error("Not in a source block");
+        return;
+    };
+    let org_doc = doc!(editor).id();
+    let body = helix_roam::source::body(&text, &block);
+    let language = block.language.clone().unwrap_or_default();
+
+    // A block already open for editing goes back to its buffer rather than
+    // opening a second copy whose writes would fight the first.
+    let existing = editor
+        .org_src_edits
+        .iter()
+        .find(|(_, edit)| edit.org_doc == org_doc && edit.body == body)
+        .map(|(path, _)| path.clone());
+    if let Some(path) = existing {
+        if let Err(err) = editor.open(&path, helix_view::editor::Action::VerticalSplit) {
+            editor.set_error(format!("Could not reopen the block: {err}"));
+        }
+        return;
+    }
+
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join("neohelix-src").join(format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let stem = block
+        .name
+        .as_deref()
+        .filter(|name| !name.contains(['/', '\\']))
+        .unwrap_or("block");
+    let extension = helix_roam::source::extension(if language.is_empty() {
+        "txt"
+    } else {
+        &language
+    });
+    let path = dir.join(format!("{stem}.{extension}"));
+
+    if let Err(err) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, &body)) {
+        editor.set_error(format!("Could not create {}: {err}", path.display()));
+        return;
+    }
+    editor.org_src_edits.insert(
+        path.clone(),
+        helix_view::editor::OrgSrcEdit {
+            org_doc,
+            begin_line: block.begin,
+            body,
+        },
+    );
+
+    let doc_id = match editor.open(&path, helix_view::editor::Action::VerticalSplit) {
+        Ok(id) => id,
+        Err(err) => {
+            editor.org_src_edits.remove(&path);
+            editor.set_error(format!("Could not open the block: {err}"));
+            return;
+        }
+    };
+
+    // An extension Helix does not know leaves the buffer without a language;
+    // the block's own name may still be one it knows.
+    if !language.is_empty() && doc!(editor).language_name().is_none() {
+        let loader = editor.syn_loader.load();
+        let set = doc_mut!(editor, &doc_id)
+            .set_language_by_language_id(&helix_language(&language), &loader)
+            .is_ok();
+        drop(loader);
+        if set {
+            editor.refresh_language_servers(doc_id);
+        }
+    }
+
+    editor.set_status("Editing the block: :w puts it back, :q when done");
+}
+
+/// Puts an edited block back when its editing buffer is written.
+///
+/// Called for every write; does nothing unless `path` is a block being
+/// edited. The Org buffer is changed but not saved, as in Org: the user sees
+/// the change and decides when to write it.
+pub fn sync_src_edit(editor: &mut Editor, path: &Path, code: String) {
+    let Some(edit) = editor.org_src_edits.get(path).cloned() else {
+        return;
+    };
+    let Some(org) = editor.documents.get(&edit.org_doc) else {
+        editor
+            .set_error("The Org buffer this block came from was closed; nothing was written back");
+        return;
+    };
+
+    let text = org.text().to_string();
+    let blocks = helix_roam::source::blocks(&text);
+    // The block whose body is still the one handed out, nearest to where it
+    // was: lines above it may have moved it, and an identical block elsewhere
+    // must not be the one overwritten.
+    let Some(block) = blocks
+        .iter()
+        .filter(|block| helix_roam::source::body(&text, block) == edit.body)
+        .min_by_key(|block| block.begin.abs_diff(edit.begin_line))
+    else {
+        editor.set_error(
+            "The block changed in the Org buffer since it was opened; nothing was written back",
+        );
+        return;
+    };
+
+    let after = helix_roam::source::replace_body(&text, block, &code);
+    let begin = block.begin;
+    // What the Org buffer will now hold, which is what the next write must
+    // find: the code as it reads once escaped and unescaped again.
+    let written = helix_roam::source::blocks(&after)
+        .into_iter()
+        .find(|block| block.begin == begin)
+        .map(|block| helix_roam::source::body(&after, &block))
+        .unwrap_or_default();
+
+    let org = editor.documents.get(&edit.org_doc).unwrap();
+    let before = org.text().clone();
+    let transaction = helix_core::diff::compare_ropes(&before, &helix_core::Rope::from(after));
+    // A view the Org buffer has been shown in, which the transaction needs
+    // to map that view's selection through.
+    let view_id = editor
+        .tree
+        .views()
+        .find(|(view, _)| view.doc == edit.org_doc)
+        .map(|(view, _)| view.id)
+        .or_else(|| org.selections().keys().next().copied());
+    let Some(view_id) = view_id else {
+        editor.set_error("The Org buffer has no view to apply the change in");
+        return;
+    };
+
+    let doc = editor.documents.get_mut(&edit.org_doc).unwrap();
+    doc.apply(&transaction, view_id);
+    if editor.tree.contains(view_id) {
+        let view = editor.tree.get_mut(view_id);
+        let doc = editor.documents.get_mut(&edit.org_doc).unwrap();
+        doc.append_changes_to_history(view);
+    }
+
+    editor.org_src_edits.insert(
+        path.to_path_buf(),
+        helix_view::editor::OrgSrcEdit {
+            org_doc: edit.org_doc,
+            begin_line: begin,
+            body: written,
+        },
+    );
+    editor.set_status("Written back into the block");
+}
+
+/// Forgets a block's editing buffer when it closes, and removes its file.
+pub fn forget_src_edit(editor: &mut Editor, path: &Path) {
+    if editor.org_src_edits.remove(path).is_some() {
+        let _ = std::fs::remove_file(path);
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::remove_dir(dir);
+        }
+    }
+}
+
+/// Removes every block editing file, when the editor exits.
+pub fn forget_all_src_edits(editor: &mut Editor) {
+    let paths: Vec<PathBuf> = editor.org_src_edits.keys().cloned().collect();
+    for path in paths {
+        forget_src_edit(editor, &path);
+    }
+}
+
+/// Writes every block with a `:tangle` target to its file.
+///
+/// The buffer is tangled as it is, not as it was last saved, which is what
+/// Org does too.
+pub fn tangle(editor: &mut Editor) {
+    let doc = doc!(editor);
+    let Some(org_path) = doc.path().map(Path::to_path_buf) else {
+        editor.set_error("Save the buffer first: :tangle yes names files after it");
+        return;
+    };
+    let text = doc.text().to_string();
+
+    let files = match helix_roam::source::tangle(&text, &org_path) {
+        Ok(files) => files,
+        Err(err) => {
+            editor.set_error(format!("Nothing tangled: {err}"));
+            return;
+        }
+    };
+    if files.is_empty() {
+        editor.set_status("Nothing to tangle: no block has a :tangle target");
+        return;
+    }
+
+    let mut written = Vec::new();
+    let mut failed = Vec::new();
+    let mut blocks = 0;
+    for file in &files {
+        match write_tangled(file) {
+            Ok(()) => {
+                blocks += file.blocks;
+                written.push(
+                    file.path
+                        .strip_prefix(org_path.parent().unwrap_or(Path::new("")))
+                        .unwrap_or(&file.path)
+                        .display()
+                        .to_string(),
+                );
+            }
+            Err(err) => failed.push(format!("{}: {err}", file.path.display())),
+        }
+    }
+
+    if failed.is_empty() {
+        editor.set_status(format!(
+            "Tangled {blocks} block{} into {}",
+            if blocks == 1 { "" } else { "s" },
+            written.join(", ")
+        ));
+    } else {
+        editor.set_error(format!(
+            "Tangled {} of {} files; failed: {}",
+            written.len(),
+            files.len(),
+            failed.join("; ")
+        ));
+    }
+}
+
+fn write_tangled(file: &helix_roam::source::Tangled) -> std::io::Result<()> {
+    if let Some(parent) = file.path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        if !parent.exists() {
+            if !file.mkdirp {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "its directory does not exist (add :mkdirp yes)",
+                ));
+            }
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::write(&file.path, &file.content)?;
+
+    #[cfg(unix)]
+    if file.executable {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(&file.path)?.permissions();
+        permissions.set_mode(permissions.mode() | 0o111);
+        std::fs::set_permissions(&file.path, permissions)?;
+    }
+    Ok(())
+}

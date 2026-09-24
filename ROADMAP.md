@@ -405,14 +405,69 @@ The one Org feature where a code editor should beat Emacs rather than catch up
 with it. `injections.scm` already highlights a source block in its own
 language; what is missing is treating it as code.
 
-- [ ] Edit a source block with the full language tooling — LSP, completion,
+- [x] Edit a source block with the full language tooling — LSP, completion,
       diagnostics, formatting — rather than only its highlighting.
-- [ ] Decide the mechanism: a scratch buffer bound to the block and written
+
+  `:org-edit-src` opens the block at the cursor in a split. Writing that
+  buffer puts the code back into the block; the Org buffer is changed but
+  not saved, as in Org. Checked in the editor with a Python block: ruff,
+  started by Helix's normal Python configuration, reported "`os` imported
+  but unused" and "Undefined name" on the block's code. A Rust block made
+  Helix start rust-analyzer the same way, but this environment has only
+  rustup's proxy for it, so nothing came back. Editing 42 into 43 in the
+  buffer and writing it put `43` back in the block with the block's own
+  indentation.
+
+- [x] Decide the mechanism: a scratch buffer bound to the block and written
       back, or making the language server see the block in place. The first is
       how Emacs does it; the second is better and harder.
-- [ ] Navigate between blocks, and between a block and its result.
-- [ ] Tangling: write the blocks out to their target files, which is the half of
+
+  The scratch buffer, and it has to be a **file**: a language server takes a
+  document by its path and picks a language by its extension, so the block
+  is written to a temporary directory under the block's `#+NAME:` (or
+  `block`) with the language's extension. The block is found again by its
+  body, not its line, when the buffer is written back. If it changed in the
+  Org buffer in the meantime, nothing is written back and the message says
+  why. The temporary file goes when its buffer closes, or when the editor
+  exits, since `:q` closes a view and leaves the buffer open. In place would
+  mean presenting the language server with a virtual document made from
+  each block and mapping every position both ways, and that is left for
+  later.
+
+  Unlike Org, this keeps the indentation the body already had rather than
+  re-indenting it by `org-edit-src-content-indentation`, so editing one line
+  does not re-indent the whole block. Lines starting with `*` or `#+` are
+  escaped with a comma going back and unescaped coming out, as Org does.
+
+- [x] Navigate between blocks, and between a block and its result.
+
+  `:org-src-next`, `:org-src-previous`, and `:org-src-result`, which goes
+  from a block to its `#+RESULTS:` (directly after it, or by name anywhere)
+  and back, including from any line of the output. Previous from inside a
+  block goes to that block's own `#+begin_src` first, as Org's backward
+  search does.
+
+- [x] Tangling: write the blocks out to their target files, which is the half of
       literate programming that needs no code execution and no trust decision.
+
+  `:org-tangle` writes every block with a `:tangle` target. Header
+  arguments are merged from `#+PROPERTY: header-args[:lang]`, then each
+  enclosing subtree's `:header-args[:lang]:` drawer property, then
+  `#+HEADER:` lines, then the block's own line. It handles `:tangle yes`
+  (named after the Org file with the language's extension, as
+  `org-babel-tangle-lang-exts` gives it), `:mkdirp`, `:shebang` (which
+  also makes the file executable), `:padline`, and noweb: `<<name>>`
+  expands from `#+NAME:` and `:noweb-ref`, with the reference line's
+  prefix repeated on every line, only under `:noweb yes` or `tangle`. An
+  unknown reference or a cycle is an error, and in that case nothing is
+  written. Checked in the editor: `src/lib.rs` was created under a
+  directory that did not exist, and `run.sh` came out executable with its
+  noweb reference expanded.
+
+  Not read: `:comments` (links back from the tangled file), detangling,
+  `:tangle-mode`, and a `:tangle` path computed by Lisp, which is Babel.
+  How `:padline` separates blocks is written from memory: one blank line
+  between blocks going to the same file.
 
 ### Task 1.16: The Optional Modules Worth Having
 

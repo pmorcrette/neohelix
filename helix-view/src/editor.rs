@@ -516,6 +516,23 @@ impl Config {
     }
 }
 
+/// A source block being edited in a buffer of its own.
+///
+/// The buffer is a real file in a temporary directory, so the language's
+/// tooling sees an ordinary file; writing it puts the code back into the
+/// block. The block is found again by its body rather than by its line,
+/// because the Org buffer may have been edited above it in the meantime.
+#[derive(Debug, Clone)]
+pub struct OrgSrcEdit {
+    /// The Org buffer the block lives in.
+    pub org_doc: DocumentId,
+    /// Where the block began when last seen, to choose between identical
+    /// blocks.
+    pub begin_line: usize,
+    /// The block's body as last written back.
+    pub body: String,
+}
+
 /// What the panel shows in its unlinked-references section.
 #[derive(Debug, Clone)]
 pub struct RoamUnlinked {
@@ -1495,6 +1512,8 @@ pub struct Editor {
     /// in the notes directory, which is not something to do sixty times a
     /// second. A command fills this; the panel only displays it.
     pub roam_unlinked: Option<RoamUnlinked>,
+    /// Source blocks open for editing, by the path of their editing buffer.
+    pub org_src_edits: HashMap<PathBuf, OrgSrcEdit>,
 
     /// The last subtree cut or copied, waiting to be pasted.
     ///
@@ -1649,6 +1668,7 @@ impl Editor {
             terminal: None,
             roam_pinned: None,
             roam_unlinked: None,
+            org_src_edits: HashMap::new(),
             org_clip: None,
             pending_commit: None,
             agenda_restriction: None,

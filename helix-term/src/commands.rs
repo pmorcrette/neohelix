@@ -494,6 +494,11 @@ impl MappableCommand {
         org_narrow, "Hide everything outside the subtree at the cursor",
         org_widen, "Bring back everything a narrowing or sparse tree hid",
         org_startup_visibility, "Fold the buffer the way its #+STARTUP: says it opens",
+        org_src_next, "Move to the next source block",
+        org_src_previous, "Move to the previous source block",
+        org_src_result, "Jump between a source block and its #+RESULTS:",
+        org_edit_src, "Edit the source block at the cursor in a buffer of its own",
+        org_tangle, "Write every block with a :tangle target to its file",
         org_copy_subtree, "Copy the subtree at the cursor",
         org_cut_subtree, "Cut the subtree at the cursor",
         org_paste_subtree, "Paste the copied subtree at the cursor's level",
@@ -4356,6 +4361,26 @@ fn org_widen(cx: &mut Context) {
 
 fn org_startup_visibility(cx: &mut Context) {
     crate::roam::startup_visibility(cx.editor);
+}
+
+fn org_src_next(cx: &mut Context) {
+    crate::roam::src_next(cx.editor);
+}
+
+fn org_src_previous(cx: &mut Context) {
+    crate::roam::src_previous(cx.editor);
+}
+
+fn org_src_result(cx: &mut Context) {
+    crate::roam::src_result(cx.editor);
+}
+
+fn org_edit_src(cx: &mut Context) {
+    crate::roam::edit_src(cx.editor);
+}
+
+fn org_tangle(cx: &mut Context) {
+    crate::roam::tangle(cx.editor);
 }
 
 /// Asks which emphasis to toggle, completing over the six.

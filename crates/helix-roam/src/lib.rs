@@ -23,6 +23,7 @@ pub mod query;
 pub mod restructure;
 pub mod scanner;
 pub mod sort;
+pub mod source;
 pub mod startup;
 pub mod table;
 pub mod unlinked;

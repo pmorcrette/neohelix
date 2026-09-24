@@ -7,7 +7,7 @@
 //! a file you have visited works even when the indexer has never seen it.
 
 use helix_event::register_hook;
-use helix_view::events::DocumentDidOpen;
+use helix_view::events::{DocumentDidClose, DocumentDidOpen};
 use helix_view::{DocumentId, Editor};
 
 /// Records the ids an opened Org file declares.
@@ -62,6 +62,14 @@ pub(super) fn register_hooks() {
     register_hook!(move |event: &mut DocumentDidOpen<'_>| {
         remember_ids(event.editor, event.doc);
         fold_on_open(event.editor, event.doc);
+        Ok(())
+    });
+    // A source block's editing buffer is a temporary file; closing it is
+    // the end of that edit.
+    register_hook!(move |event: &mut DocumentDidClose<'_>| {
+        if let Some(path) = event.doc.path().map(ToOwned::to_owned) {
+            crate::roam::forget_src_edit(event.editor, &path);
+        }
         Ok(())
     });
 }
