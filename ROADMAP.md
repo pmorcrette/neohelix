@@ -1715,11 +1715,30 @@ wrong. Every destructive action Tasks 2.4 and 2.9 put behind a confirmation is
 recoverable through it, which is what makes its absence worth a task of its
 own.
 
-- [ ] A reflog buffer for `HEAD` and for a chosen ref.
-- [ ] Act on the entry at point: check it out, reset to it, or create a branch
+- [x] A reflog buffer for `HEAD` and for a chosen ref.
+- [x] Act on the entry at point: check it out, reset to it, or create a branch
       there.
-- [ ] Reach it from the status buffer, so it is findable at the moment it is
+- [x] Reach it from the status buffer, so it is findable at the moment it is
       needed rather than only by someone who knows it exists.
+
+*Done.* The reflog is the log view walking the reflog (`git log
+--walk-reflogs`, without the graph git refuses to draw there): each entry's
+commit, its selector (`HEAD@{2}`) where the refs go, and why the ref moved
+(`reset: moving to HEAD~1`, `rebase (finish): …`). It is `r` (HEAD) and `R`
+(another ref, asked for) in the log menu, so `L r` from the status buffer. On
+an entry, the log's keys act on its commit: `RET` shows it, `X` opens the reset
+menu aimed at it, `b n` creates a branch there, and `b b` checks it out — the
+checkout question now takes any revision and offers the one under the cursor
+for editing rather than checking it out at once. To make it findable when it
+is needed, every confirmation for a command that moves a ref (reset, rebase,
+branch, cherry-pick, revert, merge, am) now says that the commits it leaves
+behind stay in the reflog, and where.
+
+Checked in the editor: a hard reset confirmed (the reflog pointer shown in the
+confirmation), the reflog listing it and the rebase before it, a branch
+created on the commit the reset left behind, and the checkout offered from an
+entry. The reflog's own selectors are right only without `--date`, which makes
+git name entries by date instead; that is why the date comes from `%as`.
 
 ### Task 2.16: Work-in-Progress Refs
 

@@ -326,6 +326,8 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
         | MagitCommand::LogCurrent
         | MagitCommand::LogAll
         | MagitCommand::LogOther
+        | MagitCommand::Reflog
+        | MagitCommand::ReflogOther
         | MagitCommand::ShowRefs
         | MagitCommand::ShowCherries
         | MagitCommand::ShowProcess
@@ -524,8 +526,10 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
         MagitCommand::Fetch => Plan::new(with(["fetch"], args), "Fetch"),
         MagitCommand::FetchAll => Plan::new(with(["fetch", "--all"], args), "Fetch all remotes"),
 
-        MagitCommand::BranchCheckout => Plan::new(with(["checkout"], args), "Check out a branch")
-            .asking([Ask::required(AskKind::Branch, "Check out")]),
+        // Any revision, a branch or not; one the menu was opened on is
+        // offered for editing rather than checked out at once.
+        MagitCommand::BranchCheckout => Plan::new(with(["checkout"], args), "Check out")
+            .asking([Ask::required(AskKind::Revision, "Check out").suggested()]),
         MagitCommand::BranchCreate => {
             Plan::new(with(["branch"], args), "Create a branch").asking([
                 Ask::required(AskKind::Text, "New branch"),
@@ -1662,7 +1666,7 @@ mod tests {
     fn the_actions_needing_a_name_or_a_remote_say_so() {
         assert_eq!(
             asks(&plan(MagitCommand::BranchCheckout, &[])),
-            [AskKind::Branch]
+            [AskKind::Revision]
         );
         assert_eq!(
             asks(&plan(MagitCommand::BranchDelete, &[])),

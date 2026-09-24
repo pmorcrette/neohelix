@@ -462,6 +462,28 @@ impl TransientOverlay {
                     compositor.push(Box::new(LogView::new(workdir, filter)));
                 })))
             }
+            MagitCommand::Reflog => {
+                let filter = LogFilter {
+                    reflog: true,
+                    ..LogFilter::default()
+                };
+                let workdir = self.workdir.clone();
+                EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                    compositor.remove(TransientOverlay::ID);
+                    compositor.push(Box::new(LogView::new(workdir, filter)));
+                })))
+            }
+            MagitCommand::ReflogOther => {
+                let filter = LogFilter {
+                    reflog: true,
+                    ..LogFilter::default()
+                };
+                let workdir = self.workdir.clone();
+                EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                    compositor.remove(TransientOverlay::ID);
+                    compositor.push(Box::new(crate::ui::log_view::range_prompt(workdir, filter)));
+                })))
+            }
             MagitCommand::LogOther => {
                 let filter = LogFilter::from_args(&self.menu.args());
                 let workdir = self.workdir.clone();
@@ -646,6 +668,8 @@ mod tests {
                         | MagitCommand::LogCurrent
                         | MagitCommand::LogAll
                         | MagitCommand::LogOther
+                        | MagitCommand::Reflog
+                        | MagitCommand::ReflogOther
                         | MagitCommand::ShowRefs
                         | MagitCommand::ShowCherries
                         | MagitCommand::ShowProcess

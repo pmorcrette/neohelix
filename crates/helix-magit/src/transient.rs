@@ -51,6 +51,9 @@ pub enum MagitCommand {
     LogCurrent,
     LogAll,
     LogOther,
+    /// The reflog of HEAD, or of a ref asked for.
+    Reflog,
+    ReflogOther,
 
     ResetMixed,
     ResetSoft,
@@ -1282,6 +1285,10 @@ pub fn log_menu() -> TransientMenu {
             TransientAction::new('a', "All references", MagitCommand::LogAll),
             TransientAction::new('o', "Other", MagitCommand::LogOther),
             TransientAction::new('s', "Shortlog", MagitCommand::Shortlog),
+        ]),
+        TransientGroup::new("Reflog").with_actions([
+            TransientAction::new('r', "HEAD's reflog", MagitCommand::Reflog),
+            TransientAction::new('R', "Another ref's reflog", MagitCommand::ReflogOther),
         ]),
     ])
 }

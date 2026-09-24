@@ -27,6 +27,9 @@ pub struct LogFilter {
     pub path: Option<PathBuf>,
     /// Follow the path through renames; git allows it for one file only.
     pub follow: bool,
+    /// Walk the reflog of `range` (HEAD when `None`) instead of history:
+    /// where the ref has pointed, newest first, and why it moved.
+    pub reflog: bool,
     pub limit: usize,
 }
 
@@ -39,6 +42,7 @@ impl Default for LogFilter {
             grep: None,
             path: None,
             follow: false,
+            reflog: false,
             limit: DEFAULT_LIMIT,
         }
     }
@@ -80,6 +84,25 @@ impl LogFilter {
 
     /// The `git log` arguments.
     pub fn args(&self) -> Vec<String> {
+        if self.reflog {
+            // No graph: git refuses `--graph` with `--walk-reflogs`, and a
+            // reflog is a list, not a history.
+            let mut args: Vec<String> = [
+                "log",
+                "--walk-reflogs",
+                "--color=never",
+                // No `--date`: with it git names entries `HEAD@{<date>}`
+                // rather than `HEAD@{2}`; `%as` gives the short date.
+                REFLOG_FORMAT,
+            ]
+            .iter()
+            .map(|arg| arg.to_string())
+            .collect();
+            args.push(format!("--max-count={}", self.limit));
+            args.push(self.range.clone().unwrap_or_else(|| "HEAD".to_string()));
+            args.push("--".into());
+            return args;
+        }
         let mut args: Vec<String> = [
             "log",
             "--graph",
@@ -119,6 +142,9 @@ impl LogFilter {
 
     /// A one-line summary for the log's title.
     pub fn describe(&self) -> String {
+        if self.reflog {
+            return format!("reflog of {}", self.range.as_deref().unwrap_or("HEAD"));
+        }
         let mut parts = vec![if self.all {
             "all references".to_string()
         } else {
@@ -139,6 +165,11 @@ impl LogFilter {
 
 /// Hash, refs, date, author and subject, NUL-separated after the graph.
 const LOG_FORMAT: &str = "--format=%x00%h%x00%D%x00%ad%x00%an%x00%s";
+
+/// The reflog's lines in the same shape: the selector (`HEAD@{2}`) where
+/// the refs go, and why the ref moved (`reset: moving to HEAD~1`) as the
+/// subject.
+const REFLOG_FORMAT: &str = "--format=%x00%h%x00%gd%x00%as%x00%an%x00%gs";
 
 /// One line of the log: a commit, or a line of graph joining commits.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

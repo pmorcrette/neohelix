@@ -187,7 +187,12 @@ fn refine_prompt(what: Refine, current: Option<String>, editor: &Editor) -> crat
 /// The log of a revision asked for, from the log menu's `o`.
 pub fn range_prompt(workdir: PathBuf, filter: LogFilter) -> crate::ui::Prompt {
     crate::ui::Prompt::new(
-        "Log of (revision or range): ".into(),
+        if filter.reflog {
+            "Reflog of (a branch or HEAD): "
+        } else {
+            "Log of (revision or range): "
+        }
+        .into(),
         None,
         |_, _| Vec::new(),
         move |cx, input, event| {

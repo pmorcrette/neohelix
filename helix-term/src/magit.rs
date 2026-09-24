@@ -283,7 +283,19 @@ pub fn rebase_todo(editor: &mut Editor, action: &str) -> Result<(), String> {
 /// Puts a destructive plan behind a single-key confirmation.
 fn confirm_then_run(compositor: &mut Compositor, plan: Plan, workdir: PathBuf) {
     let question = format!("{}? (y/N)", plan.summary);
-    let detail = plan.command_line();
+    // What such commands move away from stays in the reflog: say where.
+    let recoverable = matches!(
+        plan.args.first().map(String::as_str),
+        Some("reset" | "rebase" | "branch" | "cherry-pick" | "revert" | "merge" | "am")
+    );
+    let detail = if recoverable {
+        format!(
+            "{}   (commits left behind stay in the reflog: L r)",
+            plan.command_line()
+        )
+    } else {
+        plan.command_line()
+    };
 
     compositor.push(Box::new(Confirm::new(question, detail, move |cx| {
         run(cx, plan, workdir);

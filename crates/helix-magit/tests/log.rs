@@ -271,3 +271,42 @@ fn a_commit_and_a_range_are_diffed_with_the_options_asked_for() {
     assert_eq!(against_tree[0].path, PathBuf::from("new.txt"));
     assert!(diff_range(work, "--output=x", None, &DiffOptions::default()).is_err());
 }
+
+#[test]
+fn the_reflog_lists_where_head_has_been() {
+    let Some(dir) = fixture() else { return };
+    let work = dir.path();
+    // A hard reset away from the merge: the commit is only in the reflog.
+    git(work, &["reset", "-q", "--hard", "HEAD~1"]).unwrap();
+
+    let filter = LogFilter {
+        reflog: true,
+        ..LogFilter::default()
+    };
+    let entries = read_log(work, &filter).unwrap();
+    assert!(
+        entries.iter().all(|entry| entry.hash.is_some()),
+        "no graph lines"
+    );
+    assert_eq!(entries[0].refs, ["HEAD@{0}"]);
+    assert!(
+        entries[0].subject.starts_with("reset: moving to"),
+        "{:?}",
+        entries[0]
+    );
+    assert_eq!(entries[1].refs, ["HEAD@{1}"]);
+    assert!(
+        entries[1].subject.starts_with("merge topic"),
+        "{:?}",
+        entries[1]
+    );
+    assert_eq!(filter.describe(), "reflog of HEAD");
+
+    let topic = LogFilter {
+        reflog: true,
+        range: Some("topic".into()),
+        ..LogFilter::default()
+    };
+    let entries = read_log(work, &topic).unwrap();
+    assert_eq!(entries[0].refs, ["topic@{0}"]);
+}
