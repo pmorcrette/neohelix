@@ -9,11 +9,12 @@ pub mod diff;
 pub mod log;
 pub mod patch;
 pub mod rebase;
+pub mod refs;
 pub mod repository;
 pub mod status;
 pub mod transient;
 
-pub use command::{resolve, GitCommand, GitOutput, Plan, Requirement};
+pub use command::{resolve, Ask, AskKind, GitCommand, GitOutput, Plan, Requirement, Special};
 pub use diff::{
     parse_unified_diff, render_patch, DiffHunk, DiffLine, DiffLineKind, FileDiff, FileStatus,
     HunkHeader,

@@ -110,6 +110,71 @@ pub struct Overview {
     /// instead.
     pub recent: Vec<Commit>,
     pub stashes: Vec<Stash>,
+    /// Every worktree but this one.
+    pub worktrees: Vec<Worktree>,
+    pub submodules: Vec<Submodule>,
+}
+
+/// Another working tree of the same repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Worktree {
+    pub path: PathBuf,
+    /// Its branch, or `None` when detached.
+    pub branch: Option<String>,
+    pub head: String,
+}
+
+/// A submodule, as `git submodule status` reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Submodule {
+    pub path: String,
+    pub hash: String,
+    /// "not initialized", "out of date" (checked out at another commit
+    /// than recorded), "conflict", or "" when it is as recorded.
+    pub state: &'static str,
+}
+
+/// Reads `git worktree list --porcelain`.
+pub fn parse_worktrees(text: &str) -> Vec<Worktree> {
+    text.split("\n\n")
+        .filter_map(|block| {
+            let mut path = None;
+            let mut head = String::new();
+            let mut branch = None;
+            for line in block.lines() {
+                if let Some(value) = line.strip_prefix("worktree ") {
+                    path = Some(PathBuf::from(value));
+                } else if let Some(value) = line.strip_prefix("HEAD ") {
+                    head = value.chars().take(7).collect();
+                } else if let Some(value) = line.strip_prefix("branch ") {
+                    branch = Some(value.trim_start_matches("refs/heads/").to_string());
+                }
+            }
+            Some(Worktree {
+                path: path?,
+                branch,
+                head,
+            })
+        })
+        .collect()
+}
+
+/// Reads `git submodule status`.
+pub fn parse_submodules(text: &str) -> Vec<Submodule> {
+    text.lines()
+        .filter_map(|line| {
+            let state = match line.chars().next()? {
+                '-' => "not initialized",
+                '+' => "out of date",
+                'U' => "conflict",
+                _ => "",
+            };
+            let mut words = line[1..].split_whitespace();
+            let hash: String = words.next()?.chars().take(7).collect();
+            let path = words.next()?.to_string();
+            Some(Submodule { path, hash, state })
+        })
+        .collect()
 }
 
 /// Runs git and returns its output, or `None` when it fails: every question
@@ -209,6 +274,23 @@ pub fn read(workdir: &Path) -> Overview {
     let in_progress = git_dir(workdir)
         .and_then(|git_dir| in_progress(&git_dir, &|rev| log(workdir, rev, 1).pop()));
 
+    let this = std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
+    let worktrees = git(workdir, &["worktree", "list", "--porcelain"])
+        .map(|text| parse_worktrees(&text))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|tree| std::fs::canonicalize(&tree.path).unwrap_or(tree.path.clone()) != this)
+        .collect();
+    // Only asked when there are submodules to report on: without a
+    // `.gitmodules`, `git submodule` has nothing to say.
+    let submodules = if workdir.join(".gitmodules").exists() {
+        git(workdir, &["submodule", "status"])
+            .map(|text| parse_submodules(&text))
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
     Overview {
         branch,
         head,
@@ -219,6 +301,8 @@ pub fn read(workdir: &Path) -> Overview {
         unpushed,
         recent,
         stashes,
+        worktrees,
+        submodules,
     }
 }
 
@@ -350,7 +434,11 @@ pub fn in_progress(
         let start = read_trimmed(&git_dir.join("BISECT_START")).unwrap_or_default();
         return Some(InProgress {
             operation: Operation::Bisect,
-            description: format!("Bisecting, started from {}", short_ref(&start)),
+            description: format!(
+                "Bisecting from {}, now at {}",
+                short_ref(&start),
+                named("HEAD")
+            ),
         });
     }
 

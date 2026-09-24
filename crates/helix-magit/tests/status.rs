@@ -211,3 +211,51 @@ fn conflicted_paths_are_unmerged_rather_than_staged() {
         .collect();
     assert_eq!(staged, [PathBuf::from("clean.txt")]);
 }
+
+#[test]
+fn other_worktrees_are_listed_and_this_one_is_not() {
+    let (dir, work, _other) = fixture_or_skip!();
+    let linked = dir.path().join("linked");
+    git(
+        &work,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "side",
+            linked.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+
+    let overview = status::read(&work);
+    assert_eq!(overview.worktrees.len(), 1);
+    assert_eq!(overview.worktrees[0].branch.as_deref(), Some("side"));
+    assert!(overview.submodules.is_empty());
+}
+
+#[test]
+fn refs_and_cherries_are_read() {
+    let (_dir, work, _other) = fixture_or_skip!();
+    commit(&work, "h.txt", "mine\n", "my change").unwrap();
+    git(&work, &["tag", "v1"]).unwrap();
+
+    let refs = helix_magit::refs::read_refs(&work);
+    let main = refs.iter().find(|info| info.name == "main").unwrap();
+    assert!(main.is_head);
+    assert_eq!(main.upstream.as_deref(), Some("origin/main"));
+    let origin = refs.iter().find(|info| info.name == "origin/main").unwrap();
+    assert_eq!(origin.relation(), "1 behind");
+    assert!(refs.iter().any(|info| info.name == "v1"));
+
+    let cherries = helix_magit::refs::cherries(&work, "origin/main", None).unwrap();
+    assert_eq!(cherries.len(), 1);
+    assert_eq!(cherries[0].subject, "my change");
+    assert!(!cherries[0].equivalent);
+
+    assert_eq!(
+        helix_magit::refs::names(&work, helix_magit::AskKind::Remote),
+        ["origin"]
+    );
+}

@@ -6,7 +6,9 @@
 use std::path::PathBuf;
 
 use helix_magit::transient::{MenuKind, TransientEvent, TransientGroup, TransientMenu};
-use helix_magit::MagitCommand;
+use helix_magit::{AskKind, MagitCommand};
+
+use crate::ui::diff_view::DiffView;
 use helix_view::graphics::Rect;
 use helix_view::input::{KeyCode, KeyEvent};
 use tui::buffer::Buffer as Surface;
@@ -28,9 +30,9 @@ pub struct TransientOverlay {
     context: String,
     /// The repository the menu acts on, so it can open the status buffer.
     workdir: PathBuf,
-    /// The commit the menu was opened on, if any: a reset goes there and an
-    /// interactive rebase starts from it, without asking.
-    commit: Option<String>,
+    /// What the menu was opened on — a commit, a branch, a stash, a file —
+    /// which answers the first question it fits instead of asking it.
+    target: Option<(String, AskKind)>,
 }
 
 impl TransientOverlay {
@@ -41,13 +43,18 @@ impl TransientOverlay {
             menu,
             context: context.into(),
             workdir,
-            commit: None,
+            target: None,
         }
     }
 
     /// Makes the menu act on `commit` where an action needs one.
-    pub fn with_commit(mut self, commit: String) -> Self {
-        self.commit = Some(commit);
+    pub fn with_commit(self, commit: String) -> Self {
+        self.with_target(commit, AskKind::Revision)
+    }
+
+    /// Makes the menu act on `value` where an action asks for its kind.
+    pub fn with_target(mut self, value: String, kind: AskKind) -> Self {
+        self.target = Some((value, kind));
         self
     }
 
@@ -89,6 +96,21 @@ impl TransientOverlay {
             MenuKind::Rebase => "git rebase",
             MenuKind::Log => "git log",
             MenuKind::Reset => "git reset",
+            MenuKind::Stash => "git stash",
+            MenuKind::Merge => "git merge",
+            MenuKind::Tag => "git tag",
+            MenuKind::CherryPick => "git cherry-pick",
+            MenuKind::Revert => "git revert",
+            MenuKind::Remote => "git remote",
+            MenuKind::Bisect => "git bisect",
+            MenuKind::Worktree => "git worktree",
+            MenuKind::Submodule => "git submodule",
+            MenuKind::Apply => "git am",
+            MenuKind::FormatPatch => "git format-patch",
+            MenuKind::Subtree => "git subtree",
+            MenuKind::Notes => "git notes",
+            MenuKind::Ignore => return String::new(),
+            MenuKind::BranchConfig | MenuKind::RemoteConfig => "git config",
         };
 
         if args.is_empty() {
@@ -299,6 +321,33 @@ impl TransientOverlay {
                 EventResult::Consumed(None)
             }
             MagitCommand::Quit => EventResult::Consumed(Some(close)),
+            MagitCommand::ShowRefs => {
+                let workdir = self.workdir.clone();
+                EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                    compositor.remove(TransientOverlay::ID);
+                    compositor.push(Box::new(DiffView::refs(&workdir)));
+                })))
+            }
+            MagitCommand::ShowCherries => {
+                let workdir = self.workdir.clone();
+                EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                    compositor.remove(TransientOverlay::ID);
+                    compositor.push(Box::new(crate::ui::diff_view::cherries_prompt(workdir)));
+                })))
+            }
+            MagitCommand::Shortlog => {
+                let workdir = self.workdir.clone();
+                let args = self.menu.args();
+                EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                    compositor.remove(TransientOverlay::ID);
+                    compositor.push(Box::new(crate::magit::shortlog_prompt(workdir, args)));
+                })))
+            }
+            MagitCommand::ShowProcess => EventResult::Consumed(Some(Box::new(|compositor, cx| {
+                compositor.remove(TransientOverlay::ID);
+                crate::magit::close_views(compositor);
+                crate::magit::show_process(cx.editor);
+            }))),
             MagitCommand::LogCurrent | MagitCommand::LogAll => {
                 let mut filter = LogFilter::from_args(&self.menu.args());
                 filter.all = command == MagitCommand::LogAll;
@@ -331,16 +380,14 @@ impl TransientOverlay {
                 let Some(mut plan) = helix_magit::resolve(command, &self.menu.args()) else {
                     return EventResult::Consumed(Some(close));
                 };
-                if let Some(commit) = &self.commit {
-                    match plan.requirement {
-                        helix_magit::Requirement::TodoList => plan
-                            .args
-                            .push(helix_magit::rebase::base_for(&self.workdir, commit)),
-                        helix_magit::Requirement::Revision => {
-                            plan.args.push(commit.clone());
-                            plan.requirement = helix_magit::Requirement::None;
+                if let Some((value, kind)) = &self.target {
+                    if plan.requirement == helix_magit::Requirement::TodoList {
+                        if matches!(kind, AskKind::Revision | AskKind::Branch | AskKind::Tag) {
+                            plan.args
+                                .push(helix_magit::rebase::base_for(&self.workdir, value));
                         }
-                        _ => {}
+                    } else {
+                        plan.preset(value, *kind);
                     }
                 }
                 let workdir = self.workdir.clone();
@@ -460,6 +507,10 @@ mod tests {
                         | MagitCommand::LogCurrent
                         | MagitCommand::LogAll
                         | MagitCommand::LogOther
+                        | MagitCommand::ShowRefs
+                        | MagitCommand::ShowCherries
+                        | MagitCommand::ShowProcess
+                        | MagitCommand::Shortlog
                 ) || helix_magit::resolve(action.command, &[]).is_some();
                 assert!(handled, "{kind:?} binds '{}' to nothing", action.key);
             }

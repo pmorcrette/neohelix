@@ -1397,37 +1397,98 @@ What is left of Magit's dispatch menu. Each is a transient the existing menu
 system can already express and a command line `resolve` can already build, so
 these are mostly breadth rather than new mechanism — with the exceptions noted.
 
-- [ ] Stash: save, pop, apply, drop, and stash only the index or only the
+- [x] Stash: save, pop, apply, drop, and stash only the index or only the
       worktree.
-- [ ] Merge, with `--no-ff`, `--squash` and abort; conflict resolution is its
+- [x] Merge, with `--no-ff`, `--squash` and abort; conflict resolution is its
       own problem and is not covered by this item.
 - [x] Reset: soft, mixed and hard, with hard behind a confirmation. *(With
       Task 2.8: `X`, plus keep; the target is the commit at point, or asked.)*
-- [ ] Tag: create, delete and push tags.
-- [ ] Cherry-pick and revert, including their continue and abort states.
-- [ ] Remote: add, rename, remove, and set a branch's upstream. This also
+- [x] Tag: create, delete and push tags.
+- [x] Cherry-pick and revert, including their continue and abort states.
+- [x] Remote: add, rename, remove, and set a branch's upstream. This also
       supplies the remote picker Task 2.4 left missing, which is what
       `PushElsewhere` is waiting on.
-- [ ] Bisect: start, good, bad, reset, and show where it is.
-- [ ] Worktrees and submodules.
-- [ ] Apply and format patches (`am`, `format-patch`).
-- [ ] A process buffer: every command the fork has run and what it printed.
+- [x] Bisect: start, good, bad, reset, and show where it is.
+- [x] Worktrees and submodules.
+- [x] Apply and format patches (`am`, `format-patch`).
+- [x] A process buffer: every command the fork has run and what it printed.
       Task 2.4 shows only the first useful line in the status line, so the rest
       of git's output is currently discarded.
-- [ ] Subtree (`O`), which is separate from the submodule and worktree work
+- [x] Subtree (`O`), which is separate from the submodule and worktree work
       above.
-- [ ] Notes (`T`): add, edit and remove git notes.
-- [ ] Show refs (`y`): every branch and tag with its relationship to `HEAD`.
-- [ ] Cherries (`Y`): the commits one branch has that another does not.
-- [ ] Gitignore helpers (`i`): ignore the file at point, in the repository's
+- [x] Notes (`T`): add, edit and remove git notes.
+- [x] Show refs (`y`): every branch and tag with its relationship to `HEAD`.
+- [x] Cherries (`Y`): the commits one branch has that another does not.
+- [x] Gitignore helpers (`i`): ignore the file at point, in the repository's
       `.gitignore` or in the private exclude file.
-- [ ] Branch management the Task 2.4 menu left out: rename, reset, `spinoff`
+- [x] Branch management the Task 2.4 menu left out: rename, reset, `spinoff`
       and `spinout`.
-- [ ] The configuration transients: a branch's own git config (upstream, rebase
+- [x] The configuration transients: a branch's own git config (upstream, rebase
       behaviour, description) and a remote's, both of which upstream gives a
       menu of their own rather than a single "set upstream" action.
-- [ ] Shortlog: who contributed what over a range.
-- [ ] Fetch submodules as an operation distinct from fetching the repository.
+- [x] Shortlog: who contributed what over a range.
+- [x] Fetch submodules as an operation distinct from fetching the repository.
+
+*Done.* One mechanism carries most of it: an action now declares the values it
+needs as a list of questions (`Requirement::Ask`), each with a kind — branch,
+remote, revision, tag, stash, path, name, message — that decides how it is
+completed (branches, remotes, tags and stashes from the repository, paths from
+the file system) and whether what the menu was opened on answers it. Opened on
+a commit, a stash, a branch in the refs view or a file, a menu fills the first
+question of a fitting kind and asks only the rest; a path is offered as an
+editable suggestion instead, since `junk.log` is as likely to become `*.log`.
+Answers fill `{0}`, `{1}` placeholders in the command line, and an answer that
+would land as an argument of its own is refused if it starts with a dash, where
+git would read it as an option (a tag named `-v1` was the case that showed it).
+The status buffer and the log open every menu by Magit's dispatch key, listed
+in the main menu (`?`): `z m t A V M B % o w W O T i`, plus `y` (refs), `Y`
+(cherries) and `$` (process output).
+
+What needed more than a command line:
+
+- *Stashing only the worktree*: git has no switch for it. The index is stashed
+  aside, the rest stashed, and the index popped back, with the stash count
+  checked at each step so a step that saved nothing never makes a later one pop
+  the wrong stash; with nothing staged it is a plain stash. Only the index is
+  `--staged`.
+- *Spinoff* and *spinout* move the unpushed commits to a new branch (checked out
+  or not) and put the current branch back at its upstream, refusing before
+  touching anything when there is no upstream.
+- *Ignoring* appends to `.gitignore` or `info/exclude`, once.
+- *The process buffer* (`$`) is a scratch buffer of every command the menus ran
+  — commits and rebases included — with all it printed, newest last, capped at
+  200. The read-only commands the views run to draw themselves are left out;
+  they would bury the rest.
+- *Refs* (`y`) and *cherries* (`Y`) are the status buffer's view again:
+  branches, remote branches and tags with their upstream and how far ahead or
+  behind HEAD each is (counted for the first 100 refs), and `git cherry`'s list
+  with `-` for a change already upstream in another form. `RET` shows the
+  commit; the menus act on the ref under the cursor.
+- The status buffer lists other worktrees and submodules (state included:
+  not initialized, out of date, conflict); `RET` opens that one's status.
+- Merge, cherry-pick, revert, `am` and bisect in progress each say in the
+  status buffer which menu keys get out of them; bisect also shows the commit
+  being tested.
+- A failed command's status line now shows its reason (`CONFLICT…`, `error:`,
+  `fatal:`) rather than its first line, which for a merge was
+  "Auto-merging f".
+
+The configuration menus (`b C`, `M C`) set a branch's description, upstream,
+`rebase` and `pushRemote`, and a remote's URL, push URL and fetch refspec, but
+unlike Magit's they do not show the current values. Shortlog is `s` in the log
+menu, in a scratch buffer, limited by the log menu's author, message and file.
+
+Checked in the editor: stash of the worktree only, ignore from an untracked
+file, spinoff, push elsewhere with `--set-upstream`, the refs view and a rename
+from it, cherries, the process buffer, a conflicting merge shown and aborted,
+a whole bisect, a worktree added, opened and removed, a tag on the commit at
+point (and the dash refusal), a note, a stash popped from the stash under the
+cursor, a remote added and reconfigured, format-patch then `am`, a subtree
+added, the submodule section, a cherry-pick conflict shown and aborted, branch
+`rebase` config and shortlog. Not checked in the editor: `submodule add` from a
+local path, which git itself refuses unless `protocol.file.allow` is set
+globally (the refusal is what the status line shows); worktree-only stash with
+a file that has staged and unstaged changes to the same lines.
 
 ### Task 2.10: Conflict Resolution
 

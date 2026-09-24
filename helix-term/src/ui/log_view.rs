@@ -7,7 +7,6 @@ use std::path::PathBuf;
 
 use helix_magit::log::{read_log, LogEntry, LogFilter};
 use helix_magit::transient::MenuKind;
-use helix_magit::{Plan, Requirement};
 use helix_view::graphics::Rect;
 use helix_view::input::{KeyCode, KeyModifiers};
 use helix_view::Editor;
@@ -119,19 +118,6 @@ impl LogView {
         }
         self.reload();
         Ok(())
-    }
-
-    /// A git command on the commit under the cursor.
-    fn commit_plan(&self, args: &[&str], summary: &str) -> Option<Plan> {
-        let hash = self.current_hash()?;
-        let mut args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
-        args.push(hash.to_string());
-        Some(Plan {
-            args,
-            requirement: Requirement::None,
-            destructive: false,
-            summary: summary.to_string(),
-        })
     }
 
     fn scroll_into_view(&mut self, height: usize) {
@@ -418,30 +404,11 @@ impl Component for LogView {
                 };
                 self.reload();
             }
-            // Magit's keys in a log: A cherry-picks, V reverts.
-            (KeyCode::Char(key @ ('A' | 'V')), _) => {
-                let plan = if key == 'A' {
-                    self.commit_plan(&["cherry-pick"], "Cherry-pick")
-                } else {
-                    self.commit_plan(&["revert", "--no-edit"], "Revert")
-                };
-                if let Some(plan) = plan {
-                    let workdir = self.workdir.clone();
-                    return EventResult::Consumed(Some(Box::new(move |compositor, cx| {
-                        crate::magit::execute(compositor, cx, plan, workdir);
-                    })));
-                }
-            }
-            (KeyCode::Char(key @ ('X' | 'r' | 'c' | 'b' | 'P' | 'F' | '?')), _) => {
-                let kind = match key {
-                    'X' => MenuKind::Reset,
-                    'r' => MenuKind::Rebase,
-                    'c' => MenuKind::Commit,
-                    'b' => MenuKind::Branch,
-                    'P' => MenuKind::Push,
-                    'F' => MenuKind::Pull,
-                    _ => MenuKind::Main,
-                };
+            // Every menu by its dispatch key, aimed at the commit under the
+            // cursor: `A` then `A` cherry-picks it, `V` then `V` reverts it,
+            // `X` resets to it, `r` rebases from it.
+            (KeyCode::Char(key), _) if MenuKind::for_key(key).is_some() => {
+                let kind = MenuKind::for_key(key).unwrap_or(MenuKind::Main);
                 let mut overlay = TransientOverlay::new(
                     kind.menu(),
                     self.filter.describe(),
@@ -505,14 +472,6 @@ mod tests {
         assert_eq!(log.current_hash(), Some("c"), "stays on the last commit");
         log.move_cursor(-5);
         assert_eq!(log.current_hash(), Some("a"));
-    }
-
-    #[test]
-    fn actions_name_the_commit_under_the_cursor() {
-        let mut log = view(vec![entry(Some("a1"), "*"), entry(Some("b2"), "*")]);
-        log.move_cursor(1);
-        let plan = log.commit_plan(&["cherry-pick"], "Cherry-pick").unwrap();
-        assert_eq!(plan.args, ["cherry-pick", "b2"]);
     }
 
     #[test]

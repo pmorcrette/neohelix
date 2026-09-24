@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use helix_magit::command::{self, GitCommand, GitOutput};
-use helix_magit::{Plan, Requirement};
+use helix_magit::{Ask, AskKind, Plan, Requirement};
 use helix_view::editor::PendingCommit;
 use helix_view::Editor;
 
@@ -26,14 +26,12 @@ pub fn execute(compositor: &mut Compositor, cx: &mut Context, plan: Plan, workdi
                 run(cx, plan, workdir);
             }
         }
-        Requirement::BranchName => ask_for(compositor, plan, workdir, "Branch: "),
-        Requirement::Remote => ask_for(compositor, plan, workdir, "Remote: "),
+        Requirement::Ask(asks) => ask_next(compositor, cx.editor, plan, workdir, asks, Vec::new()),
         Requirement::CommitMessage { amend } => {
             // The views cover the editor; the message must be seen.
             close_views(compositor);
             compose(cx, plan, workdir, amend)
         }
-        Requirement::Revision => ask_for(compositor, plan, workdir, "Reset to: "),
         Requirement::TodoList => start_rebase(compositor, cx, plan, workdir),
     }
 }
@@ -292,59 +290,206 @@ fn confirm_then_run(compositor: &mut Compositor, plan: Plan, workdir: PathBuf) {
     })));
 }
 
-/// Reads the missing word, then runs the plan with it appended.
-fn ask_for(compositor: &mut Compositor, plan: Plan, workdir: PathBuf, label: &'static str) {
+/// Asks the plan's questions one after the other, then runs it with the
+/// answers. A question the menu's target already answered is skipped.
+fn ask_next(
+    compositor: &mut Compositor,
+    editor: &Editor,
+    plan: Plan,
+    workdir: PathBuf,
+    asks: Vec<Ask>,
+    mut answers: Vec<String>,
+) {
+    // A path the menu was opened on is a suggestion to edit — `junk.log`
+    // is as likely to become `*.log` — so it is asked with it filled in.
+    while let Some(preset) = asks
+        .get(answers.len())
+        .filter(|ask| ask.kind != AskKind::Path)
+        .and_then(|ask| ask.preset.clone())
+    {
+        answers.push(preset);
+    }
+    let Some(ask) = asks.get(answers.len()).cloned() else {
+        let plan = plan.answered(&answers);
+        if plan.destructive {
+            confirm_then_run(compositor, plan, workdir);
+        } else {
+            spawn_run(plan, workdir);
+        }
+        return;
+    };
+
+    let names = helix_magit::refs::names(&workdir, ask.kind);
+    let label = if ask.optional {
+        format!("{}: ", ask.label)
+    } else {
+        format!("{} (required): ", ask.label)
+    };
+    let kind = ask.kind;
+    let preset = ask.preset.clone();
     let prompt = crate::ui::Prompt::new(
         label.into(),
         None,
-        |_, _| Vec::new(),
+        move |editor, input| match kind {
+            AskKind::Path => crate::ui::completers::filename(editor, input),
+            _ => names
+                .iter()
+                .filter(|name| name.contains(input))
+                .map(|name| (0.., name.clone().into()))
+                .collect(),
+        },
         move |cx, input, event| {
-            if event != crate::ui::PromptEvent::Validate || input.trim().is_empty() {
+            if event != crate::ui::PromptEvent::Validate {
                 return;
             }
-            let mut plan = plan.clone();
-            plan.args.push(input.trim().to_string());
-            plan.requirement = Requirement::None;
-
-            if plan.destructive {
-                // The confirmation needs the compositor, which a prompt
-                // callback does not have, so it goes through a job.
-                let workdir = workdir.clone();
-                cx.jobs.callback(async move {
-                    Ok(Callback::EditorCompositor(Box::new(
-                        move |_editor: &mut Editor, compositor: &mut Compositor| {
-                            confirm_then_run(compositor, plan, workdir);
-                        },
-                    )))
-                });
-            } else {
-                run(cx, plan, workdir.clone());
+            let input = input.trim().to_string();
+            if let Some(refusal) = ask.refuse(&input) {
+                cx.editor.set_error(refusal);
+                return;
             }
+            let mut answers = answers.clone();
+            answers.push(input);
+            let (plan, workdir, asks) = (plan.clone(), workdir.clone(), asks.clone());
+            cx.jobs.callback(async move {
+                Ok(Callback::EditorCompositor(Box::new(
+                    move |editor: &mut Editor, compositor: &mut Compositor| {
+                        ask_next(compositor, editor, plan, workdir, asks, answers);
+                    },
+                )))
+            });
         },
     );
+    let prompt = match preset {
+        Some(preset) => prompt.with_line(preset, editor),
+        None => prompt,
+    };
     compositor.push(Box::new(prompt));
 }
 
-/// Runs the command and reports what git said.
-fn run(cx: &mut Context, plan: Plan, workdir: PathBuf) {
-    let command = GitCommand::new(workdir, plan.args.clone());
-    let line = plan.command_line();
-    cx.editor.set_status(format!("Running {line}…"));
-
-    cx.jobs.callback(async move {
-        let outcome = tokio::task::spawn_blocking(move || command.run()).await;
-
-        Ok(Callback::EditorCompositor(Box::new(
-            move |editor: &mut Editor, compositor: &mut Compositor| match outcome {
-                Ok(Ok(output)) => report(editor, compositor, &line, output),
-                Ok(Err(err)) if err.kind() == std::io::ErrorKind::NotFound => {
-                    editor.set_error("git was not found on PATH".to_string());
+/// Asks for a range, then shows who contributed how many commits to it.
+pub fn shortlog_prompt(workdir: PathBuf, args: Vec<String>) -> crate::ui::Prompt {
+    crate::ui::Prompt::new(
+        "Shortlog of (revision or range, empty for HEAD): ".into(),
+        None,
+        |_, _| Vec::new(),
+        move |cx, input, event| {
+            if event != crate::ui::PromptEvent::Validate {
+                return;
+            }
+            let range = match input.trim() {
+                "" => "HEAD".to_string(),
+                range => range.to_string(),
+            };
+            if let Err(err) = helix_magit::log::LogFilter::valid_range(&range) {
+                cx.editor.set_error(err);
+                return;
+            }
+            // `--author=` and `--grep=` from the log menu limit it too; a
+            // path goes after `--`.
+            let filter = helix_magit::log::LogFilter::from_args(&args);
+            let mut command: Vec<String> = ["shortlog", "--summary", "--numbered", "--email"]
+                .iter()
+                .map(|arg| arg.to_string())
+                .collect();
+            command.extend(filter.author.map(|author| format!("--author={author}")));
+            command.extend(filter.grep.map(|grep| format!("--grep={grep}")));
+            command.push(range.clone());
+            command.push("--".into());
+            command.extend(filter.path.map(|path| path.display().to_string()));
+            match GitCommand::new(&workdir, command).run() {
+                Ok(output) if output.success => {
+                    let text = format!("Shortlog of {range}\n\n{}", output.stdout);
+                    cx.editor
+                        .new_scratch_with_text(helix_view::editor::Action::Replace, &text);
                 }
-                Ok(Err(err)) => editor.set_error(format!("{line}: {err}")),
-                Err(err) => editor.set_error(format!("{line}: {err}")),
-            },
-        )))
+                Ok(output) => cx.editor.set_error(output.summary()),
+                Err(err) => cx.editor.set_error(err.to_string()),
+            }
+        },
+    )
+}
+
+/// Runs the plan and reports what git said.
+fn run(cx: &mut Context, plan: Plan, workdir: PathBuf) {
+    cx.editor
+        .set_status(format!("Running {}…", plan.command_line()));
+    spawn_run(plan, workdir);
+}
+
+/// The running half of [`run`], for callers without a context.
+fn spawn_run(plan: Plan, workdir: PathBuf) {
+    let line = plan.command_line();
+    tokio::task::spawn_blocking(move || {
+        let outcome = command::run_plan(&workdir, &plan);
+        crate::job::dispatch_blocking(move |editor, compositor| match outcome {
+            Ok(output) => report(editor, compositor, &line, output),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                editor.set_error("git was not found on PATH".to_string());
+            }
+            Err(err) => editor.set_error(format!("{line}: {err}")),
+        });
     });
+}
+
+/// One command the process buffer lists.
+struct ProcessRecord {
+    line: String,
+    output: GitOutput,
+}
+
+/// Every command run from the menus, commit and rebase included, newest
+/// last. Read-only commands the views run to draw themselves are not here:
+/// they would bury the ones that changed something.
+static PROCESS: std::sync::Mutex<Vec<ProcessRecord>> = std::sync::Mutex::new(Vec::new());
+
+/// How many commands the process buffer keeps.
+const PROCESS_LIMIT: usize = 200;
+
+fn record(line: &str, output: &GitOutput) {
+    if let Ok(mut records) = PROCESS.lock() {
+        records.push(ProcessRecord {
+            line: line.to_string(),
+            output: output.clone(),
+        });
+        let excess = records.len().saturating_sub(PROCESS_LIMIT);
+        records.drain(..excess);
+    }
+}
+
+/// The process buffer: every command run so far and all it printed, in a
+/// scratch buffer so it can be searched and copied from.
+pub fn show_process(editor: &mut Editor) {
+    let text = match PROCESS.lock() {
+        Ok(records) if !records.is_empty() => records
+            .iter()
+            .map(|record| {
+                let mut entry = format!(
+                    "{} {}\n",
+                    if record.output.success { "✓" } else { "✗" },
+                    record.line
+                );
+                for line in record
+                    .output
+                    .stdout
+                    .lines()
+                    .chain(record.output.stderr.lines())
+                {
+                    let line = line
+                        .rsplit('\r')
+                        .next()
+                        .unwrap_or(line)
+                        .replace("\x1b[K", "");
+                    if !line.trim().is_empty() {
+                        entry.push_str(&format!("    {line}\n"));
+                    }
+                }
+                entry
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => "No git command has been run from the menus yet.\n".to_string(),
+    };
+    editor.new_scratch_with_text(helix_view::editor::Action::Replace, &text);
 }
 
 /// Closes the status, log and commit views, which cover the whole editor,
@@ -357,6 +502,7 @@ pub fn close_views(compositor: &mut Compositor) {
 
 /// Shows the outcome and brings the status buffer back in step.
 fn report(editor: &mut Editor, compositor: &mut Compositor, line: &str, output: GitOutput) {
+    record(line, &output);
     if output.success {
         editor.set_status(format!("{line}: {}", output.summary()));
     } else {
@@ -364,9 +510,11 @@ fn report(editor: &mut Editor, compositor: &mut Compositor, line: &str, output: 
         editor.set_error(format!("{line}: {}", output.summary()));
     }
 
-    // The index, HEAD or the working tree may all have moved.
-    if let Some(view) = compositor.find_id::<DiffView>(DiffView::ID) {
-        view.refresh(editor);
+    // The index, HEAD, the working tree or the refs may all have moved.
+    for id in [DiffView::ID, DiffView::REFS_ID, DiffView::CHERRIES_ID] {
+        if let Some(view) = compositor.find_id::<DiffView>(id) {
+            view.refresh(editor);
+        }
     }
     if let Some(log) =
         compositor.find_id::<crate::ui::log_view::LogView>(crate::ui::log_view::LogView::ID)

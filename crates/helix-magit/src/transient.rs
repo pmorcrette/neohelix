@@ -33,6 +33,10 @@ pub enum MagitCommand {
     BranchCreate,
     BranchCreateAndCheckout,
     BranchDelete,
+    BranchRename,
+    BranchReset,
+    BranchSpinoff,
+    BranchSpinout,
 
     RebaseOntoUpstream,
     RebaseInteractive,
@@ -50,6 +54,93 @@ pub enum MagitCommand {
     ResetSoft,
     ResetHard,
     ResetKeep,
+
+    StashBoth,
+    StashIndex,
+    StashWorktree,
+    StashPop,
+    StashApply,
+    StashDrop,
+    StashBranch,
+
+    Merge,
+    MergeSquash,
+    MergeNoCommit,
+    MergeContinue,
+    MergeAbort,
+
+    TagCreate,
+    TagDelete,
+    TagPush,
+
+    CherryPick,
+    CherryApply,
+    CherryPickContinue,
+    CherryPickSkip,
+    CherryPickAbort,
+    Revert,
+    RevertNoCommit,
+    RevertContinue,
+    RevertSkip,
+    RevertAbort,
+
+    RemoteAdd,
+    RemoteRename,
+    RemoteRemove,
+    RemoteSetUpstream,
+    RemoteFetch,
+
+    BisectStart,
+    BisectGood,
+    BisectBad,
+    BisectSkip,
+    BisectReset,
+
+    WorktreeAdd,
+    WorktreeRemove,
+    WorktreePrune,
+    SubmoduleAdd,
+    SubmoduleUpdate,
+    SubmoduleSync,
+    SubmoduleFetch,
+
+    PatchApplyMailbox,
+    PatchApplyPlain,
+    AmContinue,
+    AmSkip,
+    AmAbort,
+    FormatPatch,
+
+    SubtreeAdd,
+    SubtreePull,
+    SubtreePush,
+    SubtreeSplit,
+
+    NoteEdit,
+    NoteAppend,
+    NoteRemove,
+    NotePrune,
+
+    IgnoreShared,
+    IgnorePrivate,
+
+    BranchConfigDescription,
+    BranchConfigUpstream,
+    BranchConfigRebase,
+    BranchConfigPushRemote,
+    RemoteConfigUrl,
+    RemoteConfigPushUrl,
+    RemoteConfigFetch,
+
+    /// Who contributed what over a range; shown, not just run.
+    Shortlog,
+
+    /// Views the editor opens rather than commands it runs: every branch
+    /// and tag against HEAD, the commits one branch has that another does
+    /// not, and what the commands run so far printed.
+    ShowRefs,
+    ShowCherries,
+    ShowProcess,
 
     /// Open or refresh the status buffer.
     Status,
@@ -70,10 +161,28 @@ pub enum MenuKind {
     Rebase,
     Log,
     Reset,
+    Stash,
+    Merge,
+    Tag,
+    CherryPick,
+    Revert,
+    Remote,
+    Bisect,
+    Worktree,
+    Submodule,
+    Apply,
+    FormatPatch,
+    Subtree,
+    Notes,
+    Ignore,
+    /// A branch's and a remote's own configuration, opened from the branch
+    /// and remote menus.
+    BranchConfig,
+    RemoteConfig,
 }
 
 impl MenuKind {
-    pub const ALL: [MenuKind; 8] = [
+    pub const ALL: [MenuKind; 24] = [
         MenuKind::Main,
         MenuKind::Commit,
         MenuKind::Push,
@@ -82,7 +191,61 @@ impl MenuKind {
         MenuKind::Rebase,
         MenuKind::Log,
         MenuKind::Reset,
+        MenuKind::Stash,
+        MenuKind::Merge,
+        MenuKind::Tag,
+        MenuKind::CherryPick,
+        MenuKind::Revert,
+        MenuKind::Remote,
+        MenuKind::Bisect,
+        MenuKind::Worktree,
+        MenuKind::Submodule,
+        MenuKind::Apply,
+        MenuKind::FormatPatch,
+        MenuKind::Subtree,
+        MenuKind::Notes,
+        MenuKind::Ignore,
+        MenuKind::BranchConfig,
+        MenuKind::RemoteConfig,
     ];
+
+    /// The key that opens this menu, in the main menu and the status
+    /// buffer alike (Magit's dispatch keys); `None` for a menu only another
+    /// menu opens.
+    pub fn key(self) -> Option<char> {
+        Some(match self {
+            MenuKind::Main => '?',
+            MenuKind::Commit => 'c',
+            MenuKind::Push => 'P',
+            MenuKind::Pull => 'F',
+            MenuKind::Branch => 'b',
+            MenuKind::Rebase => 'r',
+            MenuKind::Log => 'l',
+            MenuKind::Reset => 'X',
+            MenuKind::Stash => 'z',
+            MenuKind::Merge => 'm',
+            MenuKind::Tag => 't',
+            MenuKind::CherryPick => 'A',
+            MenuKind::Revert => 'V',
+            MenuKind::Remote => 'M',
+            MenuKind::Bisect => 'B',
+            MenuKind::Worktree => '%',
+            MenuKind::Submodule => 'o',
+            MenuKind::Apply => 'w',
+            MenuKind::FormatPatch => 'W',
+            MenuKind::Subtree => 'O',
+            MenuKind::Notes => 'T',
+            MenuKind::Ignore => 'i',
+            MenuKind::BranchConfig | MenuKind::RemoteConfig => return None,
+        })
+    }
+
+    /// The menu `key` opens, if any.
+    pub fn for_key(key: char) -> Option<MenuKind> {
+        MenuKind::ALL
+            .into_iter()
+            .find(|kind| kind.key() == Some(key))
+    }
 
     /// Builds the menu for this kind.
     pub fn menu(self) -> TransientMenu {
@@ -95,6 +258,22 @@ impl MenuKind {
             MenuKind::Rebase => rebase_menu(),
             MenuKind::Log => log_menu(),
             MenuKind::Reset => reset_menu(),
+            MenuKind::Stash => stash_menu(),
+            MenuKind::Merge => merge_menu(),
+            MenuKind::Tag => tag_menu(),
+            MenuKind::CherryPick => cherry_pick_menu(),
+            MenuKind::Revert => revert_menu(),
+            MenuKind::Remote => remote_menu(),
+            MenuKind::Bisect => bisect_menu(),
+            MenuKind::Worktree => worktree_menu(),
+            MenuKind::Submodule => submodule_menu(),
+            MenuKind::Apply => apply_menu(),
+            MenuKind::FormatPatch => format_patch_menu(),
+            MenuKind::Subtree => subtree_menu(),
+            MenuKind::Notes => notes_menu(),
+            MenuKind::Ignore => ignore_menu(),
+            MenuKind::BranchConfig => branch_config_menu(),
+            MenuKind::RemoteConfig => remote_config_menu(),
         }
     }
 }
@@ -406,20 +585,46 @@ fn option(key: char, flag: &str, description: &str) -> TransientArgument {
     TransientOption::new(key, flag, description).into()
 }
 
-/// The menu `:magit` opens.
+/// The menu `:magit` opens: every other menu, by its dispatch key.
 pub fn main_menu() -> TransientMenu {
+    let open = |kind: MenuKind, label: &'static str| {
+        TransientAction::new(
+            kind.key().expect("a dispatch menu has a key"),
+            label,
+            MagitCommand::OpenMenu(kind),
+        )
+    };
     TransientMenu::new(MenuKind::Main, "Magit").with_groups([
-        TransientGroup::new("Transient").with_actions([
-            TransientAction::new('c', "Commit", MagitCommand::OpenMenu(MenuKind::Commit)),
-            TransientAction::new('b', "Branch", MagitCommand::OpenMenu(MenuKind::Branch)),
-            TransientAction::new('r', "Rebase", MagitCommand::OpenMenu(MenuKind::Rebase)),
-            TransientAction::new('l', "Log", MagitCommand::OpenMenu(MenuKind::Log)),
-            TransientAction::new('X', "Reset", MagitCommand::OpenMenu(MenuKind::Reset)),
+        TransientGroup::new("Commits").with_actions([
+            open(MenuKind::Commit, "Commit"),
+            open(MenuKind::Merge, "Merge"),
+            open(MenuKind::Rebase, "Rebase"),
+            open(MenuKind::CherryPick, "Cherry-pick"),
+            open(MenuKind::Revert, "Revert"),
+            open(MenuKind::Reset, "Reset"),
+            open(MenuKind::Stash, "Stash"),
+            open(MenuKind::Tag, "Tag"),
+            open(MenuKind::Notes, "Notes"),
         ]),
-        TransientGroup::new("Remote").with_actions([
-            TransientAction::new('P', "Push", MagitCommand::OpenMenu(MenuKind::Push)),
-            TransientAction::new('F', "Pull", MagitCommand::OpenMenu(MenuKind::Pull)),
+        TransientGroup::new("Branches and remotes").with_actions([
+            open(MenuKind::Branch, "Branch"),
+            open(MenuKind::Remote, "Remote"),
+            open(MenuKind::Push, "Push"),
+            open(MenuKind::Pull, "Pull"),
             TransientAction::new('f', "Fetch", MagitCommand::Fetch),
+            open(MenuKind::Worktree, "Worktree"),
+            open(MenuKind::Submodule, "Submodule"),
+            open(MenuKind::Subtree, "Subtree"),
+        ]),
+        TransientGroup::new("Inspect").with_actions([
+            open(MenuKind::Log, "Log"),
+            TransientAction::new('y', "Show refs", MagitCommand::ShowRefs),
+            TransientAction::new('Y', "Cherries", MagitCommand::ShowCherries),
+            open(MenuKind::Bisect, "Bisect"),
+            open(MenuKind::Apply, "Apply patches"),
+            open(MenuKind::FormatPatch, "Format patches"),
+            open(MenuKind::Ignore, "Ignore"),
+            TransientAction::new('$', "Process output", MagitCommand::ShowProcess),
         ]),
         TransientGroup::new("Essential").with_actions([
             TransientAction::new('s', "Status", MagitCommand::Status),
@@ -493,7 +698,18 @@ pub fn branch_menu() -> TransientMenu {
         ]),
         TransientGroup::new("Create").with_actions([
             TransientAction::new('n', "New branch", MagitCommand::BranchCreate),
+            TransientAction::new('s', "Spin off", MagitCommand::BranchSpinoff),
+            TransientAction::new('S', "Spin out", MagitCommand::BranchSpinout),
+        ]),
+        TransientGroup::new("Do").with_actions([
+            TransientAction::new('m', "Rename", MagitCommand::BranchRename),
+            TransientAction::new('X', "Reset", MagitCommand::BranchReset),
             TransientAction::new('x', "Delete", MagitCommand::BranchDelete),
+            TransientAction::new(
+                'C',
+                "Configure…",
+                MagitCommand::OpenMenu(MenuKind::BranchConfig),
+            ),
         ]),
     ])
 }
@@ -525,6 +741,244 @@ pub fn rebase_menu() -> TransientMenu {
     ])
 }
 
+pub fn stash_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::Stash, "Stash").with_groups([
+        TransientGroup::new("Arguments").with_arguments([
+            switch('u', "--include-untracked", "Also untracked files"),
+            switch('a', "--all", "Also untracked and ignored files"),
+        ]),
+        TransientGroup::new("Stash").with_actions([
+            TransientAction::new('z', "Both", MagitCommand::StashBoth),
+            TransientAction::new('i', "Index", MagitCommand::StashIndex),
+            TransientAction::new('w', "Worktree", MagitCommand::StashWorktree),
+        ]),
+        TransientGroup::new("Use").with_actions([
+            TransientAction::new('p', "Pop", MagitCommand::StashPop),
+            TransientAction::new('a', "Apply", MagitCommand::StashApply),
+            TransientAction::new('b', "Branch", MagitCommand::StashBranch),
+            TransientAction::new('k', "Drop", MagitCommand::StashDrop),
+        ]),
+    ])
+}
+
+pub fn merge_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::Merge, "Merge").with_groups([
+        TransientGroup::new("Arguments").with_arguments([
+            switch('f', "--ff-only", "Fast-forward only"),
+            switch('n', "--no-ff", "No fast-forward"),
+        ]),
+        TransientGroup::new("Merge").with_actions([
+            TransientAction::new('m', "Merge", MagitCommand::Merge),
+            TransientAction::new('s', "Squash", MagitCommand::MergeSquash),
+            TransientAction::new('n', "Without committing", MagitCommand::MergeNoCommit),
+        ]),
+        TransientGroup::new("In progress").with_actions([
+            TransientAction::new('c', "Commit the merge", MagitCommand::MergeContinue),
+            TransientAction::new('z', "Abort", MagitCommand::MergeAbort),
+        ]),
+    ])
+}
+
+pub fn tag_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::Tag, "Tag").with_groups([
+        TransientGroup::new("Arguments").with_arguments([
+            option('m', "--message=", "Annotate with a message"),
+            switch('f', "--force", "Replace an existing tag"),
+        ]),
+        TransientGroup::new("Tag").with_actions([
+            TransientAction::new('t', "Create", MagitCommand::TagCreate),
+            TransientAction::new('k', "Delete", MagitCommand::TagDelete),
+            TransientAction::new('p', "Push tags", MagitCommand::TagPush),
+        ]),
+    ])
+}
+
+pub fn cherry_pick_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::CherryPick, "Cherry-pick").with_groups([
+        TransientGroup::new("Arguments").with_arguments([
+            switch('x', "-x", "Note the original commit"),
+            switch('f', "--ff", "Fast-forward when possible"),
+        ]),
+        TransientGroup::new("Apply here").with_actions([
+            TransientAction::new('A', "Pick", MagitCommand::CherryPick),
+            TransientAction::new('a', "Apply", MagitCommand::CherryApply),
+        ]),
+        TransientGroup::new("In progress").with_actions([
+            TransientAction::new('c', "Continue", MagitCommand::CherryPickContinue),
+            TransientAction::new('s', "Skip", MagitCommand::CherryPickSkip),
+            TransientAction::new('z', "Abort", MagitCommand::CherryPickAbort),
+        ]),
+    ])
+}
+
+pub fn revert_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::Revert, "Revert").with_groups([
+        TransientGroup::new("Revert").with_actions([
+            TransientAction::new('V', "Revert", MagitCommand::Revert),
+            TransientAction::new('v', "Without committing", MagitCommand::RevertNoCommit),
+        ]),
+        TransientGroup::new("In progress").with_actions([
+            TransientAction::new('c', "Continue", MagitCommand::RevertContinue),
+            TransientAction::new('s', "Skip", MagitCommand::RevertSkip),
+            TransientAction::new('z', "Abort", MagitCommand::RevertAbort),
+        ]),
+    ])
+}
+
+pub fn remote_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::Remote, "Remote").with_groups([
+        TransientGroup::new("Remote").with_actions([
+            TransientAction::new('a', "Add", MagitCommand::RemoteAdd),
+            TransientAction::new('r', "Rename", MagitCommand::RemoteRename),
+            TransientAction::new('k', "Remove", MagitCommand::RemoteRemove),
+        ]),
+        TransientGroup::new("Branch").with_actions([
+            TransientAction::new('u', "Set upstream", MagitCommand::RemoteSetUpstream),
+            TransientAction::new('f', "Fetch a remote", MagitCommand::RemoteFetch),
+            TransientAction::new(
+                'C',
+                "Configure…",
+                MagitCommand::OpenMenu(MenuKind::RemoteConfig),
+            ),
+        ]),
+    ])
+}
+
+pub fn bisect_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::Bisect, "Bisect").with_groups([
+        TransientGroup::new("Bisect").with_actions([
+            TransientAction::new('B', "Start", MagitCommand::BisectStart),
+            TransientAction::new('r', "Reset", MagitCommand::BisectReset),
+        ]),
+        TransientGroup::new("This commit is").with_actions([
+            TransientAction::new('g', "Good", MagitCommand::BisectGood),
+            TransientAction::new('b', "Bad", MagitCommand::BisectBad),
+            TransientAction::new('s', "Untestable (skip)", MagitCommand::BisectSkip),
+        ]),
+    ])
+}
+
+pub fn worktree_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::Worktree, "Worktree").with_groups([TransientGroup::new(
+        "Worktree",
+    )
+    .with_actions([
+        TransientAction::new('a', "Add", MagitCommand::WorktreeAdd),
+        TransientAction::new('k', "Remove", MagitCommand::WorktreeRemove),
+        TransientAction::new('p', "Prune", MagitCommand::WorktreePrune),
+    ])])
+}
+
+pub fn submodule_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::Submodule, "Submodule").with_groups([TransientGroup::new(
+        "Submodule",
+    )
+    .with_actions([
+        TransientAction::new('a', "Add", MagitCommand::SubmoduleAdd),
+        TransientAction::new(
+            'u',
+            "Update (init, recursive)",
+            MagitCommand::SubmoduleUpdate,
+        ),
+        TransientAction::new('s', "Sync URLs", MagitCommand::SubmoduleSync),
+        TransientAction::new('f', "Fetch in each", MagitCommand::SubmoduleFetch),
+    ])])
+}
+
+pub fn apply_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::Apply, "Apply patches").with_groups([
+        TransientGroup::new("Arguments").with_arguments([
+            switch('3', "--3way", "Fall back on a three-way merge"),
+            switch('s', "--signoff", "Add Signed-off-by line"),
+        ]),
+        TransientGroup::new("Apply").with_actions([
+            TransientAction::new(
+                'w',
+                "Mailbox or patches (am)",
+                MagitCommand::PatchApplyMailbox,
+            ),
+            TransientAction::new('a', "Plain patch (apply)", MagitCommand::PatchApplyPlain),
+        ]),
+        TransientGroup::new("In progress").with_actions([
+            TransientAction::new('c', "Continue", MagitCommand::AmContinue),
+            TransientAction::new('s', "Skip", MagitCommand::AmSkip),
+            TransientAction::new('z', "Abort", MagitCommand::AmAbort),
+        ]),
+    ])
+}
+
+pub fn format_patch_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::FormatPatch, "Format patches").with_groups([
+        TransientGroup::new("Arguments").with_arguments([
+            option('o', "--output-directory=", "Into directory"),
+            switch('c', "--cover-letter", "With a cover letter"),
+            switch('n', "--numbered", "Numbered [PATCH n/m]"),
+        ]),
+        TransientGroup::new("Format").with_actions([TransientAction::new(
+            'c',
+            "Create",
+            MagitCommand::FormatPatch,
+        )]),
+    ])
+}
+
+pub fn subtree_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::Subtree, "Subtree").with_groups([TransientGroup::new("Subtree")
+        .with_actions([
+            TransientAction::new('a', "Add", MagitCommand::SubtreeAdd),
+            TransientAction::new('f', "Pull", MagitCommand::SubtreePull),
+            TransientAction::new('P', "Push", MagitCommand::SubtreePush),
+            TransientAction::new('s', "Split", MagitCommand::SubtreeSplit),
+        ])])
+}
+
+pub fn notes_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::Notes, "Notes").with_groups([TransientGroup::new("Notes")
+        .with_actions([
+            TransientAction::new('T', "Set", MagitCommand::NoteEdit),
+            TransientAction::new('a', "Append", MagitCommand::NoteAppend),
+            TransientAction::new('r', "Remove", MagitCommand::NoteRemove),
+            TransientAction::new('p', "Prune", MagitCommand::NotePrune),
+        ])])
+}
+
+pub fn ignore_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::Ignore, "Ignore").with_groups([TransientGroup::new("Ignore")
+        .with_actions([
+            TransientAction::new('t', "For everyone (.gitignore)", MagitCommand::IgnoreShared),
+            TransientAction::new(
+                'p',
+                "Privately (.git/info/exclude)",
+                MagitCommand::IgnorePrivate,
+            ),
+        ])])
+}
+
+pub fn branch_config_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::BranchConfig, "Configure branch").with_groups([
+        TransientGroup::new("branch.<name>.").with_actions([
+            TransientAction::new('d', "description", MagitCommand::BranchConfigDescription),
+            TransientAction::new(
+                'u',
+                "merge and remote (upstream)",
+                MagitCommand::BranchConfigUpstream,
+            ),
+            TransientAction::new('r', "rebase", MagitCommand::BranchConfigRebase),
+            TransientAction::new('p', "pushRemote", MagitCommand::BranchConfigPushRemote),
+        ]),
+    ])
+}
+
+pub fn remote_config_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::RemoteConfig, "Configure remote").with_groups([
+        TransientGroup::new("remote.<name>.").with_actions([
+            TransientAction::new('u', "url", MagitCommand::RemoteConfigUrl),
+            TransientAction::new('U', "pushurl", MagitCommand::RemoteConfigPushUrl),
+            TransientAction::new('f', "fetch (refspec)", MagitCommand::RemoteConfigFetch),
+        ]),
+    ])
+}
+
 pub fn log_menu() -> TransientMenu {
     TransientMenu::new(MenuKind::Log, "Log").with_groups([
         TransientGroup::new("Limit").with_arguments([
@@ -536,6 +990,7 @@ pub fn log_menu() -> TransientMenu {
             TransientAction::new('l', "Current", MagitCommand::LogCurrent),
             TransientAction::new('a', "All references", MagitCommand::LogAll),
             TransientAction::new('o', "Other", MagitCommand::LogOther),
+            TransientAction::new('s', "Shortlog", MagitCommand::Shortlog),
         ]),
     ])
 }

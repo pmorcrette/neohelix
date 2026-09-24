@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use helix_magit::diff::{DiffLineKind, FileDiff};
 use helix_magit::status::Overview;
-use helix_magit::{Plan, Repository, Requirement, Selection, Unmerged};
+use helix_magit::{AskKind, Plan, Repository, Selection, Unmerged};
 use helix_view::graphics::Rect;
 use helix_view::input::{KeyCode, KeyModifiers};
 use helix_view::Editor;
@@ -43,6 +43,15 @@ enum SectionKind {
     Recent,
     /// The files a shown commit changed.
     Commit,
+    /// The other worktrees of the repository.
+    Worktrees,
+    Submodules,
+    /// The refs view's three lists.
+    LocalBranches,
+    RemoteBranches,
+    Tags,
+    /// The cherries view: commits one branch has that another lacks.
+    Cherries,
 }
 
 impl SectionKind {
@@ -138,13 +147,17 @@ fn header_lines(overview: &Overview) -> Vec<HeaderLine> {
             label: "State:",
             parts: vec![(state.description.clone(), Tone::Emphasis)],
         });
+        // Each operation's menu has what gets out of it.
+        use helix_magit::status::Operation;
         let hint = match state.operation {
-            // The rebase menu has all three.
-            helix_magit::status::Operation::Rebase => {
-                "r then c to continue, s to skip, z to abort".to_string()
-            }
-            operation => operation.hint().to_string(),
-        };
+            Operation::Rebase => "r then c to continue, s to skip, z to abort",
+            Operation::Merge => "m then c to commit the merge, z to abort",
+            Operation::CherryPick => "A then c to continue, s to skip, z to abort",
+            Operation::Revert => "V then c to continue, s to skip, z to abort",
+            Operation::Am => "w then c to continue, s to skip, z to abort",
+            Operation::Bisect => "B then g good, b bad, s skip, r to end",
+        }
+        .to_string();
         lines.push(HeaderLine {
             label: "",
             parts: vec![(hint, Tone::Dim)],
@@ -232,6 +245,35 @@ fn build_sections(
             SectionKind::Recent,
             "Recent commits".to_string(),
             commits(&overview.recent),
+        ),
+        items(
+            SectionKind::Worktrees,
+            "Worktrees".to_string(),
+            overview
+                .worktrees
+                .iter()
+                .map(|tree| Item {
+                    label: tree
+                        .branch
+                        .clone()
+                        .unwrap_or_else(|| format!("(detached at {})", tree.head)),
+                    text: tree.path.display().to_string(),
+                })
+                .collect(),
+        ),
+        items(
+            SectionKind::Submodules,
+            "Submodules".to_string(),
+            overview
+                .submodules
+                .iter()
+                .map(|module| Item {
+                    label: module.path.clone(),
+                    text: format!("{} {}", module.hash, module.state)
+                        .trim_end()
+                        .to_string(),
+                })
+                .collect(),
         ),
     ]
 }
@@ -329,6 +371,20 @@ pub struct DiffView {
     error: Option<String>,
     /// Set when this shows a commit rather than the status: its hash.
     commit: Option<String>,
+    /// What the view lists.
+    kind: ViewKind,
+}
+
+/// The views built on the status buffer's rendering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ViewKind {
+    Status,
+    Commit,
+    Refs,
+    Cherries {
+        upstream: String,
+        head: Option<String>,
+    },
 }
 
 impl DiffView {
@@ -388,6 +444,7 @@ impl DiffView {
             },
             error: None,
             commit: Some(details.hash),
+            kind: ViewKind::Commit,
         };
         view.replace_sections(vec![Section {
             kind: SectionKind::Commit,
@@ -399,11 +456,126 @@ impl DiffView {
         Ok(view)
     }
 
+    /// The refs view and the cherries view.
+    pub const REFS_ID: &'static str = "magit-refs";
+    pub const CHERRIES_ID: &'static str = "magit-cherries";
+
     fn view_id(&self) -> &'static str {
-        if self.commit.is_some() {
-            Self::COMMIT_ID
-        } else {
-            Self::ID
+        match self.kind {
+            ViewKind::Status => Self::ID,
+            ViewKind::Commit => Self::COMMIT_ID,
+            ViewKind::Refs => Self::REFS_ID,
+            ViewKind::Cherries { .. } => Self::CHERRIES_ID,
+        }
+    }
+
+    fn empty(workdir: &Path, head: String, kind: ViewKind) -> Self {
+        Self {
+            workdir: workdir.to_path_buf(),
+            header: Vec::new(),
+            sections: Vec::new(),
+            rows: Vec::new(),
+            cursor: 0,
+            scroll: 0,
+            head,
+            error: None,
+            commit: None,
+            kind,
+        }
+    }
+
+    /// Every branch, remote branch and tag, with where each stands against
+    /// HEAD: Magit's `y`.
+    pub fn refs(workdir: &Path) -> Self {
+        let mut view = Self::empty(workdir, "Refs".to_string(), ViewKind::Refs);
+        view.read_refs();
+        view
+    }
+
+    fn read_refs(&mut self) {
+        use helix_magit::refs::RefKind;
+        let refs = helix_magit::refs::read_refs(&self.workdir);
+        let list = |kind: RefKind| -> Vec<Item> {
+            refs.iter()
+                .filter(|info| info.kind == kind)
+                .map(|info| {
+                    let mut text = info.hash.clone();
+                    if info.is_head {
+                        text.push_str(" (HEAD)");
+                    }
+                    if let Some(upstream) = &info.upstream {
+                        text.push_str(&format!(" → {upstream}"));
+                    }
+                    let relation = info.relation();
+                    if !relation.is_empty() {
+                        text.push_str(&format!(" [{relation}]"));
+                    }
+                    text.push(' ');
+                    text.push_str(&info.subject);
+                    Item {
+                        label: info.name.clone(),
+                        text,
+                    }
+                })
+                .collect()
+        };
+        let section = |kind, title: &str, items| Section {
+            kind,
+            title: title.to_string(),
+            files: Vec::new(),
+            items,
+            folded: false,
+        };
+        self.replace_sections(vec![
+            section(SectionKind::LocalBranches, "Branches", list(RefKind::Local)),
+            section(
+                SectionKind::RemoteBranches,
+                "Remote branches",
+                list(RefKind::Remote),
+            ),
+            section(SectionKind::Tags, "Tags", list(RefKind::Tag)),
+        ]);
+    }
+
+    /// The commits `head` has that `upstream` lacks: Magit's `Y`. A commit
+    /// marked `-` has an equivalent change upstream already.
+    pub fn cherries(workdir: &Path, upstream: String, head: Option<String>) -> Self {
+        let title = format!(
+            "Cherries: {} not in {upstream}",
+            head.as_deref().unwrap_or("HEAD")
+        );
+        let mut view = Self::empty(workdir, title, ViewKind::Cherries { upstream, head });
+        view.read_cherries();
+        view
+    }
+
+    fn read_cherries(&mut self) {
+        let ViewKind::Cherries { upstream, head } = &self.kind else {
+            return;
+        };
+        match helix_magit::refs::cherries(&self.workdir, upstream, head.as_deref()) {
+            Ok(cherries) => {
+                let items = cherries
+                    .into_iter()
+                    .map(|cherry| Item {
+                        label: cherry.hash,
+                        text: if cherry.equivalent {
+                            format!("- {} (an equivalent is upstream)", cherry.subject)
+                        } else {
+                            format!("+ {}", cherry.subject)
+                        },
+                    })
+                    .collect();
+                self.error = None;
+                self.replace_sections(vec![Section {
+                    kind: SectionKind::Cherries,
+                    title: "Commits".to_string(),
+                    files: Vec::new(),
+                    items,
+                    folded: false,
+                }]);
+            }
+            Err(err) => self.error = Some(err),
         }
     }
 
@@ -420,6 +592,7 @@ impl DiffView {
             head: repository.head_description(),
             error: None,
             commit: None,
+            kind: ViewKind::Status,
         };
         view.reload(&repository)?;
         Ok(view)
@@ -446,9 +619,18 @@ impl DiffView {
     /// unstaged section entirely — so the cursor is clamped rather than
     /// restored exactly.
     fn reload(&mut self, repository: &Repository) -> Result<(), helix_magit::repository::Error> {
-        // A commit does not change.
-        if self.commit.is_some() {
-            return Ok(());
+        match self.kind {
+            ViewKind::Status => {}
+            // A commit does not change.
+            ViewKind::Commit => return Ok(()),
+            ViewKind::Refs => {
+                self.read_refs();
+                return Ok(());
+            }
+            ViewKind::Cherries { .. } => {
+                self.read_cherries();
+                return Ok(());
+            }
         }
         let (unstaged, untracked) = repository.worktree_diffs()?;
         let staged = repository.staged_diff()?;
@@ -850,6 +1032,9 @@ impl DiffView {
         let section = self.sections.get(section)?;
         let label = section.items.get(item)?.label.clone();
         let (args, summary): (&[&str], &str) = match (section.kind, reverse) {
+            (SectionKind::Worktrees | SectionKind::Submodules, _) => {
+                return Some(Err("RET opens its status".into()))
+            }
             (SectionKind::Unmerged, _) => {
                 return Some(Err(
                     "Resolve the conflict in the file (RET visits it)".into()
@@ -866,39 +1051,65 @@ impl DiffView {
         };
         let mut args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
         args.push(label);
-        Some(Ok(Plan {
-            args,
-            requirement: Requirement::None,
-            destructive: false,
-            summary: summary.to_string(),
-        }))
+        Some(Ok(Plan::new(args, summary)))
     }
 
-    /// The commit under the cursor, for the menus that act on one: a
-    /// commit in a list, or the commit this view shows.
-    fn commit_at_cursor(&self) -> Option<String> {
+    /// What the menus act on when opened here: the commit this view shows,
+    /// or the commit, stash, branch, tag or file under the cursor.
+    fn target_at_cursor(&self) -> Option<(String, AskKind)> {
         if let Some(commit) = &self.commit {
-            return Some(commit.clone());
+            return Some((commit.clone(), AskKind::Revision));
         }
-        let Some(Row::Item { section, item }) = self.current_row() else {
-            return None;
-        };
-        let section = self.sections.get(section)?;
-        matches!(
-            section.kind,
-            SectionKind::Unpushed | SectionKind::Unpulled | SectionKind::Recent
-        )
-        .then(|| section.items.get(item).map(|item| item.label.clone()))?
+        let row = self.current_row()?;
+        let section = self.sections.get(row.section()?)?;
+        if let Row::Item { item, .. } = row {
+            let item = section.items.get(item)?;
+            let kind = match section.kind {
+                SectionKind::Unpushed
+                | SectionKind::Unpulled
+                | SectionKind::Recent
+                | SectionKind::Cherries => AskKind::Revision,
+                SectionKind::Stashes => AskKind::Stash,
+                SectionKind::LocalBranches | SectionKind::RemoteBranches => AskKind::Branch,
+                SectionKind::Tags => AskKind::Tag,
+                SectionKind::Worktrees | SectionKind::Unmerged => {
+                    return Some((item.text.clone(), AskKind::Path))
+                }
+                SectionKind::Submodules => return Some((item.label.clone(), AskKind::Path)),
+                _ => return None,
+            };
+            return Some((item.label.clone(), kind));
+        }
+        self.file_at(row)
+            .map(|file| (file.path.display().to_string(), AskKind::Path))
     }
 
-    /// What `RET` shows: the commit or stash under the cursor.
+    /// What `RET` shows: the commit, stash or ref under the cursor.
     fn revision_at_cursor(&self) -> Option<String> {
         let Some(Row::Item { section, item }) = self.current_row() else {
             return None;
         };
         let section = self.sections.get(section)?;
-        (section.kind != SectionKind::Unmerged)
-            .then(|| section.items.get(item).map(|item| item.label.clone()))?
+        (!matches!(
+            section.kind,
+            SectionKind::Unmerged | SectionKind::Worktrees | SectionKind::Submodules
+        ))
+        .then(|| section.items.get(item).map(|item| item.label.clone()))?
+    }
+
+    /// The worktree or submodule under the cursor, whose own status `RET`
+    /// opens.
+    fn repository_at_cursor(&self) -> Option<PathBuf> {
+        let Some(Row::Item { section, item }) = self.current_row() else {
+            return None;
+        };
+        let section = self.sections.get(section)?;
+        let item = section.items.get(item)?;
+        match section.kind {
+            SectionKind::Worktrees => Some(PathBuf::from(&item.text)),
+            SectionKind::Submodules => Some(self.workdir.join(&item.label)),
+            _ => None,
+        }
     }
 
     /// Where `RET` on a change goes: the file in the working tree, at the
@@ -1022,10 +1233,11 @@ impl Component for DiffView {
         let popup_style = cx.editor.theme.get("ui.popup");
         surface.clear_with(area, popup_style);
 
-        let title = match (&self.error, &self.commit) {
+        let title = match (&self.error, &self.kind) {
             (Some(error), _) => format!("Magit: {error}"),
-            (None, Some(_)) => format!("Commit {}", self.head),
-            (None, None) => format!("Magit: {}", self.head),
+            (None, ViewKind::Commit) => format!("Commit {}", self.head),
+            (None, ViewKind::Status) => format!("Magit: {}", self.head),
+            (None, _) => self.head.clone(),
         };
         let block = Block::bordered().title(title).border_style(popup_style);
         let inner = block.inner(area);
@@ -1087,6 +1299,18 @@ impl Component for DiffView {
                 self.toggle_fold()
             }
             (KeyCode::Enter, _) => {
+                if let Some(path) = self.repository_at_cursor() {
+                    match DiffView::new(&path) {
+                        Ok(view) => {
+                            return EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                                compositor.remove(DiffView::ID);
+                                compositor.push(Box::new(view));
+                            })))
+                        }
+                        Err(err) => self.error = Some(err.to_string()),
+                    }
+                    return EventResult::Consumed(None);
+                }
                 if let Some(rev) = self.revision_at_cursor() {
                     match DiffView::commit(&self.workdir, &rev) {
                         Ok(view) => {
@@ -1145,7 +1369,7 @@ impl Component for DiffView {
                     }
                     Some(Err(err)) => self.error = Some(err),
                     None if reverse => self.reverse_change(),
-                    None if self.commit.is_some() => self.apply_commit_change(false),
+                    None if self.kind == ViewKind::Commit => self.apply_commit_change(false),
                     None => {
                         self.error = Some(
                             "A change here is already in the working tree; a applies commits and stashes"
@@ -1154,32 +1378,41 @@ impl Component for DiffView {
                     }
                 }
             }
-            // Magit's status buffer opens the menus by their dispatch keys.
-            // `l` folds here, as in the rest of Helix, so the log is `L`.
-            (KeyCode::Char(key @ ('c' | 'r' | 'P' | 'F' | 'b' | 'L' | 'X' | '?')), _) => {
-                let kind = match key {
-                    'c' => MenuKind::Commit,
-                    'r' => MenuKind::Rebase,
-                    'P' => MenuKind::Push,
-                    'F' => MenuKind::Pull,
-                    'b' => MenuKind::Branch,
-                    'L' => MenuKind::Log,
-                    'X' => MenuKind::Reset,
-                    _ => MenuKind::Main,
-                };
+            (KeyCode::Char('S'), _) => self.apply_all(true),
+            (KeyCode::Char('U'), _) => self.apply_all(false),
+            (KeyCode::Char('s'), KeyModifiers::NONE) => self.apply(true),
+            (KeyCode::Char('u'), KeyModifiers::NONE) => self.apply(false),
+            (KeyCode::Char('y'), KeyModifiers::NONE) => {
+                let view = DiffView::refs(&self.workdir);
+                return EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                    compositor.push(Box::new(view));
+                })));
+            }
+            (KeyCode::Char('Y'), _) => {
+                let workdir = self.workdir.clone();
+                return EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                    compositor.push(Box::new(cherries_prompt(workdir)));
+                })));
+            }
+            (KeyCode::Char('$'), _) => {
+                return EventResult::Consumed(Some(Box::new(|compositor, cx| {
+                    crate::magit::close_views(compositor);
+                    crate::magit::show_process(cx.editor);
+                })));
+            }
+            // Magit's dispatch keys open the menus. `l` folds here, as in
+            // the rest of Helix, so the log is `L`.
+            (KeyCode::Char(key), _) if key == 'L' || MenuKind::for_key(key).is_some() => {
+                let kind = MenuKind::for_key(key).unwrap_or(MenuKind::Log);
                 let mut overlay =
                     TransientOverlay::new(kind.menu(), self.head.clone(), self.workdir.clone());
-                if let Some(commit) = self.commit_at_cursor() {
-                    overlay = overlay.with_commit(commit);
+                if let Some((value, kind)) = self.target_at_cursor() {
+                    overlay = overlay.with_target(value, kind);
                 }
                 return EventResult::Consumed(Some(Box::new(move |compositor, _| {
                     compositor.push(Box::new(overlay));
                 })));
             }
-            (KeyCode::Char('S'), _) => self.apply_all(true),
-            (KeyCode::Char('U'), _) => self.apply_all(false),
-            (KeyCode::Char('s'), KeyModifiers::NONE) => self.apply(true),
-            (KeyCode::Char('u'), KeyModifiers::NONE) => self.apply(false),
             _ => {}
         }
 
@@ -1189,6 +1422,39 @@ impl Component for DiffView {
     fn id(&self) -> Option<&'static str> {
         Some(self.view_id())
     }
+}
+
+/// Asks which branch to compare against, then opens the cherries view.
+pub fn cherries_prompt(workdir: PathBuf) -> crate::ui::Prompt {
+    let names = helix_magit::refs::names(&workdir, AskKind::Branch);
+    crate::ui::Prompt::new(
+        "Cherries: commits HEAD has that are not in (empty for the upstream): ".into(),
+        None,
+        move |_, input| {
+            names
+                .iter()
+                .filter(|name| name.contains(input))
+                .map(|name| (0.., name.clone().into()))
+                .collect()
+        },
+        move |cx, input, event| {
+            if event != crate::ui::PromptEvent::Validate {
+                return;
+            }
+            let upstream = match input.trim() {
+                "" => "@{upstream}".to_string(),
+                other => other.to_string(),
+            };
+            let workdir = workdir.clone();
+            cx.jobs.callback(async move {
+                Ok(crate::job::Callback::EditorCompositor(Box::new(
+                    move |_: &mut Editor, compositor: &mut Compositor| {
+                        compositor.push(Box::new(DiffView::cherries(&workdir, upstream, None)));
+                    },
+                )))
+            });
+        },
+    )
 }
 
 /// Where a fragment is drawn, and how much room it has.
@@ -1549,6 +1815,7 @@ mod tests {
             head: "main".to_string(),
             error: None,
             commit: None,
+            kind: ViewKind::Status,
         };
         view.replace_sections(build_sections(
             unmerged, untracked, unstaged, staged, overview,
@@ -1766,6 +2033,8 @@ mod tests {
                 name: "stash@{0}".into(),
                 subject: "WIP on main".into(),
             }],
+            worktrees: Vec::new(),
+            submodules: Vec::new(),
         }
     }
 
@@ -1785,7 +2054,7 @@ mod tests {
                 "Head: main  abc1234 Latest",
                 "Upstream: origin/main  def5678 Theirs",
                 "State: Merging 0123456",
-                " git merge --continue, or git merge --abort",
+                " m then c to commit the merge, z to abort",
             ]
         );
 
@@ -1825,10 +2094,16 @@ mod tests {
         // RET shows a stash or a commit; the menus act on commits only.
         view.cursor = 5;
         assert_eq!(view.revision_at_cursor().as_deref(), Some("stash@{0}"));
-        assert_eq!(view.commit_at_cursor(), None);
+        assert_eq!(
+            view.target_at_cursor(),
+            Some(("stash@{0}".to_string(), AskKind::Stash))
+        );
         view.cursor = 7;
         assert_eq!(view.revision_at_cursor().as_deref(), Some("def5678"));
-        assert_eq!(view.commit_at_cursor().as_deref(), Some("def5678"));
+        assert_eq!(
+            view.target_at_cursor(),
+            Some(("def5678".to_string(), AskKind::Revision))
+        );
         view.cursor = 0;
         assert_eq!(view.revision_at_cursor(), None);
     }
