@@ -781,7 +781,13 @@ fn compose(cx: &mut Context, plan: Plan, workdir: PathBuf, amend: bool) {
     }
 
     let message_path = workdir.join(".git").join("COMMIT_EDITMSG");
-    let template = command::commit_template(&workdir, amend);
+    // `--verbose` puts the diff below the message; git's own switch would
+    // do nothing, since the message comes with `-F` and no editor runs.
+    let verbose = plan
+        .args
+        .iter()
+        .any(|arg| arg == "--verbose" || arg == "-v");
+    let template = command::commit_template_with(&workdir, amend, verbose);
 
     if let Err(err) = std::fs::write(&message_path, &template) {
         cx.editor

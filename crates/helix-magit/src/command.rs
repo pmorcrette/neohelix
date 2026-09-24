@@ -67,6 +67,8 @@ pub struct Ask {
     /// Whether a preset is only a suggestion, shown for editing rather than
     /// taken as the answer: the file an ignore pattern starts from.
     pub suggested: bool,
+    /// Whether the answer is several arguments, split at spaces: refspecs.
+    pub words: bool,
 }
 
 impl Ask {
@@ -77,7 +79,14 @@ impl Ask {
             optional: false,
             preset: None,
             suggested: false,
+            words: false,
         }
+    }
+
+    /// Makes the answer several arguments, split at spaces.
+    pub fn words(mut self) -> Self {
+        self.words = true;
+        self
     }
 
     /// Makes a preset a suggestion to edit rather than the answer.
@@ -207,9 +216,33 @@ impl Plan {
             .iter()
             .chain(self.then.iter().flatten())
             .any(|arg| arg.contains("{0}"));
+        let words: Vec<bool> = match &self.requirement {
+            Requirement::Ask(asks) => asks.iter().map(|ask| ask.words).collect(),
+            _ => Vec::new(),
+        };
+        let split = |index: usize, answer: &String| -> Vec<String> {
+            if words.get(index).copied().unwrap_or(false) {
+                answer.split_whitespace().map(str::to_string).collect()
+            } else {
+                vec![answer.clone()]
+            }
+        };
         let fill = |args: &[String]| -> Vec<String> {
             args.iter()
-                .filter_map(|arg| {
+                .flat_map(|arg| {
+                    // A placeholder alone, for an answer of several words.
+                    if let Some(index) = arg
+                        .strip_prefix('{')
+                        .and_then(|rest| rest.strip_suffix('}'))
+                        .and_then(|index| index.parse::<usize>().ok())
+                    {
+                        if words.get(index).copied().unwrap_or(false) {
+                            return answers
+                                .get(index)
+                                .map(|a| split(index, a))
+                                .unwrap_or_default();
+                        }
+                    }
                     let mut out = arg.clone();
                     let mut emptied = false;
                     for (index, answer) in answers.iter().enumerate() {
@@ -219,7 +252,10 @@ impl Plan {
                             out = out.replace(&token, answer);
                         }
                     }
-                    (!(emptied && (out.is_empty() || out.ends_with('=')))).then_some(out)
+                    (!(emptied && (out.is_empty() || out.ends_with('='))))
+                        .then_some(out)
+                        .into_iter()
+                        .collect::<Vec<_>>()
                 })
                 .collect()
         };
@@ -228,8 +264,13 @@ impl Plan {
         plan.args = fill(&self.args);
         plan.then = self.then.iter().map(|args| fill(args)).collect();
         if !placeholders {
-            plan.args
-                .extend(answers.iter().filter(|answer| !answer.is_empty()).cloned());
+            plan.args.extend(
+                answers
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, answer)| !answer.is_empty())
+                    .flat_map(|(index, answer)| split(index, answer)),
+            );
         }
         plan
     }
@@ -458,6 +499,20 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
             push.extend(["{0}".to_string(), "HEAD".to_string()]);
             let plan = Plan::new(push, "Push elsewhere")
                 .asking([Ask::required(AskKind::Remote, "Push to remote")]);
+            if forced {
+                plan.destructive()
+            } else {
+                plan
+            }
+        }
+
+        MagitCommand::PushRefspecs => {
+            let mut push = with(["push"], args);
+            push.extend(["{0}".to_string(), "{1}".to_string()]);
+            let plan = Plan::new(push, "Push refspecs").asking([
+                Ask::required(AskKind::Remote, "Push to remote"),
+                Ask::required(AskKind::Text, "Refspecs (e.g. HEAD:refs/for/main)").words(),
+            ]);
             if forced {
                 plan.destructive()
             } else {
@@ -757,6 +812,29 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
             "Rebase interactively",
         )
         .requiring(Requirement::TodoList),
+        // `git rebase --onto new old`: the commits after `old` replayed on
+        // `new`. The todo-list flow asks only for a base, so this one is
+        // never interactive.
+        MagitCommand::RebaseOnto => {
+            let mut rebase = with(
+                ["rebase"],
+                &args
+                    .iter()
+                    .filter(|arg| *arg != "--interactive")
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            );
+            rebase.extend(["--onto", "{0}", "{1}"].map(str::to_string));
+            Plan::new(rebase, "Rebase onto a revision")
+                .asking([
+                    Ask::required(AskKind::Revision, "Onto"),
+                    Ask::required(
+                        AskKind::Revision,
+                        "The commits after (usually the upstream)",
+                    ),
+                ])
+                .destructive()
+        }
         MagitCommand::RebaseSkip => {
             Plan::new(["rebase", "--skip"], "Skip this commit").destructive()
         }
@@ -1353,6 +1431,17 @@ const COMMENT: char = '#';
 /// when amending, then a comment block explaining the rules and showing what
 /// is staged. The comments are stripped again by [`strip_comments`].
 pub fn commit_template(working_directory: &Path, amend: bool) -> String {
+    commit_template_with(working_directory, amend, false)
+}
+
+/// git's scissors line: everything below it is not part of the message.
+pub const SCISSORS: &str = "# ------------------------ >8 ------------------------";
+
+/// [`commit_template`], with `verbose` adding the diff being committed below
+/// a scissors line, as `git commit --verbose` does in its own editor. The
+/// message is supplied with `-F`, so no editor of git's runs and the switch
+/// itself would do nothing; the fork writes the diff in instead.
+pub fn commit_template_with(working_directory: &Path, amend: bool, verbose: bool) -> String {
     let mut template = String::new();
 
     if amend {
@@ -1385,6 +1474,37 @@ pub fn commit_template(working_directory: &Path, amend: bool) -> String {
         }
     }
 
+    if verbose {
+        // Amending commits everything since HEAD's parent, not just what is
+        // staged on top of HEAD.
+        let parent_exists = amend
+            && GitCommand::new(
+                working_directory,
+                vec![
+                    "rev-parse".into(),
+                    "--verify".into(),
+                    "--quiet".into(),
+                    "HEAD^".into(),
+                ],
+            )
+            .run()
+            .is_ok_and(|output| output.success);
+        let mut args: Vec<String> = vec!["diff".into(), "--cached".into(), "--no-color".into()];
+        if parent_exists {
+            args.push("HEAD^".into());
+        }
+        if let Ok(diff) = GitCommand::new(working_directory, args).run() {
+            if diff.success {
+                template.push_str(SCISSORS);
+                template.push_str(
+                    "\n# Do not modify or remove the line above.\n\
+                     # Everything below it will be ignored.\n",
+                );
+                template.push_str(&diff.stdout);
+            }
+        }
+    }
+
     template
 }
 
@@ -1395,6 +1515,8 @@ pub fn commit_template(working_directory: &Path, amend: bool) -> String {
 pub fn strip_comments(text: &str) -> String {
     let body: Vec<&str> = text
         .lines()
+        // Below the scissors is the diff `--verbose` showed.
+        .take_while(|line| *line != SCISSORS)
         .filter(|line| !line.trim_start().starts_with(COMMENT))
         .collect();
 
@@ -1593,6 +1715,24 @@ mod tests {
     }
 
     #[test]
+    fn a_refspec_answer_is_several_arguments_and_onto_takes_two_revisions() {
+        let push = plan(MagitCommand::PushRefspecs, &["--tags"])
+            .answered(&["origin".into(), "HEAD:refs/for/main  v1".into()]);
+        assert_eq!(
+            push.args,
+            ["push", "--tags", "origin", "HEAD:refs/for/main", "v1"]
+        );
+
+        let onto = plan(MagitCommand::RebaseOnto, &["--interactive", "--autostash"])
+            .answered(&["main".into(), "old-base".into()]);
+        assert_eq!(
+            onto.args,
+            ["rebase", "--autostash", "--onto", "main", "old-base"]
+        );
+        assert!(onto.destructive);
+    }
+
+    #[test]
     fn answers_fill_placeholders_or_are_appended() {
         // No placeholder: appended, empty optional answers dropped.
         let create =
@@ -1728,6 +1868,10 @@ mod tests {
         // Only comments and blank lines means the commit was aborted.
         assert!(strip_comments("# just\n# comments\n\n").is_empty());
         assert!(strip_comments("").is_empty());
+        // The diff below the scissors is never part of the message, even
+        // its lines that do not start with '#'.
+        let verbose = format!("msg\n{SCISSORS}\n# Everything below…\ndiff --git a/x b/x\n+added\n");
+        assert_eq!(strip_comments(&verbose), "msg");
         assert!(strip_comments("   \n\n").is_empty());
 
         // A `#` inside a line is not a comment marker.

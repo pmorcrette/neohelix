@@ -24,6 +24,7 @@ pub enum MagitCommand {
     Push,
     PushToUpstream,
     PushElsewhere,
+    PushRefspecs,
 
     Pull,
     Fetch,
@@ -40,6 +41,7 @@ pub enum MagitCommand {
 
     RebaseOntoUpstream,
     RebaseInteractive,
+    RebaseOnto,
     RebaseAbort,
     RebaseContinue,
     RebaseSkip,
@@ -781,6 +783,10 @@ pub fn commit_menu() -> TransientMenu {
             switch('n', "--no-verify", "Disable hooks"),
             switch('s', "--signoff", "Add Signed-off-by line"),
             option('A', "--author=", "Override the author"),
+            switch('R', "--reset-author", "Claim authorship and reset the date"),
+            option('D', "--date=", "Override the date"),
+            switch('G', "--gpg-sign", "Sign with the default key"),
+            option('S', "--gpg-sign=", "Sign with key"),
         ]),
         TransientGroup::new("Create").with_actions([
             TransientAction::new('c', "Commit", MagitCommand::Commit),
@@ -799,11 +805,14 @@ pub fn push_menu() -> TransientMenu {
             switch('h', "--no-verify", "Disable hooks"),
             switch('u', "--set-upstream", "Set upstream"),
             switch('d', "--dry-run", "Dry run"),
+            switch('t', "--tags", "Push tags too"),
         ]),
         TransientGroup::new("Push to").with_actions([
             TransientAction::new('p', "Upstream", MagitCommand::PushToUpstream),
             TransientAction::new('e', "Elsewhere", MagitCommand::PushElsewhere),
             TransientAction::new('P', "Push", MagitCommand::Push),
+            TransientAction::new('r', "Explicit refspecs", MagitCommand::PushRefspecs),
+            TransientAction::new('T', "All tags", MagitCommand::TagPush),
         ]),
     ])
 }
@@ -870,6 +879,7 @@ pub fn rebase_menu() -> TransientMenu {
         TransientGroup::new("Rebase").with_actions([
             TransientAction::new('u', "Onto upstream", MagitCommand::RebaseOntoUpstream),
             TransientAction::new('r', "Interactively", MagitCommand::RebaseInteractive),
+            TransientAction::new('o', "Onto a revision", MagitCommand::RebaseOnto),
         ]),
         TransientGroup::new("In progress").with_actions([
             TransientAction::new('c', "Continue", MagitCommand::RebaseContinue),

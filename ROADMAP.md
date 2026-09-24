@@ -1674,14 +1674,38 @@ and the log with `J`.
 Task 2.4 shipped 19 arguments across five menus. These are the ones Magit
 offers that it did not.
 
-- [ ] Commit: `--gpg-sign=`, `--date=`, `--reset-author`.
-- [ ] Push: tags and explicit refspecs.
-- [ ] Rebase: `--onto` an arbitrary revision, rather than only the upstream.
-- [ ] The commit menu offers `--verbose`, which asks git to put the diff in the
+- [x] Commit: `--gpg-sign=`, `--date=`, `--reset-author`.
+- [x] Push: tags and explicit refspecs.
+- [x] Rebase: `--onto` an arbitrary revision, rather than only the upstream.
+- [x] The commit menu offers `--verbose`, which asks git to put the diff in the
       message buffer. Task 2.4 supplies the message with `-F`, so no editor
       runs and the switch currently does nothing. Either the fork seeds the
       diff into the buffer itself, or the switch should go; leaving a flag that
       silently does nothing is the worst of the three.
+
+*Done.*
+
+- The commit menu gains `-R` `--reset-author`, `-D` `--date=`, `-S`
+  `--gpg-sign=` with a key and `-G` `--gpg-sign` with the default one. Signing
+  needs a key the agent can use without a terminal; with a passphrase and no
+  graphical pinentry, gpg fails and the status line says so.
+- The push menu gains `-t` `--tags`, `r` for explicit refspecs — a remote,
+  then one or more refspecs, split at spaces (a question can now take several
+  words) — and `T` for all tags.
+- The rebase menu gains `o`: onto a revision, of the commits after another
+  (`git rebase --onto new old`), behind the rebase confirmation. It is never
+  interactive; the todo-list flow asks only for a base.
+- *`--verbose`: the fork seeds the diff itself.* With it on, the message
+  buffer gets git's scissors line and the diff being committed below it (for
+  an amend, everything since HEAD's parent, as git shows); everything from the
+  scissors down is dropped from the message, including diff lines that do not
+  start with `#`. The buffer is `COMMIT_EDITMSG`, so Helix's `git-commit`
+  grammar highlights the diff.
+
+Checked in the editor: a `--verbose` commit (the diff in the buffer, not in the
+message), a commit signed with a passphrase-less key and dated with `-D` (git
+reports the signature good), `--onto` moving a branch from one base to another,
+and a push of two refspecs, one a renamed branch.
 
 ### Task 2.15: The Reflog
 
