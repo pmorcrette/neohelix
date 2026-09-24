@@ -512,6 +512,9 @@ impl MappableCommand {
         org_attach, "Copy a file into the attachment directory of the entry",
         org_attach_open, "Pick one of the files attached to the entry",
         org_inline_task, "Insert an inline task below the cursor",
+        org_encrypt_entry, "Encrypt the body of the entry at the cursor with gpg",
+        org_encrypt_entries, "Encrypt every :crypt: entry of the buffer that is in clear",
+        org_decrypt_entry, "Decrypt the entry at the cursor",
         roam_graph, "Draw the whole Org-Roam graph with Graphviz",
         roam_graph_neighbourhood, "Draw the nodes within two links of the node at the cursor",
         org_copy_subtree, "Copy the subtree at the cursor",
@@ -4486,6 +4489,18 @@ fn org_attach(cx: &mut Context) {
         },
     );
     cx.push_layer(Box::new(prompt));
+}
+
+fn org_encrypt_entry(cx: &mut Context) {
+    crate::roam::encrypt_entry(cx.editor);
+}
+
+fn org_encrypt_entries(cx: &mut Context) {
+    crate::roam::encrypt_entries(cx.editor);
+}
+
+fn org_decrypt_entry(cx: &mut Context) {
+    crate::roam::decrypt_entry(cx.editor);
 }
 
 fn org_inline_task(cx: &mut Context) {

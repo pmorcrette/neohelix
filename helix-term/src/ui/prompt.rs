@@ -47,6 +47,8 @@ pub struct Prompt {
     pub doc_fn: DocFn,
     next_char_handler: Option<PromptCharHandler>,
     language: Option<(&'static str, Arc<ArcSwap<syntax::Loader>>)>,
+    /// Draw `*` for each character rather than the input, for a passphrase.
+    masked: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -103,7 +105,16 @@ impl Prompt {
             doc_fn: Box::new(|_| None),
             next_char_handler: None,
             language: None,
+            masked: false,
         }
+    }
+
+    /// Hides what is typed, for a passphrase: each character is drawn as
+    /// `*`. Such a prompt should have no history register, so the input is
+    /// not kept anywhere once the prompt closes.
+    pub fn masked(mut self) -> Self {
+        self.masked = true;
+        self
     }
 
     /// Gets the byte index in the input representing the current cursor location.
@@ -520,7 +531,12 @@ impl Prompt {
             .clip_top(line)
             .clip_right(2);
 
-        if self.line.is_empty() {
+        if self.masked {
+            self.anchor = 0;
+            let width = self.line_area.width as usize;
+            let stars = "*".repeat(self.line.chars().count().min(width));
+            surface.set_string(self.line_area.x, self.line_area.y, &stars, prompt_color);
+        } else if self.line.is_empty() {
             self.anchor = 0;
             // Show the most recently entered value as a suggestion.
             if let Some(suggestion) = self.first_history_completion(cx.editor) {
@@ -773,6 +789,17 @@ impl Component for Prompt {
         let area = area
             .clip_left(self.prompt.len() as u16)
             .clip_right(if self.prompt.is_empty() { 2 } else { 0 });
+
+        if self.masked {
+            // One `*` per character, and nothing wider than the line.
+            let typed = self.line[..self.cursor].chars().count();
+            let col = area.left() as usize + typed.min(self.line_area.width as usize);
+            let line = area.height as usize - 1;
+            return (
+                Some(Position::new(area.y as usize + line, col)),
+                editor.config().cursor_shape.from_mode(Mode::Insert),
+            );
+        }
 
         let mut col = area.left() as usize + self.line[self.anchor..self.cursor].width();
 

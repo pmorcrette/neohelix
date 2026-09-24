@@ -703,7 +703,49 @@ applications and mean nothing here; these are the ones that do.
   hidden in its entry's body. Not handled: `z` folding follows the
   tree-sitter grammar's sections, and that grammar knows nothing of inline
   tasks, so it folds one as a section of its own.
-- [ ] Encrypted subtrees.
+- [x] Encrypted subtrees.
+
+  Org's `org-crypt`, as of 9.4: `:org-encrypt-entry`, `:org-encrypt-entries`
+  (every `:crypt:` entry in clear) and `:org-decrypt-entry`. The body is
+  encrypted: everything below the headline's planning line and property
+  drawer, through the end of the subtree, children included. The
+  headline, dates and properties stay readable, so an encrypted note keeps
+  its `:ID:` and stays a node. Entries are encrypted to `:CRYPTKEY:` (or a
+  file-wide `#+PROPERTY: CRYPTKEY`), and with a passphrase when there is no
+  key.
+
+  **The terminal problem, and what was done about it.** gpg asks for a
+  passphrase through its agent's pinentry, and a terminal pinentry draws
+  over the editor. So the passphrase is asked for in the editor instead:
+  - in a new *masked* prompt mode, which draws `*` per character and keeps
+    no history;
+  - asked twice when encrypting, since a typo would lose the text;
+  - handed to gpg as the first line of its input (`--pinentry-mode
+    loopback --passphrase-fd 0`), never on the command line, where any
+    user could read it, and never in a file.
+
+  **What differs from Org.** Org re-encrypts `:crypt:` entries before every
+  save. Here a save cannot ask for a passphrase, so `:w` (and `:wa`)
+  refuses to write a `:crypt:` entry in clear and says so; `:w!` writes it
+  anyway. Keys gpg does not trust are refused as gpg refuses them: no
+  `--trust-model always`.
+
+  Checked in the editor:
+  - `:w` was refused with the entry in clear, and the passphrase showed as
+    `*******`;
+  - after encrypting and saving, the file held no plain text and kept its
+    `:ID:`;
+  - a wrong passphrase gave `decryption failed: Bad session key`, and the
+    right one restored the body;
+  - `:w` was refused again until `:w!`, and the round trip gave back the
+    original file byte for byte;
+  - encrypting to a key asked for nothing, and decrypting with an empty
+    passphrase for a key that has none worked.
+
+  Not handled: the passphrase `String` is dropped rather than wiped from
+  memory, since the fork has no zeroizing dependency; gpg-agent's own
+  passphrase cache is not used, so a passphrase is asked for every
+  decryption; and auto-save still goes through the plain save path.
 - [x] A protocol handler, so a browser or another program can capture into the
       notes directory. Org-Roam users lean on this heavily.
 

@@ -382,6 +382,14 @@ fn write_impl(
     path: Option<&str>,
     options: WriteOptions,
 ) -> anyhow::Result<()> {
+    // An Org buffer holding a decrypted `:crypt:` entry would put it on
+    // disk in clear; `:w!` is the way to say that is intended.
+    if !options.force {
+        if let Some(reason) = crate::roam::crypt_guard(doc!(cx.editor)) {
+            bail!(reason);
+        }
+    }
+
     let config = cx.editor.config();
     let (view, doc) = current!(cx.editor);
     let doc_id = doc.id();
@@ -879,6 +887,10 @@ pub fn write_all_impl(
                 if options.write_scratch {
                     errors.push("cannot write a buffer without a filename");
                 }
+                return None;
+            }
+            if !options.force && crate::roam::crypt_guard(doc).is_some() {
+                errors.push("an Org buffer has :crypt: entries in clear; :org-encrypt-entries first, or force the write");
                 return None;
             }
 
@@ -2406,6 +2418,9 @@ roam_buffer_command!(org_clock_goto, crate::roam::clock_goto);
 roam_buffer_command!(org_clock_report, crate::roam::clock_report);
 roam_buffer_command!(org_babel_execute, crate::roam::babel_execute);
 roam_buffer_command!(org_columns, crate::roam::toggle_columns);
+roam_buffer_command!(org_encrypt_entry, crate::roam::encrypt_entry);
+roam_buffer_command!(org_encrypt_entries, crate::roam::encrypt_entries);
+roam_buffer_command!(org_decrypt_entry, crate::roam::decrypt_entry);
 roam_component_command!(org_inline_task, |_editor| Some(
     crate::commands::property_prompt("Inline task: ", crate::roam::insert_inline_task)
 ));
@@ -5038,6 +5053,39 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Show or hide the column view of the buffer, from its #+COLUMNS:.",
         fun: org_columns,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-encrypt-entry",
+        aliases: &[],
+        doc: "Encrypt the body of the entry at the cursor with gpg.",
+        fun: org_encrypt_entry,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-encrypt-entries",
+        aliases: &[],
+        doc: "Encrypt every :crypt: entry of the buffer that is in clear.",
+        fun: org_encrypt_entries,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-decrypt-entry",
+        aliases: &[],
+        doc: "Decrypt the entry at the cursor.",
+        fun: org_decrypt_entry,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

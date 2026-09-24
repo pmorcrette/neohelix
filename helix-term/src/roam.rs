@@ -4214,3 +4214,262 @@ pub fn handle_protocol(editor: &mut Editor, url: &str) {
         }
     }
 }
+
+// ── Encrypted subtrees ────────────────────────────────────────────────────
+
+/// Why writing `doc` would put a `:crypt:` entry on disk in clear, if it
+/// would.
+pub fn crypt_guard(doc: &helix_view::Document) -> Option<String> {
+    let is_org = doc
+        .path()
+        .and_then(|path| path.extension())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("org"));
+    if !is_org {
+        return None;
+    }
+    let clear = helix_roam::crypt::in_clear(&doc.text().to_string()).len();
+    (clear > 0).then(|| {
+        format!(
+            "{clear} :crypt: entr{} would be written in clear; :org-encrypt-entries first, or :w! to write anyway",
+            if clear == 1 { "y" } else { "ies" }
+        )
+    })
+}
+
+/// Runs `gpg` on `input`, returning what it wrote or the last thing it
+/// complained about.
+///
+/// A passphrase, when there is one, is the first line of `input` and read
+/// with `--passphrase-fd 0`: never on the command line, where any user
+/// could read it, and never in a file.
+fn gpg(args: &[&str], input: String) -> Result<String, String> {
+    use std::io::Write;
+
+    let mut child = std::process::Command::new("gpg")
+        .args(["--batch", "--quiet", "--armor", "--yes"])
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("could not run gpg: {err}"))?;
+
+    // Written from a thread: gpg may fill its output pipe before it has
+    // read all its input.
+    let mut stdin = child.stdin.take().expect("stdin is piped");
+    let writer = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
+    let output = child
+        .wait_with_output()
+        .map_err(|err| format!("gpg failed: {err}"))?;
+    let _ = writer.join();
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(stderr
+            .lines()
+            .rfind(|line| !line.trim().is_empty())
+            .unwrap_or("gpg failed")
+            .trim_start_matches("gpg: ")
+            .to_string())
+    }
+}
+
+/// Encrypts one body: to its key, or with the passphrase when it has none.
+fn encrypt_body(
+    text: &str,
+    body: &helix_roam::crypt::Body,
+    passphrase: Option<&str>,
+) -> Result<String, String> {
+    let plain = helix_roam::crypt::body_text(text, body);
+    match helix_roam::crypt::key(text, body.headline) {
+        Some(key) => gpg(&["--encrypt", "--recipient", &key], plain),
+        None => {
+            let passphrase = passphrase.ok_or("no passphrase")?;
+            gpg(
+                &[
+                    "--symmetric",
+                    "--pinentry-mode",
+                    "loopback",
+                    "--passphrase-fd",
+                    "0",
+                ],
+                format!("{passphrase}\n{plain}"),
+            )
+        }
+    }
+}
+
+/// Asks for a passphrase without showing it, then calls `then` with it.
+fn ask_passphrase(label: &'static str, then: impl FnOnce(&mut Editor, String) + Send + 'static) {
+    crate::job::dispatch_blocking(move |_editor, compositor| {
+        let mut then = Some(then);
+        let prompt = crate::ui::Prompt::new(
+            label.into(),
+            None,
+            |_editor, _input| Vec::new(),
+            move |cx, input, event| {
+                if event != crate::ui::PromptEvent::Validate {
+                    return;
+                }
+                if let Some(then) = then.take() {
+                    then(cx.editor, input.to_string());
+                }
+            },
+        )
+        .masked();
+        compositor.push(Box::new(prompt));
+    });
+}
+
+/// Asks for a new passphrase twice, as a mistyped one would lose the text.
+fn ask_new_passphrase(then: impl FnOnce(&mut Editor, String) + Send + 'static) {
+    ask_passphrase("Passphrase: ", move |_editor, first| {
+        ask_passphrase("Repeat passphrase: ", move |editor, second| {
+            if first.is_empty() {
+                editor.set_error("An empty passphrase would protect nothing; not encrypted");
+            } else if first != second {
+                editor.set_error("The passphrases differ; not encrypted");
+            } else {
+                then(editor, first);
+            }
+        });
+    });
+}
+
+/// Encrypts the given entries of the focused buffer, by their headlines.
+fn encrypt_entries_now(editor: &mut Editor, headlines: &[usize], passphrase: Option<&str>) {
+    let mut text = doc!(editor).text().to_string();
+    let mut done = 0;
+    // Last first, so an earlier body's line numbers are not shifted.
+    for &headline in headlines.iter().rev() {
+        let Some(body) = helix_roam::crypt::body(&text, headline) else {
+            continue;
+        };
+        if body.end == body.start || helix_roam::crypt::is_encrypted(&text, &body) {
+            continue;
+        }
+        match encrypt_body(&text, &body, passphrase) {
+            Ok(armoured) => {
+                text = helix_roam::crypt::replace(&text, &body, &armoured);
+                done += 1;
+            }
+            Err(err) => {
+                editor.set_error(format!("Not encrypted: {err}"));
+                return;
+            }
+        }
+    }
+    apply_to_buffer(
+        editor,
+        format!(
+            "Encrypted {done} entr{}",
+            if done == 1 { "y" } else { "ies" }
+        ),
+        text,
+    );
+}
+
+/// Encrypts the entry at the cursor (Org's `org-encrypt-entry`).
+pub fn encrypt_entry(editor: &mut Editor) {
+    let (text, line) = text_and_line(editor);
+    let Some(body) = helix_roam::crypt::body(&text, line) else {
+        editor.set_error("Not in an entry");
+        return;
+    };
+    if helix_roam::crypt::is_encrypted(&text, &body) {
+        editor.set_status("Already encrypted");
+        return;
+    }
+    if body.end == body.start {
+        editor.set_status("Nothing to encrypt");
+        return;
+    }
+    let headline = body.headline;
+    if helix_roam::crypt::key(&text, headline).is_some() {
+        encrypt_entries_now(editor, &[headline], None);
+    } else {
+        ask_new_passphrase(move |editor, passphrase| {
+            encrypt_entries_now(editor, &[headline], Some(&passphrase));
+        });
+    }
+}
+
+/// Encrypts every `:crypt:` entry in clear (Org's `org-encrypt-entries`).
+pub fn encrypt_entries(editor: &mut Editor) {
+    let text = doc!(editor).text().to_string();
+    let clear: Vec<usize> = helix_roam::crypt::in_clear(&text)
+        .into_iter()
+        .map(|body| body.headline)
+        .collect();
+    if clear.is_empty() {
+        editor.set_status("No :crypt: entry is in clear");
+        return;
+    }
+    let needs_passphrase = clear
+        .iter()
+        .any(|&headline| helix_roam::crypt::key(&text, headline).is_none());
+    if needs_passphrase {
+        ask_new_passphrase(move |editor, passphrase| {
+            encrypt_entries_now(editor, &clear, Some(&passphrase));
+        });
+    } else {
+        encrypt_entries_now(editor, &clear, None);
+    }
+}
+
+/// Decrypts the entry at the cursor (Org's `org-decrypt-entry`).
+///
+/// The passphrase is asked for here rather than by gpg's own pinentry,
+/// which in a terminal would draw over the editor. For a key without a
+/// passphrase, leaving it empty works.
+pub fn decrypt_entry(editor: &mut Editor) {
+    let (text, line) = text_and_line(editor);
+    let Some(body) = helix_roam::crypt::body(&text, line) else {
+        editor.set_error("Not in an entry");
+        return;
+    };
+    if !helix_roam::crypt::is_encrypted(&text, &body) {
+        editor.set_status("Not encrypted");
+        return;
+    }
+    let doc_id = doc!(editor).id();
+    let headline = body.headline;
+    ask_passphrase("Passphrase: ", move |editor, passphrase| {
+        // The buffer may have changed while the prompt was open.
+        let Some(doc) = editor.documents.get(&doc_id) else {
+            return;
+        };
+        let text = doc.text().to_string();
+        let Some(body) = helix_roam::crypt::body(&text, headline)
+            .filter(|body| helix_roam::crypt::is_encrypted(&text, body))
+        else {
+            editor.set_error("The entry changed; not decrypted");
+            return;
+        };
+        let armoured = helix_roam::crypt::body_text(&text, &body);
+        match gpg(
+            &[
+                "--decrypt",
+                "--pinentry-mode",
+                "loopback",
+                "--passphrase-fd",
+                "0",
+            ],
+            format!("{passphrase}\n{armoured}"),
+        ) {
+            Ok(plain) => {
+                let after = helix_roam::crypt::replace(&text, &body, &plain);
+                if let Err(err) = apply_to_document(editor, doc_id, &after) {
+                    editor.set_error(err);
+                } else {
+                    editor.set_status(
+                        "Decrypted; it is encrypted again only by :org-encrypt-entries",
+                    );
+                }
+            }
+            Err(err) => editor.set_error(format!("Not decrypted: {err}")),
+        }
+    });
+}
