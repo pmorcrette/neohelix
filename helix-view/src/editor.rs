@@ -1514,6 +1514,11 @@ pub struct Editor {
     pub roam_unlinked: Option<RoamUnlinked>,
     /// Source blocks open for editing, by the path of their editing buffer.
     pub org_src_edits: HashMap<PathBuf, OrgSrcEdit>,
+    /// The file whose clock was last started from this editor.
+    ///
+    /// A hint, not the record: the running clock is whatever `CLOCK:` line
+    /// has no end, and a file edited elsewhere may disagree with this.
+    pub org_clock: Option<PathBuf>,
 
     /// The last subtree cut or copied, waiting to be pasted.
     ///
@@ -1669,6 +1674,7 @@ impl Editor {
             roam_pinned: None,
             roam_unlinked: None,
             org_src_edits: HashMap::new(),
+            org_clock: None,
             org_clip: None,
             pending_commit: None,
             agenda_restriction: None,

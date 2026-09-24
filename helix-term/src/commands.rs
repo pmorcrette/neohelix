@@ -499,6 +499,11 @@ impl MappableCommand {
         org_src_result, "Jump between a source block and its #+RESULTS:",
         org_edit_src, "Edit the source block at the cursor in a buffer of its own",
         org_tangle, "Write every block with a :tangle target to its file",
+        org_clock_in, "Start a clock on the entry at the cursor, stopping any other",
+        org_clock_out, "Stop the running clock",
+        org_clock_cancel, "Discard the running clock",
+        org_clock_goto, "Jump to the entry with the running clock",
+        org_clock_report, "Insert or refresh a clock report table",
         org_copy_subtree, "Copy the subtree at the cursor",
         org_cut_subtree, "Cut the subtree at the cursor",
         org_paste_subtree, "Paste the copied subtree at the cursor's level",
@@ -4381,6 +4386,26 @@ fn org_edit_src(cx: &mut Context) {
 
 fn org_tangle(cx: &mut Context) {
     crate::roam::tangle(cx.editor);
+}
+
+fn org_clock_in(cx: &mut Context) {
+    crate::roam::clock_in(cx.editor);
+}
+
+fn org_clock_out(cx: &mut Context) {
+    crate::roam::clock_out(cx.editor);
+}
+
+fn org_clock_cancel(cx: &mut Context) {
+    crate::roam::clock_cancel(cx.editor);
+}
+
+fn org_clock_goto(cx: &mut Context) {
+    crate::roam::clock_goto(cx.editor);
+}
+
+fn org_clock_report(cx: &mut Context) {
+    crate::roam::clock_report(cx.editor);
 }
 
 /// Asks which emphasis to toggle, completing over the six.

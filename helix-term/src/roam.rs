@@ -2108,6 +2108,15 @@ pub fn sort_table(editor: &mut Editor, input: &str) {
 fn generate(text: &str, block: &helix_roam::dynamic::DynamicBlock) -> Option<Vec<String>> {
     match block.name.to_ascii_lowercase().as_str() {
         "columnview" => Some(helix_roam::dynamic::columnview(text, block)),
+        "clocktable" => {
+            let (today, time) = now();
+            Some(helix_roam::clock::clocktable(
+                text,
+                block,
+                today,
+                helix_roam::clock::moment(today, time),
+            ))
+        }
         _ => None,
     }
 }
@@ -3038,28 +3047,9 @@ pub fn sync_src_edit(editor: &mut Editor, path: &Path, code: String) {
         .map(|block| helix_roam::source::body(&after, &block))
         .unwrap_or_default();
 
-    let org = editor.documents.get(&edit.org_doc).unwrap();
-    let before = org.text().clone();
-    let transaction = helix_core::diff::compare_ropes(&before, &helix_core::Rope::from(after));
-    // A view the Org buffer has been shown in, which the transaction needs
-    // to map that view's selection through.
-    let view_id = editor
-        .tree
-        .views()
-        .find(|(view, _)| view.doc == edit.org_doc)
-        .map(|(view, _)| view.id)
-        .or_else(|| org.selections().keys().next().copied());
-    let Some(view_id) = view_id else {
-        editor.set_error("The Org buffer has no view to apply the change in");
+    if let Err(err) = apply_to_document(editor, edit.org_doc, &after) {
+        editor.set_error(err);
         return;
-    };
-
-    let doc = editor.documents.get_mut(&edit.org_doc).unwrap();
-    doc.apply(&transaction, view_id);
-    if editor.tree.contains(view_id) {
-        let view = editor.tree.get_mut(view_id);
-        let doc = editor.documents.get_mut(&edit.org_doc).unwrap();
-        doc.append_changes_to_history(view);
     }
 
     editor.org_src_edits.insert(
@@ -3071,6 +3061,39 @@ pub fn sync_src_edit(editor: &mut Editor, path: &Path, code: String) {
         },
     );
     editor.set_status("Written back into the block");
+}
+
+/// Replaces the text of a document that may not be the focused one.
+///
+/// A transaction maps a view's selection through the change, so it needs a
+/// view the document has been shown in; the change also goes into that
+/// document's undo history.
+fn apply_to_document(
+    editor: &mut Editor,
+    doc_id: helix_view::DocumentId,
+    after: &str,
+) -> Result<(), &'static str> {
+    let doc = editor
+        .documents
+        .get(&doc_id)
+        .ok_or("the buffer was closed")?;
+    let transaction = helix_core::diff::compare_ropes(doc.text(), &helix_core::Rope::from(after));
+    let view_id = editor
+        .tree
+        .views()
+        .find(|(view, _)| view.doc == doc_id)
+        .map(|(view, _)| view.id)
+        .or_else(|| doc.selections().keys().next().copied())
+        .ok_or("the buffer has no view to apply the change in")?;
+
+    let doc = editor.documents.get_mut(&doc_id).unwrap();
+    doc.apply(&transaction, view_id);
+    if editor.tree.contains(view_id) {
+        let view = editor.tree.get_mut(view_id);
+        let doc = editor.documents.get_mut(&doc_id).unwrap();
+        doc.append_changes_to_history(view);
+    }
+    Ok(())
 }
 
 /// Forgets a block's editing buffer when it closes, and removes its file.
@@ -3172,4 +3195,180 @@ fn write_tangled(file: &helix_roam::source::Tangled) -> std::io::Result<()> {
         std::fs::set_permissions(&file.path, permissions)?;
     }
     Ok(())
+}
+
+// ── Clocking ──────────────────────────────────────────────────────────────
+
+fn now_moment() -> helix_roam::clock::Moment {
+    let (date, time) = now();
+    helix_roam::clock::moment(date, time)
+}
+
+/// Where a file's text is: an open buffer, or only the file on disk.
+enum ClockHome {
+    Buffer(helix_view::DocumentId),
+    Disk(PathBuf),
+}
+
+/// The file with the running clock, and its text, looking first at the
+/// focused buffer and then at the file this editor last clocked into.
+fn find_running_clock(editor: &Editor) -> Option<(ClockHome, String)> {
+    let focused = doc!(editor);
+    let text = focused.text().to_string();
+    if helix_roam::clock::running(&text).is_some() {
+        return Some((ClockHome::Buffer(focused.id()), text));
+    }
+
+    let path = editor.org_clock.as_ref()?;
+    if let Some(doc) = editor.document_by_path(path) {
+        let text = doc.text().to_string();
+        return helix_roam::clock::running(&text)
+            .is_some()
+            .then(|| (ClockHome::Buffer(doc.id()), text));
+    }
+    let text = std::fs::read_to_string(path).ok()?;
+    helix_roam::clock::running(&text)
+        .is_some()
+        .then(|| (ClockHome::Disk(path.clone()), text))
+}
+
+/// Writes changed text back where it came from. A file not open in the
+/// editor is written on disk; an open buffer is changed and left unsaved,
+/// like every other edit.
+fn write_home(editor: &mut Editor, home: &ClockHome, after: &str) -> Result<(), String> {
+    match home {
+        ClockHome::Buffer(id) => apply_to_document(editor, *id, after).map_err(str::to_string),
+        ClockHome::Disk(path) => std::fs::write(path, after)
+            .map_err(|err| format!("could not write {}: {err}", path.display())),
+    }
+}
+
+/// The title of the entry a running clock belongs to, for messages.
+fn clock_title(text: &str) -> String {
+    let settings = helix_roam::FileSettings::scan(text);
+    helix_roam::clock::running(text)
+        .and_then(|clock| helix_roam::clock::entry_of(text, &clock))
+        .and_then(|line| text.lines().nth(line))
+        .and_then(|line| helix_roam::parser::parse_headline_title(line, &settings))
+        .unwrap_or_else(|| "the entry".to_string())
+}
+
+/// Stops the running clock wherever it is, returning what it said.
+fn stop_running_clock(editor: &mut Editor) -> Option<Result<String, String>> {
+    let (home, text) = find_running_clock(editor)?;
+    let title = clock_title(&text);
+    let result = helix_roam::clock::clock_out(&text, now_moment())
+        .map_err(|err| err.to_string())
+        .and_then(|(after, minutes)| {
+            write_home(editor, &home, &after)?;
+            Ok(format!(
+                "Clocked out of {title}: {}",
+                helix_roam::clock::format_duration(minutes)
+            ))
+        });
+    Some(result)
+}
+
+/// Starts a clock on the entry at the cursor, stopping any other first:
+/// there is one clock at a time, as in Org.
+pub fn clock_in(editor: &mut Editor) {
+    let stopped = match stop_running_clock(editor) {
+        Some(Ok(message)) => Some(message),
+        Some(Err(err)) => {
+            editor.set_error(format!("The running clock could not be stopped: {err}"));
+            return;
+        }
+        None => None,
+    };
+
+    let (text, line) = text_and_line(editor);
+    match helix_roam::clock::clock_in(&text, line, now_moment()) {
+        Ok(after) => {
+            editor.org_clock = doc!(editor).path().map(Path::to_path_buf);
+            let title = clock_title(&after);
+            let done = match stopped {
+                Some(stopped) => format!("{stopped}; clocked in to {title}"),
+                None => format!("Clocked in to {title}"),
+            };
+            apply_to_buffer(editor, done, after);
+        }
+        Err(err) => editor.set_error(format!("Not clocked in: {err}")),
+    }
+}
+
+/// Stops the running clock, in whichever file it is.
+pub fn clock_out(editor: &mut Editor) {
+    match stop_running_clock(editor) {
+        Some(Ok(message)) => editor.set_status(message),
+        Some(Err(err)) => editor.set_error(err),
+        None => editor.set_error("No clock is running"),
+    }
+}
+
+/// Throws the running clock away.
+pub fn clock_cancel(editor: &mut Editor) {
+    let Some((home, text)) = find_running_clock(editor) else {
+        editor.set_error("No clock is running");
+        return;
+    };
+    let title = clock_title(&text);
+    let result = helix_roam::clock::clock_cancel(&text)
+        .map_err(|err| err.to_string())
+        .and_then(|after| write_home(editor, &home, &after));
+    match result {
+        Ok(()) => editor.set_status(format!("Cancelled the clock on {title}")),
+        Err(err) => editor.set_error(err),
+    }
+}
+
+/// Jumps to the entry the running clock belongs to.
+pub fn clock_goto(editor: &mut Editor) {
+    let Some((home, text)) = find_running_clock(editor) else {
+        editor.set_error("No clock is running");
+        return;
+    };
+    let clock = helix_roam::clock::running(&text).unwrap();
+    let line = helix_roam::clock::entry_of(&text, &clock).unwrap_or(clock.line);
+
+    let target = match home {
+        ClockHome::Buffer(id) => editor
+            .documents
+            .get(&id)
+            .and_then(|doc| doc.path().map(Path::to_path_buf)),
+        ClockHome::Disk(path) => Some(path),
+    };
+    if let Some(path) = target {
+        if let Err(err) = editor.open(&path, helix_view::editor::Action::Replace) {
+            editor.set_error(format!("Could not open {}: {err}", path.display()));
+            return;
+        }
+    }
+    goto_heading_line(editor, line);
+    let running = helix_roam::clock::format_duration(clock.minutes(now_moment()));
+    editor.set_status(format!("Clocked in for {running}"));
+}
+
+/// Inserts a clock report for the file at the cursor, or refreshes the one
+/// the cursor is in.
+pub fn clock_report(editor: &mut Editor) {
+    let (text, line) = text_and_line(editor);
+    if helix_roam::dynamic::block_at(&text, line).is_some() {
+        dblock_update(editor);
+        return;
+    }
+
+    let mut lines: Vec<&str> = text.lines().collect();
+    let at = (line + 1).min(lines.len());
+    lines.splice(
+        at..at,
+        ["#+BEGIN: clocktable :maxlevel 2 :scope file", "#+END:"],
+    );
+    let mut inserted = lines.join("\n");
+    if text.ends_with('\n') || text.is_empty() {
+        inserted.push('\n');
+    }
+    match helix_roam::dynamic::refresh(&inserted, at, generate) {
+        Some(after) => apply_to_buffer(editor, "Inserted a clock report".to_string(), after),
+        None => editor.set_error("Could not write the clock report"),
+    }
 }

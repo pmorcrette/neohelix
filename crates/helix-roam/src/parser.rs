@@ -774,6 +774,11 @@ impl PendingNode {
     }
 }
 
+/// A headline's title, without its stars, keyword, priority or tags.
+pub fn parse_headline_title(line: &str, settings: &FileSettings) -> Option<String> {
+    parse_headline(line, settings).map(|headline| headline.title)
+}
+
 /// Splits `* TODO [#A] Headline  :tag1:tag2:` into depth, title and tags.
 ///
 /// The keyword and the priority are metadata rather than title, but only the

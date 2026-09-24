@@ -8,6 +8,7 @@
 pub mod agenda;
 pub mod capture;
 pub mod clip;
+pub mod clock;
 pub mod date;
 pub mod dynamic;
 mod graph;

@@ -2399,6 +2399,11 @@ roam_buffer_command!(org_src_previous, crate::roam::src_previous);
 roam_buffer_command!(org_src_result, crate::roam::src_result);
 roam_buffer_command!(org_edit_src, crate::roam::edit_src);
 roam_buffer_command!(org_tangle, crate::roam::tangle);
+roam_buffer_command!(org_clock_in, crate::roam::clock_in);
+roam_buffer_command!(org_clock_out, crate::roam::clock_out);
+roam_buffer_command!(org_clock_cancel, crate::roam::clock_cancel);
+roam_buffer_command!(org_clock_goto, crate::roam::clock_goto);
+roam_buffer_command!(org_clock_report, crate::roam::clock_report);
 roam_component_command!(org_goto_heading, crate::commands::org_heading_picker);
 roam_component_command!(org_sparse_tree, |_editor| Some(
     crate::commands::org_sparse_tree_prompt()
@@ -4891,6 +4896,61 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Write every block with a :tangle target to its file.",
         fun: org_tangle,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-clock-in",
+        aliases: &[],
+        doc: "Start a clock on the entry at the cursor, stopping any other.",
+        fun: org_clock_in,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-clock-out",
+        aliases: &[],
+        doc: "Stop the running clock.",
+        fun: org_clock_out,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-clock-cancel",
+        aliases: &[],
+        doc: "Discard the running clock.",
+        fun: org_clock_cancel,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-clock-goto",
+        aliases: &[],
+        doc: "Jump to the entry with the running clock.",
+        fun: org_clock_goto,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-clock-report",
+        aliases: &[],
+        doc: "Insert or refresh a clock report table.",
+        fun: org_clock_report,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

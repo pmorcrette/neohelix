@@ -220,7 +220,32 @@ forgotten.
 - [ ] Export to HTML, Markdown and LaTeX.
 - [ ] Source block execution (Babel), which is an arbitrary-code-execution
       surface and needs a trust decision before a single line is written.
-- [ ] Clocking: clock in and out, `:LOGBOOK:` drawers, and time reports.
+- [x] Clocking: clock in and out, `:LOGBOOK:` drawers, and time reports.
+
+  `:org-clock-in`, `:org-clock-out`, `:org-clock-cancel`, `:org-clock-goto`
+  and `:org-clock-report`. A clock is a `CLOCK:` line at the top of the
+  entry's `:LOGBOOK:`, closed as `CLOCK: [a]--[b] =>  1:30`. The file is the
+  only record: the running clock is whichever line has no end, so one
+  started before a restart is still found. There is one clock at a time, as
+  in Org, so clocking in elsewhere clocks the running one out first, even in
+  another file. If that file is open, its buffer is changed and left
+  unsaved; if not, the change is written on disk. All three cases were
+  checked in the editor. Cancelling removes the line, and the drawer too if
+  it held nothing else.
+
+  The report is Org's `clocktable` dynamic block: `:maxlevel` (default 2),
+  `:scope file|subtree`, `:block today|yesterday|thisweek|lastweek|thismonth`
+  and `:tstart`/`:tend`. Clocks crossing the span's edge are clipped, so one
+  running past midnight counts in both days. Each deeper level gets its own
+  column, with `\_  ` indentation, as Org lays the table out. That layout,
+  the caption and Monday as the first day of the week are written from
+  memory of Org.
+
+  Not built: showing the running clock in the status line (Org puts it in
+  the mode line); idle detection and resolving a clock left running (Org
+  asks on restart, here it simply stays running until clocked out); clock
+  history; effort warnings; reports across files (`:scope agenda`); and the
+  per-headline time overlays of `org-clock-display`.
 - [ ] Attachments and column view.
 
 ### Task 1.10: Links
