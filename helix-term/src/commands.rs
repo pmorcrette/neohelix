@@ -3404,6 +3404,8 @@ struct PathStyleConfig {
     directory_style: Style,
     number_style: Style,
     colon_style: Style,
+    /// A habit's day by how due it was: not yet, due, last day, overdue.
+    habit_styles: [Style; 4],
 }
 
 impl PathStyleConfig {
@@ -3412,7 +3414,37 @@ impl PathStyleConfig {
             directory_style: theme.get("ui.text.directory"),
             number_style: theme.get("constant.numeric.integer"),
             colon_style: theme.get("punctuation"),
+            // Org's blue, green, yellow and red, from the theme's own.
+            habit_styles: [
+                theme.get("hint"),
+                theme.get("diff.plus"),
+                theme.get("warning"),
+                theme.get("error"),
+            ],
         }
+    }
+
+    /// A habit's consistency graph: one character a day, coloured by how
+    /// due it was, `*` where it was done and `!` for today.
+    fn habit<'a>(&self, cells: &[helix_roam::habit::Cell]) -> Cell<'a> {
+        use helix_roam::habit::Due;
+        let spans: Vec<Span> = cells
+            .iter()
+            .map(|cell| {
+                let style = self.habit_styles[match cell.due {
+                    Due::NotYet => 0,
+                    Due::Due => 1,
+                    Due::LastDay => 2,
+                    Due::Overdue => 3,
+                }];
+                let glyph = match cell.glyph() {
+                    ' ' => '·',
+                    glyph => glyph,
+                };
+                Span::styled(glyph.to_string(), style)
+            })
+            .collect();
+        Cell::from(Spans::from(spans))
     }
 
     fn stylize<'a>(&self, path: Option<&'a Path>, line: Option<usize>) -> Cell<'a> {
@@ -4261,6 +4293,10 @@ fn agenda_picker(
         ui::PickerColumn::new(
             "entry",
             |item: &crate::roam::AgendaLine, _: &PathStyleConfig| item.what.as_str().into(),
+        ),
+        ui::PickerColumn::new(
+            "habit",
+            |item: &crate::roam::AgendaLine, config: &PathStyleConfig| config.habit(&item.habit),
         ),
         ui::PickerColumn::new(
             "path",

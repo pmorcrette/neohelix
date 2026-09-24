@@ -1701,6 +1701,8 @@ pub struct AgendaLine {
     pub what: String,
     pub path: PathBuf,
     pub line: usize,
+    /// A habit's consistency graph, empty for anything else.
+    pub habit: Vec<helix_roam::habit::Cell>,
 }
 
 /// Whether a node's file is one the agenda should read.
@@ -1755,9 +1757,46 @@ pub fn agenda_lines(editor: &Editor, days: i64) -> Vec<AgendaLine> {
                 what: agenda_title(entry.node),
                 path: entry.node.file_path.clone(),
                 line: entry.node.line,
+                habit: habit_graph(editor, entry.node, today),
             }
         })
         .collect()
+}
+
+/// The consistency graph of a node that is a habit.
+///
+/// The history is in the entry's logbook, which the index does not keep,
+/// so the file is read: from its buffer if it is open, which is newer than
+/// the disk, and otherwise from the disk.
+fn habit_graph(
+    editor: &Editor,
+    node: &helix_roam::Node,
+    today: helix_roam::Date,
+) -> Vec<helix_roam::habit::Cell> {
+    let is_habit = node
+        .properties
+        .iter()
+        .any(|(key, value)| key == "style" && value.eq_ignore_ascii_case("habit"));
+    if !is_habit {
+        return Vec::new();
+    }
+    let text = match editor.document_by_path(&node.file_path) {
+        Some(doc) => doc.text().to_string(),
+        None => match std::fs::read_to_string(&node.file_path) {
+            Ok(text) => text,
+            Err(_) => return Vec::new(),
+        },
+    };
+    helix_roam::habit::parse(&text, node.line)
+        .map(|habit| {
+            helix_roam::habit::consistency(
+                &habit,
+                today,
+                helix_roam::habit::DAYS_BEFORE,
+                helix_roam::habit::DAYS_AFTER,
+            )
+        })
+        .unwrap_or_default()
 }
 
 /// Everything unfinished, whether or not it has a date.
@@ -1779,6 +1818,7 @@ pub fn filtered_todo_lines(
     helix_roam::agenda::filtered_todo_list(nodes, filter)
         .into_iter()
         .map(|node| AgendaLine {
+            habit: Vec::new(),
             when: node
                 .todo
                 .as_ref()

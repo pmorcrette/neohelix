@@ -17,6 +17,7 @@ pub mod dependencies;
 pub mod dynamic;
 pub mod export;
 mod graph;
+pub mod habit;
 pub mod hyperlink;
 mod link;
 pub mod list;

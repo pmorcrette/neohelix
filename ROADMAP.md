@@ -635,7 +635,29 @@ language; what is missing is treating it as code.
 Org ships a long list of optional modules. Most are links into Emacs
 applications and mean nothing here; these are the ones that do.
 
-- [ ] Habits: a repeating task with a consistency graph in the agenda.
+- [x] Habits: a repeating task with a consistency graph in the agenda.
+
+  An entry with `:STYLE: habit` and a repeating `SCHEDULED:` is a habit,
+  and a maximum after the repeater is read (`.+2d/4d`: due two days after
+  the last time, late after four). Its history is the completions in its
+  logbook (`State "DONE" …`), which Task 1.21 writes by default when a
+  repeating task is marked done. The agenda has a habit column showing
+  Org's default window, 21 days back and 7 ahead. Each day is `*` where it
+  was done, `!` for today, `·` otherwise, and is coloured by how due the
+  habit was that day, from the theme's `hint`, `diff.plus`, `warning` and
+  `error` (Org's blue, green, yellow and red).
+
+  How due a past day was follows from the last completion before it; days
+  to come follow `SCHEDULED:`. The graph is read from the file, since the
+  index keeps no logbook: from the buffer if it is open, else from disk.
+  Checked in the editor: completions on the 12th, 17th and 23rd landed
+  where they should, and `!` was on today. The colours were not checked:
+  the test terminal records characters, not their attributes.
+
+  Not built: Org's option to show habits only on today's line (a habit
+  appears on each day its repeater lands on this week), the habit-specific
+  agenda sorting, and hiding habits from the agenda. Months and years count
+  as 30 and 365 days in the graph.
 - [x] TODO dependencies: an entry that cannot be done before its children or a
       named other entry.
 
