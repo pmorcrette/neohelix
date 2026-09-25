@@ -233,3 +233,124 @@ fn a_rebase_abort_outside_a_rebase_fails_without_hanging() {
     assert!(!output.success);
     assert!(!output.summary().is_empty());
 }
+
+fn commit_file(work: &Path, file: &str, content: &str, message: &str) {
+    fs::write(work.join(file), content).unwrap();
+    git(work, &["add", file]).unwrap();
+    git(work, &["commit", "-q", "-m", message]).unwrap();
+}
+
+fn run_plan(work: &Path, plan: &helix_magit::Plan) -> helix_magit::GitOutput {
+    helix_magit::command::run_plan(work, plan).unwrap()
+}
+
+#[test]
+fn abort_ends_whatever_is_in_progress() {
+    let (_dir, work) = fixture_or_skip!();
+    let abort = resolve(MagitCommand::Abort, &[]).unwrap();
+    assert!(abort.destructive);
+    assert!(!run_plan(&work, &abort).success, "nothing to abort yet");
+
+    git(&work, &["checkout", "-q", "-b", "other"]).unwrap();
+    commit_file(&work, "f.txt", "theirs\n", "theirs");
+    git(&work, &["checkout", "-q", "main"]).unwrap();
+    commit_file(&work, "f.txt", "ours\n", "ours");
+    assert!(
+        git(&work, &["merge", "other"]).is_none(),
+        "the merge conflicts"
+    );
+    assert!(work.join(".git/MERGE_HEAD").exists());
+
+    let output = run_plan(&work, &abort);
+    assert!(output.success, "{output:?}");
+    assert!(!work.join(".git/MERGE_HEAD").exists());
+    assert_eq!(fs::read_to_string(work.join("f.txt")).unwrap(), "ours\n");
+}
+
+#[test]
+fn clean_names_what_it_would_remove_before_removing_it() {
+    let (_dir, work) = fixture_or_skip!();
+    commit_file(&work, ".gitignore", "build/\n", "ignore build");
+    fs::write(work.join("u.txt"), "untracked\n").unwrap();
+    fs::create_dir_all(work.join("build")).unwrap();
+    fs::write(work.join("build/out"), "ignored\n").unwrap();
+
+    let untracked = resolve(MagitCommand::CleanUntracked, &[]).unwrap();
+    let ignored = resolve(MagitCommand::CleanIgnored, &[]).unwrap();
+    let all = resolve(MagitCommand::CleanAll, &[]).unwrap();
+    let preview =
+        |plan: &helix_magit::Plan| helix_magit::command::clean_preview(&work, &plan.args).unwrap();
+    assert_eq!(preview(&untracked), ["u.txt"]);
+    assert_eq!(preview(&ignored), ["build/"]);
+    assert_eq!(preview(&all), ["build/", "u.txt"]);
+    // A preview removes nothing.
+    assert!(work.join("u.txt").exists() && work.join("build/out").exists());
+
+    assert!(run_plan(&work, &untracked).success);
+    assert!(!work.join("u.txt").exists() && work.join("build/out").exists());
+    assert!(run_plan(&work, &ignored).success);
+    assert!(!work.join("build").exists());
+    assert!(preview(&all).is_empty());
+}
+
+#[test]
+fn editing_a_commit_stops_the_rebase_there_unless_it_is_pushed() {
+    let (_dir, work) = fixture_or_skip!();
+    commit_file(&work, "f.txt", "two\n", "second");
+    let second = git(&work, &["rev-parse", "HEAD"])
+        .unwrap()
+        .trim()
+        .to_string();
+    commit_file(&work, "f.txt", "three\n", "third");
+
+    let edit = |rev: &str| {
+        let mut plan = helix_magit::Plan::new([rev.to_string()], "Edit");
+        plan.special = Some(helix_magit::Special::EditCommit);
+        run_plan(&work, &plan)
+    };
+
+    // `initial` is on origin/main.
+    let refused = edit("HEAD~2");
+    assert!(!refused.success);
+    assert!(refused.summary().contains("already pushed"), "{refused:?}");
+
+    let output = edit(&second);
+    assert!(output.success, "{output:?}");
+    assert!(output.summary().starts_with("Stopped at"), "{output:?}");
+    assert_eq!(
+        git(&work, &["rev-parse", "HEAD"]).unwrap().trim(),
+        second,
+        "the rebase stopped at the commit"
+    );
+    assert!(work.join(".git/rebase-merge").exists());
+    git(&work, &["rebase", "--abort"]).unwrap();
+}
+
+#[test]
+fn reshelving_gives_the_commits_dates_a_minute_apart() {
+    let (_dir, work) = fixture_or_skip!();
+    commit_file(&work, "f.txt", "two\n", "second");
+    commit_file(&work, "f.txt", "three\n", "third");
+
+    let plan = resolve(MagitCommand::Reshelve, &[])
+        .unwrap()
+        // Relative to HEAD, which moves while the dates are rewritten.
+        .answered(&["HEAD~2".into(), "2020-01-02 03:04:00 +0000".into()]);
+    assert!(plan.destructive);
+    let output = run_plan(&work, &plan);
+    assert!(output.success, "{output:?}");
+
+    let dates = git(&work, &["log", "--format=%s %at %ct", "origin/main..HEAD"]).unwrap();
+    assert_eq!(
+        dates.lines().collect::<Vec<_>>(),
+        [
+            "third 1577934300 1577934300",
+            "second 1577934240 1577934240"
+        ]
+    );
+    // What is pushed is refused.
+    let pushed = resolve(MagitCommand::Reshelve, &[])
+        .unwrap()
+        .answered(&["HEAD~3".into(), "2020-01-02".into()]);
+    assert!(!run_plan(&work, &pushed).success);
+}

@@ -2438,6 +2438,28 @@ fn magit_file(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> 
     Ok(())
 }
 
+/// `:magit-insert-revision`: insert a revision looked at recently.
+fn magit_insert_revision(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    cx.jobs.callback(async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                if let Some(prompt) = crate::magit::revision_prompt(editor) {
+                    compositor.push(prompt);
+                }
+            },
+        ));
+        Ok(call)
+    });
+    Ok(())
+}
+
 fn conflict_take(
     cx: &mut compositor::Context,
     args: Args,
@@ -4203,6 +4225,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Open the Magit menu for the current file: stage, unstage, diff, log, blame.",
         fun: magit_file,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "magit-insert-revision",
+        aliases: &[],
+        doc: "Insert a revision looked at recently (a commit opened or copied) as `hash (\"subject\")`.",
+        fun: magit_insert_revision,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

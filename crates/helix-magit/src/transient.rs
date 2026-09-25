@@ -172,6 +172,18 @@ pub enum MagitCommand {
     /// Continue whichever operation stopped: merge, rebase, cherry-pick,
     /// revert or am.
     Continue,
+    /// Abort whichever is in progress, bisect included.
+    Abort,
+    /// Resolve a conflicted file with `git mergetool`, in the terminal.
+    Mergetool,
+
+    /// `git clean`: untracked files, ignored ones, or both.
+    CleanUntracked,
+    CleanIgnored,
+    CleanAll,
+
+    /// Rewrite the author and committer dates of the commits after one.
+    Reshelve,
 
     /// The file dispatch, for the file being edited: staging it, and its
     /// diff, log and blame (the last three are views the editor opens).
@@ -180,6 +192,11 @@ pub enum MagitCommand {
     FileDiff,
     FileLog,
     FileBlame,
+    /// Stop an interactive rebase at the commit that last changed the line
+    /// being edited.
+    FileEditLineCommit,
+    /// Insert a revision from the ones looked at recently.
+    InsertRevision,
 
     /// Start a repository: clone one, or make one in a directory.
     Clone,
@@ -298,6 +315,7 @@ pub enum MenuKind {
     Ignore,
     Sparse,
     Bundle,
+    Clean,
     /// A branch's and a remote's own configuration, opened from the branch
     /// and remote menus.
     BranchConfig,
@@ -318,7 +336,7 @@ pub enum MenuKind {
 }
 
 impl MenuKind {
-    pub const ALL: [MenuKind; 33] = [
+    pub const ALL: [MenuKind; 34] = [
         MenuKind::Main,
         MenuKind::Commit,
         MenuKind::Push,
@@ -343,6 +361,7 @@ impl MenuKind {
         MenuKind::Ignore,
         MenuKind::Sparse,
         MenuKind::Bundle,
+        MenuKind::Clean,
         MenuKind::BranchConfig,
         MenuKind::RemoteConfig,
         MenuKind::Resolve,
@@ -383,6 +402,7 @@ impl MenuKind {
             MenuKind::Ignore => 'i',
             MenuKind::Sparse => '>',
             MenuKind::Bundle => 'n',
+            MenuKind::Clean => 'K',
             MenuKind::Diff => 'd',
             MenuKind::DiffSettings => 'D',
             MenuKind::Jump => '\'',
@@ -429,6 +449,7 @@ impl MenuKind {
             MenuKind::Ignore => ignore_menu(),
             MenuKind::Sparse => sparse_menu(),
             MenuKind::Bundle => bundle_menu(),
+            MenuKind::Clean => clean_menu(),
             MenuKind::BranchConfig => branch_config_menu(),
             MenuKind::RemoteConfig => remote_config_menu(),
             MenuKind::Resolve => resolve_menu(),
@@ -801,11 +822,13 @@ pub fn main_menu() -> TransientMenu {
             TransientAction::new('R', "Repositories", MagitCommand::ListRepositories),
             open(MenuKind::Sparse, "Sparse checkout"),
             open(MenuKind::Bundle, "Bundle"),
+            open(MenuKind::Clean, "Clean"),
         ]),
         TransientGroup::new("Essential").with_actions([
             TransientAction::new('s', "Status", MagitCommand::Status),
             TransientAction::new('g', "Refresh", MagitCommand::Refresh),
             TransientAction::new('q', "Quit", MagitCommand::Quit),
+            TransientAction::new('a', "Abort what is in progress", MagitCommand::Abort),
         ]),
     ])
 }
@@ -916,6 +939,7 @@ pub fn rebase_menu() -> TransientMenu {
             TransientAction::new('u', "Onto upstream", MagitCommand::RebaseOntoUpstream),
             TransientAction::new('r', "Interactively", MagitCommand::RebaseInteractive),
             TransientAction::new('o', "Onto a revision", MagitCommand::RebaseOnto),
+            TransientAction::new('d', "Reshelve: new dates since", MagitCommand::Reshelve),
         ]),
         TransientGroup::new("In progress").with_actions([
             TransientAction::new('c', "Continue", MagitCommand::RebaseContinue),
@@ -1168,6 +1192,17 @@ pub fn bundle_menu() -> TransientMenu {
     ])
 }
 
+pub fn clean_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::Clean, "Clean").with_groups([TransientGroup::new(
+        "Remove, after naming what goes",
+    )
+    .with_actions([
+        TransientAction::new('k', "Untracked files", MagitCommand::CleanUntracked),
+        TransientAction::new('i', "Ignored files", MagitCommand::CleanIgnored),
+        TransientAction::new('a', "Both", MagitCommand::CleanAll),
+    ])])
+}
+
 pub fn ignore_menu() -> TransientMenu {
     TransientMenu::new(MenuKind::Ignore, "Ignore").with_groups([TransientGroup::new("Ignore")
         .with_actions([
@@ -1214,6 +1249,7 @@ pub fn resolve_menu() -> TransientMenu {
                 "Rewrite with the base shown",
                 MagitCommand::ConflictWithBase,
             ),
+            TransientAction::new('m', "With git mergetool", MagitCommand::Mergetool),
         ]),
         TransientGroup::new("Show").with_actions([
             TransientAction::new('O', "Ours", MagitCommand::ConflictShowOurs),
@@ -1225,11 +1261,10 @@ pub fn resolve_menu() -> TransientMenu {
             TransientAction::new('t', "Take theirs", MagitCommand::ConflictTakeTheirs),
             TransientAction::new('s', "Mark resolved", MagitCommand::ConflictMarkResolved),
         ]),
-        TransientGroup::new("Then").with_actions([TransientAction::new(
-            'c',
-            "Continue the operation",
-            MagitCommand::Continue,
-        )]),
+        TransientGroup::new("Then").with_actions([
+            TransientAction::new('c', "Continue the operation", MagitCommand::Continue),
+            TransientAction::new('a', "Abort the operation", MagitCommand::Abort),
+        ]),
     ])
 }
 
@@ -1245,6 +1280,18 @@ pub fn file_menu() -> TransientMenu {
             TransientAction::new('d', "Diff", MagitCommand::FileDiff),
             TransientAction::new('l', "Log", MagitCommand::FileLog),
             TransientAction::new('b', "Blame", MagitCommand::FileBlame),
+        ]),
+        TransientGroup::new("History").with_actions([
+            TransientAction::new(
+                'e',
+                "Edit the commit of this line",
+                MagitCommand::FileEditLineCommit,
+            ),
+            TransientAction::new(
+                'r',
+                "Insert a recent revision",
+                MagitCommand::InsertRevision,
+            ),
         ]),
         TransientGroup::new("Everything").with_actions([
             TransientAction::new('g', "Status", MagitCommand::Status),

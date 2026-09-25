@@ -1848,19 +1848,42 @@ full is in the process output (`$`).
 Drawn from Magit's own grab-bag module. Small individually, and several are
 used more often than most of the transients above.
 
-- [ ] Copy the revision or the section value at point, so a commit hash can be
+- [x] Copy the revision or the section value at point, so a commit hash can be
       pasted somewhere without retyping it.
-- [ ] Abort whatever operation is in progress, without the user having to know
+- [x] Abort whatever operation is in progress, without the user having to know
       whether it is a merge, a rebase, a cherry-pick, a revert or a bisect.
-- [ ] `git clean`: remove untracked files, with ignored files as a separate
+- [x] `git clean`: remove untracked files, with ignored files as a separate
       choice and a confirmation naming what goes.
-- [ ] Edit the commit that last touched the line at point, which is blame and
+- [x] Edit the commit that last touched the line at point, which is blame and
       interactive rebase used together.
-- [ ] Rewrite the author and committer dates of a range of commits.
-- [ ] Resolve a conflict with the user's configured mergetool, as an escape
+- [x] Rewrite the author and committer dates of a range of commits.
+- [x] Resolve a conflict with the user's configured mergetool, as an escape
       hatch from whatever Task 2.10 builds.
-- [ ] A revision stack: revisions recently looked at, insertable into a buffer
+- [x] A revision stack: revisions recently looked at, insertable into a buffer
       — useful when writing a commit message that refers to another commit.
+
+*Done.* `C-w` copies the value under the cursor in the status, log, blame and
+commit views (a commit, stash, branch, tag or file) and `A-w` the view's own
+revision (the commit shown, a range's newer end, or HEAD), into the default
+yank register and the clipboard. Abort is `a` in the main menu and in the
+resolve menu: it reads what is in progress and runs its `--abort`, or
+`bisect reset`, after a confirmation naming the operation. `git clean` is the
+`K` menu (untracked, ignored, both, always with `-d`): git is first asked with
+`-n`, the confirmation names what would go, and nothing is asked when that is
+nothing. Editing the commit of a line is `e` in the file dispatch and in the
+blame view: the line is blamed, and an interactive rebase starts at the
+commit's parent with a sequence editor that turns its `pick` into `edit`. A
+pushed commit is refused (Task 2.4's rule), and so is a merge, which the rebase
+would drop. Reshelving is `d` in the rebase menu: the commits after a revision
+get new author and committer dates, the first at the date given (parsed by git
+itself) and each next one a minute later, in the committer's zone, through a
+`rebase --exec` that amends each commit; also refused once pushed. The
+mergetool is `m` in the resolve menu and runs `git mergetool` on the file in
+the integrated terminal, since the tool usually needs one; whatever the
+terminal was running receives the line. The revision stack keeps the last 30
+commits opened or copied, newest first; `:magit-insert-revision`, or `r` in
+the file dispatch, inserts one at the cursors as `abc1234 ("Subject")`, RET
+alone taking the newest.
 
 *What is left after Task 2.19 is Emacs, not Git: Dired and bookmark
 integration, `project.el` entry points, shift-selection variants of the

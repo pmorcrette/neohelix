@@ -282,7 +282,24 @@ pub fn rebase_todo(editor: &mut Editor, action: &str) -> Result<(), String> {
 
 /// Puts a destructive plan behind a single-key confirmation.
 fn confirm_then_run(compositor: &mut Compositor, plan: Plan, workdir: PathBuf) {
-    let question = format!("{}? (y/N)", plan.summary);
+    if plan.args.first().map(String::as_str) == Some("clean") && plan.special.is_none() {
+        return confirm_clean(compositor, plan, workdir);
+    }
+    let mut question = format!("{}? (y/N)", plan.summary);
+    // Say what is aborted, or that nothing is.
+    if plan.special == Some(helix_magit::Special::Abort) {
+        let state = helix_magit::status::git_dir(&workdir)
+            .and_then(|dir| helix_magit::status::in_progress(&dir, &|_| None));
+        match state {
+            Some(state) => question = format!("Abort: {}? (y/N)", state.description),
+            None => {
+                tokio::spawn(crate::job::dispatch(|editor, _| {
+                    editor.set_error("Nothing is in progress");
+                }));
+                return;
+            }
+        }
+    }
     // What such commands move away from stays in the reflog: say where.
     let recoverable = matches!(
         plan.args.first().map(String::as_str),
@@ -300,6 +317,60 @@ fn confirm_then_run(compositor: &mut Compositor, plan: Plan, workdir: PathBuf) {
     compositor.push(Box::new(Confirm::new(question, detail, move |cx| {
         run(cx, plan, workdir);
     })));
+}
+
+/// `git clean`, confirmed by naming what it would remove — found by
+/// asking git the same question with `-n` — or not asked at all when that
+/// is nothing.
+fn confirm_clean(compositor: &mut Compositor, plan: Plan, workdir: PathBuf) {
+    let paths = match command::clean_preview(&workdir, &plan.args) {
+        Ok(paths) => paths,
+        Err(err) => {
+            let line = plan.command_line();
+            compositor.push(Box::new(Confirm::new(
+                format!("{line} cannot run"),
+                err,
+                |_| {},
+            )));
+            return;
+        }
+    };
+    if paths.is_empty() {
+        // Said on the next turn of the loop: this runs inside one.
+        tokio::spawn(crate::job::dispatch(|editor, _| {
+            editor.set_status("Nothing to remove");
+        }));
+        return;
+    }
+    let count = paths.len();
+    let question = format!(
+        "{}: {count} path{}? (y/N)",
+        plan.summary,
+        if count == 1 { "" } else { "s" }
+    );
+    compositor.push(Box::new(Confirm::new(
+        question,
+        name_paths(&paths, 100),
+        move |cx| run(cx, plan, workdir),
+    )));
+}
+
+/// `a.txt, build/, … and 12 more`, within about `width` characters.
+fn name_paths(paths: &[String], width: usize) -> String {
+    let mut text = String::new();
+    for (index, path) in paths.iter().enumerate() {
+        let rest = paths.len() - index;
+        let more = format!(", … and {rest} more");
+        if !text.is_empty() && text.len() + path.len() + 2 + more.len() > width {
+            text.push_str(&more);
+            return text;
+        }
+        if !text.is_empty() {
+            text.push_str(", ");
+        }
+        text.push_str(path);
+    }
+    text
 }
 
 /// Asks the plan's questions one after the other, then runs it with the
@@ -1074,4 +1145,203 @@ mod tests {
         assert!(has_base(&args(&["rebase", "--interactive", "abc123^"])));
         assert!(has_base(&args(&["rebase", "--interactive", "--root"])));
     }
+}
+
+// ── Copying, and the revision stack ──────────────────────────────────────
+//
+// Revisions looked at — a commit opened, a hash copied — are kept, newest
+// first, so a commit message can refer to one without retyping its hash.
+
+/// A remembered revision: its abbreviated hash and subject.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Remembered {
+    pub hash: String,
+    pub subject: String,
+}
+
+impl Remembered {
+    /// How a commit is referred to in prose: `abc1234 ("Subject")`.
+    pub fn reference(&self) -> String {
+        format!("{} (\"{}\")", self.hash, self.subject)
+    }
+}
+
+static REVISIONS: std::sync::Mutex<Vec<Remembered>> = std::sync::Mutex::new(Vec::new());
+const REVISION_STACK_SIZE: usize = 30;
+
+/// Adds the commit `rev` names to the top of the stack.
+pub fn remember_revision(workdir: &std::path::Path, rev: &str) {
+    let args = ["log", "-1", "--format=%h%x00%s", rev, "--"]
+        .iter()
+        .map(|arg| arg.to_string())
+        .collect();
+    let Ok(output) = GitCommand::new(workdir, args).run() else {
+        return;
+    };
+    let Some((hash, subject)) = output.stdout.trim_end().split_once('\0') else {
+        return;
+    };
+    push_revision(Remembered {
+        hash: hash.to_string(),
+        subject: subject.to_string(),
+    });
+}
+
+fn push_revision(revision: Remembered) {
+    let Ok(mut stack) = REVISIONS.lock() else {
+        return;
+    };
+    stack.retain(|known| known.hash != revision.hash);
+    stack.insert(0, revision);
+    stack.truncate(REVISION_STACK_SIZE);
+}
+
+pub fn revision_stack() -> Vec<Remembered> {
+    REVISIONS
+        .lock()
+        .map(|stack| stack.clone())
+        .unwrap_or_default()
+}
+
+/// Copies `value` into the default yank register and the clipboard, and
+/// remembers it when it is a revision.
+pub fn copy_value(editor: &mut Editor, workdir: &std::path::Path, value: &str, kind: AskKind) {
+    let register = editor.config().default_yank_register;
+    if let Err(err) = editor.registers.write(register, vec![value.to_string()]) {
+        editor.set_error(err.to_string());
+        return;
+    }
+    // The clipboard may not be there (no display, no provider); the
+    // register is.
+    let _ = editor.registers.write('+', vec![value.to_string()]);
+    if matches!(kind, AskKind::Revision | AskKind::Branch | AskKind::Tag) {
+        remember_revision(workdir, value);
+    }
+    editor.set_status(format!("Copied {value}"));
+}
+
+/// Asks which remembered revision to insert at the cursors, as
+/// `abc1234 ("Subject")`.
+pub fn revision_prompt(editor: &mut Editor) -> Option<Box<dyn crate::compositor::Component>> {
+    let stack = revision_stack();
+    if stack.is_empty() {
+        editor.set_error("No revision looked at yet: open a commit, or copy one with C-w");
+        return None;
+    }
+    let lines: Vec<String> = stack
+        .iter()
+        .map(|revision| format!("{} {}", revision.hash, revision.subject))
+        .collect();
+    let prompt = crate::ui::Prompt::new(
+        "Insert revision (RET: the newest): ".into(),
+        None,
+        move |_, input| {
+            let input = input.to_lowercase();
+            lines
+                .iter()
+                .filter(|line| line.to_lowercase().contains(&input))
+                .map(|line| (0.., line.clone().into()))
+                .collect()
+        },
+        move |cx, input, event| {
+            if event != crate::ui::PromptEvent::Validate {
+                return;
+            }
+            // Nothing typed takes the newest, as Magit's does.
+            let hash = input.split_whitespace().next();
+            let text = match hash {
+                None => stack.first().map(Remembered::reference).unwrap_or_default(),
+                Some(hash) => stack
+                    .iter()
+                    .find(|revision| revision.hash == hash)
+                    .map(Remembered::reference)
+                    .unwrap_or_else(|| input.trim().to_string()),
+            };
+            if text.is_empty() {
+                return;
+            }
+            let (view, doc) = helix_view::current!(cx.editor);
+            let selection = doc.selection(view.id).clone();
+            let transaction =
+                helix_core::Transaction::change_by_selection(doc.text(), &selection, |range| {
+                    (range.head, range.head, Some(text.as_str().into()))
+                });
+            doc.apply(&transaction, view.id);
+        },
+    );
+    Some(Box::new(prompt))
+}
+
+/// Runs `git mergetool` on a conflicted file in the integrated terminal,
+/// which the tool — often a terminal program itself — needs.
+pub fn mergetool(
+    editor: &mut Editor,
+    compositor: &mut Compositor,
+    workdir: &std::path::Path,
+    path: &str,
+) {
+    let Some(view) = crate::commands::terminal_view(editor) else {
+        return;
+    };
+    close_views(compositor);
+    let quote = |text: &str| format!("'{}'", text.replace('\'', r"'\''"));
+    let line = format!(
+        "cd {} && git mergetool -- {}\r",
+        quote(&workdir.display().to_string()),
+        quote(path)
+    );
+    if let Some(terminal) = editor.terminal.as_ref() {
+        terminal.write(line.into_bytes());
+    }
+    compositor.push(view);
+}
+
+/// Stops an interactive rebase at the commit that last changed `line` (from
+/// 0) of `path`: blame and rebase together.
+pub fn edit_line_commit(
+    compositor: &mut Compositor,
+    cx: &mut Context,
+    workdir: PathBuf,
+    path: &str,
+    line: usize,
+) {
+    let blamed = match helix_magit::blame::blame(&workdir, std::path::Path::new(path), None) {
+        Ok(lines) => lines,
+        Err(err) => return cx.editor.set_error(err),
+    };
+    let Some(blamed) = blamed.get(line) else {
+        return cx
+            .editor
+            .set_error("That line is not in the committed file");
+    };
+    if blamed.is_uncommitted() {
+        return cx.editor.set_error("That line is not committed yet");
+    }
+    edit_commit(compositor, cx, workdir, &blamed.hash);
+}
+
+/// Confirms, then starts an interactive rebase stopping at `commit`.
+pub fn edit_commit(compositor: &mut Compositor, cx: &mut Context, workdir: PathBuf, commit: &str) {
+    let short = &commit[..commit.len().min(7)];
+    let subject = helix_magit::status::commit_subject(&workdir, commit).unwrap_or_default();
+    let mut plan = Plan::new(
+        [commit.to_string()],
+        &format!("Rebase to edit {short} {subject}"),
+    );
+    plan.special = Some(helix_magit::Special::EditCommit);
+    plan.destructive = true;
+    execute(compositor, cx, plan, workdir);
+}
+
+/// `rev`'s abbreviated hash.
+pub fn short_hash(workdir: &std::path::Path, rev: &str) -> Option<String> {
+    let args = ["rev-parse", "--short", "--verify", "--quiet", rev]
+        .iter()
+        .map(|arg| arg.to_string())
+        .collect();
+    let output = GitCommand::new(workdir, args).run().ok()?;
+    output
+        .success
+        .then(|| output.stdout.trim().to_string())
+        .filter(|hash| !hash.is_empty())
 }

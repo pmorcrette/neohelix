@@ -108,7 +108,145 @@
 | `jumplist_picker` | Open jumplist picker | normal: `` <space>j ``, select: `` <space>j `` |
 | `roam_node_find` | Find Org-Roam node | normal: `` <space>nf ``, select: `` <space>nf `` |
 | `roam_backlinks_toggle` | Toggle Org-Roam backlinks panel | normal: `` <space>nb ``, select: `` <space>nb `` |
+| `roam_promote_buffer` | Promote the buffer to a single Org-Roam node |  |
+| `roam_demote_buffer` | Demote the Org-Roam file node to a heading |  |
+| `roam_extract_subtree` | Extract the subtree at the cursor into its own node |  |
+| `roam_replace_links` | Replace legacy roam: links with id: links |  |
+| `roam_refile` | Refile the subtree at the cursor into another Org-Roam node |  |
+| `org_follow_link` | Follow the Org link under the cursor |  |
+| `org_goto_next_link` | Move to the next Org link |  |
+| `org_goto_previous_link` | Move to the previous Org link |  |
+| `org_store_link` | Store a link to the cursor's location |  |
+| `org_insert_link` | Insert the stored Org link |  |
+| `org_create_id` | Give the entry at the cursor an :ID: |  |
+| `roam_node_insert` | Insert a link to an Org-Roam node, creating it if needed |  |
+| `roam_random_node` | Open a random Org-Roam node |  |
+| `roam_ref_find` | Find an Org-Roam node by one of its refs |  |
+| `roam_alias_add` | Add an alias to the node at the cursor |  |
+| `roam_alias_remove` | Remove an alias from the node at the cursor |  |
+| `roam_rename_node` | Rename the node at the cursor and the links naming it |  |
+| `roam_unlinked_references` | List where this node is named without a link |  |
+| `roam_capture` | Create an Org-Roam node from a template |  |
+| `org_insert_heading` | Insert a heading after the current subtree |  |
+| `org_promote` | Promote the headline at the cursor |  |
+| `org_demote` | Demote the headline at the cursor |  |
+| `org_promote_subtree` | Promote the subtree at the cursor |  |
+| `org_demote_subtree` | Demote the subtree at the cursor |  |
+| `org_move_subtree_up` | Move the subtree above its sibling |  |
+| `org_move_subtree_down` | Move the subtree below its sibling |  |
+| `org_todo` | Cycle the TODO state forward |  |
+| `org_todo_previous` | Cycle the TODO state backward |  |
+| `org_priority_up` | Raise the priority towards [#A] |  |
+| `org_priority_down` | Lower the priority |  |
+| `org_agenda_day` | Show today's agenda |  |
+| `org_agenda_restrict` | Restrict the agenda to the current file |  |
+| `org_agenda_unrestrict` | Lift the agenda restriction |  |
+| `org_agenda_scope` | Say which files the agenda reads |  |
+| `org_agenda_week` | Show the week's agenda |  |
+| `org_todo_list` | List every unfinished task |  |
+| `org_todo_filtered` | List unfinished tasks matching a keyword, tag or priority |  |
+| `org_insert_item` | Insert a list item after the one at the cursor |  |
+| `org_renumber_list` | Renumber the ordered list at the cursor |  |
+| `org_demote_item` | Move the list item in a level |  |
+| `org_promote_item` | Move the list item out a level |  |
+| `org_toggle_checkbox` | Tick or untick the checkbox at the cursor |  |
+| `org_update_cookies` | Bring every statistics cookie up to date |  |
+| `org_table_align` | Realign the Org table at the cursor |  |
+| `org_table_insert_row` | Insert a table row below the cursor |  |
+| `org_table_insert_separator` | Insert a table separator below the cursor |  |
+| `org_table_delete_row` | Remove the table row at the cursor |  |
+| `org_table_insert_column` | Insert a table column at the cursor |  |
+| `org_table_delete_column` | Remove the table column at the cursor |  |
+| `org_table_next_cell` | Move to the next table cell |  |
+| `org_table_previous_cell` | Move to the previous table cell |  |
+| `fold` | Fold the innermost foldable range at the cursor | normal: `` Zf ``, `` zf ``, select: `` Zf ``, `` zf `` |
+| `narrow_to_selection` | Hide every line outside the selection |  |
+| `cycle_fold` | Step the range at the cursor through folded, children, open | normal: `` Z<tab> ``, `` z<tab> ``, select: `` Z<tab> ``, `` z<tab> `` |
+| `cycle_fold_all` | Step the buffer through overview, contents, everything | normal: `` Z<S-tab> ``, `` z<S-tab> ``, select: `` Z<S-tab> ``, `` z<S-tab> `` |
+| `unfold` | Open the fold at the cursor | normal: `` Zo ``, `` zo ``, select: `` Zo ``, `` zo `` |
+| `toggle_fold` | Close the fold at the cursor, or open it | normal: `` Za ``, `` za ``, select: `` Za ``, `` za `` |
+| `fold_all` | Fold everything the language marks as foldable | normal: `` ZM ``, `` zM ``, select: `` ZM ``, `` zM `` |
+| `unfold_all` | Open every fold in the buffer | normal: `` ZR ``, `` zR ``, select: `` ZR ``, `` zR `` |
+| `roam_index` | Look through everything the index holds |  |
+| `roam_state` | Report the fork's Org-Roam state for a bug report |  |
+| `roam_backlink_counts` | Show each headline's backlink count beside it |  |
+| `roam_pin_node` | Pin the Roam panel to the node at the cursor |  |
+| `roam_unpin_node` | Let the Roam panel follow the cursor again |  |
+| `roam_diagnose` | Report what the index believes about the node at the cursor |  |
+| `org_emphasis` | Toggle an emphasis marker on the selection |  |
+| `org_insert_block` | Insert a structure block, wrapping the selection |  |
+| `org_footnote_new` | Add a footnote and go to where its text goes |  |
+| `org_footnote_goto` | Jump between a footnote's reference and definition |  |
+| `org_footnote_renumber` | Renumber the numeric footnotes in reference order |  |
+| `org_cite_insert` | Insert a citation, completing over the bibliography |  |
+| `org_cite_follow` | Open the bibliography at the cited entry |  |
+| `org_next_heading` | Move to the next heading |  |
+| `org_previous_heading` | Move to the previous heading |  |
+| `org_next_sibling_heading` | Move to the next heading at the same level |  |
+| `org_previous_sibling_heading` | Move to the previous heading at the same level |  |
+| `org_parent_heading` | Move to the parent heading |  |
+| `org_goto_heading` | Jump to a heading in this buffer by name |  |
+| `org_outline_path` | Show the outline path of the entry at the cursor |  |
+| `org_sparse_tree` | Hide everything but the entries matching a filter |  |
+| `org_narrow` | Hide everything outside the subtree at the cursor |  |
+| `org_widen` | Bring back everything a narrowing or sparse tree hid |  |
+| `org_startup_visibility` | Fold the buffer the way its #+STARTUP: says it opens |  |
+| `org_src_next` | Move to the next source block |  |
+| `org_src_previous` | Move to the previous source block |  |
+| `org_src_result` | Jump between a source block and its #+RESULTS: |  |
+| `org_edit_src` | Edit the source block at the cursor in a buffer of its own |  |
+| `org_tangle` | Write every block with a :tangle target to its file |  |
+| `org_clock_in` | Start a clock on the entry at the cursor, stopping any other |  |
+| `org_clock_out` | Stop the running clock |  |
+| `org_clock_cancel` | Discard the running clock |  |
+| `org_clock_goto` | Jump to the entry with the running clock |  |
+| `org_clock_report` | Insert or refresh a clock report table |  |
+| `org_export_markdown` | Export the buffer to Markdown next to its file |  |
+| `org_export_html` | Export the buffer to HTML next to its file |  |
+| `org_export_latex` | Export the buffer to LaTeX next to its file |  |
+| `org_babel_execute` | Run the source block at the cursor and write its results (needs workspace trust) |  |
+| `org_columns` | Show or hide the column view of the buffer, from its #+COLUMNS: |  |
+| `org_attach` | Copy a file into the attachment directory of the entry |  |
+| `org_attach_open` | Pick one of the files attached to the entry |  |
+| `org_inline_task` | Insert an inline task below the cursor |  |
+| `org_copy_visible` | Yank only the visible text of the selections, or of the buffer |  |
+| `roam_dailies_capture` | Add an entry to today's daily note without leaving this buffer |  |
+| `roam_dailies_directory` | Pick a file in the dailies directory |  |
+| `org_encrypt_entry` | Encrypt the body of the entry at the cursor with gpg |  |
+| `org_encrypt_entries` | Encrypt every :crypt: entry of the buffer that is in clear |  |
+| `org_decrypt_entry` | Decrypt the entry at the cursor |  |
+| `roam_graph` | Draw the whole Org-Roam graph with Graphviz |  |
+| `roam_graph_neighbourhood` | Draw the nodes within two links of the node at the cursor |  |
+| `org_copy_subtree` | Copy the subtree at the cursor |  |
+| `org_cut_subtree` | Cut the subtree at the cursor |  |
+| `org_paste_subtree` | Paste the copied subtree at the cursor's level |  |
+| `org_clone_subtree` | Clone the subtree at the cursor, shifting its dates |  |
+| `org_sort_entries` | Sort the children of the entry at the cursor |  |
+| `org_sort_list` | Sort the list items at the cursor |  |
+| `org_sort_table` | Sort the table rows by the cursor's column |  |
+| `org_dblock_update` | Regenerate the dynamic block at the cursor |  |
+| `org_dblock_update_all` | Regenerate every dynamic block in the buffer |  |
+| `org_archive_subtree` | Move the subtree at the cursor to the file's archive |  |
+| `org_set_priority` | Set the priority on the headline at the cursor |  |
+| `org_schedule` | Set SCHEDULED: on the entry at the cursor |  |
+| `org_deadline` | Set DEADLINE: on the entry at the cursor |  |
+| `org_set_property` | Set a property on the entry at the cursor |  |
+| `org_remove_property` | Remove a property from the entry at the cursor |  |
+| `org_set_effort` | Set the effort estimate on the entry at the cursor |  |
+| `org_increment_effort` | Step the effort estimate to the next value |  |
+| `org_insert_drawer` | Insert a drawer under the entry at the cursor |  |
+| `org_add_note` | Record a dated note in the entry's logbook |  |
+| `org_log_state` | Record a TODO state change in the entry's logbook |  |
+| `roam_dailies_today` | Open today's daily note |  |
+| `roam_dailies_date` | Open the daily note for a date |  |
+| `roam_dailies_next` | Open the next daily note |  |
+| `roam_dailies_previous` | Open the previous daily note |  |
+| `roam_tag_add` | Add a tag to the node at the cursor |  |
+| `roam_tag_remove` | Remove a tag from the node at the cursor |  |
+| `roam_ref_add` | Add a ref to the node at the cursor |  |
+| `roam_ref_remove` | Remove a ref from the node at the cursor |  |
 | `magit` | Open the Magit transient menu | normal: `` <space>m ``, select: `` <space>m `` |
+| `magit_file` | Open the Magit menu for the current file | normal: `` <space>M ``, select: `` <space>M `` |
 | `terminal` | Open the integrated terminal | normal: `` <space>t ``, select: `` <space>t `` |
 | `symbol_picker` | Open symbol picker |  |
 | `syntax_symbol_picker` | Open symbol picker from syntax information |  |
@@ -279,6 +417,8 @@
 | `goto_prev_test` | Goto previous test | normal: `` [T ``, select: `` [T `` |
 | `goto_next_xml_element` | Goto next (X)HTML element | normal: `` ]x ``, select: `` ]x `` |
 | `goto_prev_xml_element` | Goto previous (X)HTML element | normal: `` [x ``, select: `` [x `` |
+| `goto_next_conflict` | Goto next merge conflict | normal: `` ]m ``, select: `` ]m `` |
+| `goto_prev_conflict` | Goto previous merge conflict | normal: `` [m ``, select: `` [m `` |
 | `goto_next_entry` | Goto next pairing | normal: `` ]e ``, select: `` ]e `` |
 | `goto_prev_entry` | Goto previous pairing | normal: `` [e ``, select: `` [e `` |
 | `goto_next_paragraph` | Goto next paragraph | normal: `` ]p ``, select: `` ]p `` |

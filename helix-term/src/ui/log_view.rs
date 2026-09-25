@@ -401,6 +401,18 @@ impl Component for LogView {
                     Err(err) => self.error = Some(err),
                 }
             }
+            // Copy the commit under the cursor.
+            (KeyCode::Char('w'), KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+                match self.current_hash() {
+                    Some(hash) => crate::magit::copy_value(
+                        cx.editor,
+                        &self.workdir,
+                        hash,
+                        helix_magit::AskKind::Revision,
+                    ),
+                    None => cx.editor.set_error("No commit here"),
+                }
+            }
             (KeyCode::Char('Z'), _) => {
                 self.margin = self.margin.next();
                 LOG_MARGIN.set(self.margin);

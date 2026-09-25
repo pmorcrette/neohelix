@@ -454,6 +454,8 @@ impl DiffView {
 
     fn commit_with(workdir: &Path, rev: &str, options: DiffOptions) -> Result<Self, String> {
         let details = helix_magit::log::show_with(workdir, rev, &options)?;
+        // Looked at: on the revision stack, to refer to it in a message.
+        crate::magit::remember_revision(workdir, rev);
         let mut header = vec![
             HeaderLine {
                 label: "Commit:",
@@ -1402,6 +1404,18 @@ impl DiffView {
             .map(|file| (file.path.display().to_string(), AskKind::Path))
     }
 
+    /// The revision this view is about, for `A-w`: the commit shown, the
+    /// newer end of a range, or HEAD.
+    fn view_revision(&self) -> Option<String> {
+        let rev = match (&self.kind, &self.commit) {
+            (_, Some(commit)) => commit.clone(),
+            (ViewKind::Range { from, to }, _) => to.clone().unwrap_or_else(|| from.clone()),
+            (ViewKind::Repositories { .. }, _) => return None,
+            _ => "HEAD".to_string(),
+        };
+        crate::magit::short_hash(&self.workdir, &rev)
+    }
+
     /// What `RET` shows: the commit, stash or ref under the cursor.
     fn revision_at_cursor(&self) -> Option<String> {
         let Some(Row::Item { section, item }) = self.current_row() else {
@@ -1849,6 +1863,20 @@ impl Component for DiffView {
                 };
                 self.set_options(options);
             }
+            // Copy the value under the cursor (Magit's C-w), or the view's
+            // revision (M-w).
+            (KeyCode::Char('w'), KeyModifiers::CONTROL) => match self.target_at_cursor() {
+                Some((value, kind)) => {
+                    crate::magit::copy_value(cx.editor, &self.workdir, &value, kind)
+                }
+                None => cx.editor.set_error("Nothing to copy here"),
+            },
+            (KeyCode::Char('w'), KeyModifiers::ALT) => match self.view_revision() {
+                Some(hash) => {
+                    crate::magit::copy_value(cx.editor, &self.workdir, &hash, AskKind::Revision)
+                }
+                None => cx.editor.set_error("This view has no revision"),
+            },
             (KeyCode::Char('Z'), _) => {
                 self.margin = self.margin.next();
                 STATUS_MARGIN.set(self.margin);

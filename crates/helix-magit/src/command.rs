@@ -164,6 +164,13 @@ pub enum Special {
     MarkResolved,
     /// `--continue` for whichever operation stopped.
     Continue,
+    /// `--abort` for whichever operation is in progress, or ending a bisect.
+    Abort,
+    /// An interactive rebase that stops at `args[0]`, to amend it.
+    EditCommit,
+    /// New author and committer dates for the commits after `args[0]`, from
+    /// the date `args[1]`, a minute apart.
+    Reshelve,
     /// A shell command line, `args[0]`, run by `sh -c` in the repository.
     Shell,
 }
@@ -311,6 +318,19 @@ impl Plan {
         if self.special == Some(Special::Continue) {
             return "git … --continue".to_string();
         }
+        if self.special == Some(Special::Abort) {
+            return "git … --abort".to_string();
+        }
+        if self.special == Some(Special::EditCommit) {
+            let commit = self.args.first().map(String::as_str).unwrap_or("");
+            let short = &commit[..commit.len().min(7)];
+            return format!("git rebase --interactive {short}^, stopping at {short}");
+        }
+        if self.special == Some(Special::Reshelve) {
+            let base = self.args.first().map(String::as_str).unwrap_or("");
+            let date = self.args.get(1).map(String::as_str).unwrap_or("");
+            return format!("git rebase --exec 'git commit --amend --date=…' {base}, from {date}");
+        }
         if self.special.is_some() {
             return format!("{} ({})", self.summary, self.args.join(" "));
         }
@@ -360,6 +380,9 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
         | MagitCommand::FileDiff
         | MagitCommand::FileLog
         | MagitCommand::FileBlame
+        | MagitCommand::FileEditLineCommit
+        | MagitCommand::InsertRevision
+        | MagitCommand::Mergetool
         | MagitCommand::RunGit
         | MagitCommand::RunShell
         | MagitCommand::JumpTo(_)
@@ -411,6 +434,32 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
         MagitCommand::Continue => {
             Plan::new(Vec::<String>::new(), "Continue").special(Special::Continue)
         }
+        MagitCommand::Abort => Plan::new(Vec::<String>::new(), "Abort what is in progress")
+            .special(Special::Abort)
+            .destructive(),
+
+        // ── Cleaning ──
+        // `-d` so untracked directories go too; what goes is listed before
+        // anything is removed (see `clean_preview`).
+        MagitCommand::CleanUntracked => {
+            Plan::new(["clean", "-f", "-d"], "Remove the untracked files").destructive()
+        }
+        MagitCommand::CleanIgnored => {
+            Plan::new(["clean", "-f", "-d", "-X"], "Remove the ignored files").destructive()
+        }
+        MagitCommand::CleanAll => Plan::new(
+            ["clean", "-f", "-d", "-x"],
+            "Remove the untracked and ignored files",
+        )
+        .destructive(),
+
+        MagitCommand::Reshelve => Plan::new(["{0}", "{1}"], "Give new dates to the commits")
+            .asking([
+                Ask::required(AskKind::Revision, "Rewrite the commits after"),
+                Ask::required(AskKind::Text, "First commit's date (e.g. 2026-09-25 10:00)"),
+            ])
+            .special(Special::Reshelve)
+            .destructive(),
 
         // ── Configuration ──
         MagitCommand::BranchConfigDescription => Plan::new(
@@ -1261,8 +1310,186 @@ pub fn run_plan(workdir: &Path, plan: &Plan) -> std::io::Result<GitOutput> {
                 }
             }
         }
+        Some(Special::Abort) => {
+            let operation = crate::status::git_dir(workdir)
+                .and_then(|dir| crate::status::in_progress(&dir, &|_| None))
+                .map(|state| state.operation);
+            match operation {
+                None => log.fail("nothing is in progress"),
+                Some(crate::status::Operation::Bisect) => {
+                    log.run(workdir, &args_of(&["bisect", "reset"]))?;
+                }
+                Some(operation) => {
+                    log.run(workdir, &args_of(&[operation.command(), "--abort"]))?;
+                }
+            }
+        }
+        Some(Special::EditCommit) => {
+            let commit = plan.args.first().cloned().unwrap_or_default();
+            edit_commit(workdir, &commit, &mut log)?;
+        }
+        Some(Special::Reshelve) => {
+            let base = plan.args.first().cloned().unwrap_or_default();
+            let date = plan.args.get(1).cloned().unwrap_or_default();
+            reshelve(workdir, &base, &date, &mut log)?;
+        }
     }
     Ok(log.output())
+}
+
+/// Starts an interactive rebase that stops at `commit`, as its todo-list
+/// with the commit's `pick` made `edit` would.
+///
+/// Refused for a commit already on a remote, whose rewriting would rewrite
+/// published history, and for a merge, which the rebase would drop.
+fn edit_commit(workdir: &Path, commit: &str, log: &mut Transcript) -> std::io::Result<()> {
+    let Some(full) = rev_parse(workdir, &format!("{commit}^{{commit}}")) else {
+        log.fail(&format!("{commit} is not a commit"));
+        return Ok(());
+    };
+    if is_pushed(workdir, &full) {
+        log.fail(&format!(
+            "{commit} is already pushed; editing it would rewrite published history"
+        ));
+        return Ok(());
+    }
+    let parents = GitCommand::new(
+        workdir,
+        args_of(&["rev-list", "--parents", "-n", "1", &full]),
+    )
+    .run()?
+    .stdout;
+    if parents.split_whitespace().count() > 2 {
+        log.fail(&format!("{commit} is a merge, which a rebase would drop"));
+        return Ok(());
+    }
+    let base = crate::rebase::base_for(workdir, &full);
+    // The first line of the list is the commit itself: the rebase starts at
+    // its parent. `p` is how git writes `pick` with abbreviated commands.
+    // Git appends the list's path to this line, which the final `:` takes.
+    let editor =
+        r#"sed -e '1s/^pick /edit /' -e '1s/^p /e /' "$1" > "$1.helix" && mv "$1.helix" "$1" && :"#;
+    let output = GitCommand::new(workdir, args_of(&["rebase", "--interactive", &base]))
+        .with_env("GIT_SEQUENCE_EDITOR", editor)
+        .run()?;
+    log.stdout.push_str(&output.stdout);
+    log.stderr.push_str(&output.stderr);
+    log.ran = true;
+    log.success = output.success;
+    if output.success {
+        log.note = Some(format!(
+            "Stopped at {}: change it, amend (c a), then continue (C)",
+            &full[..full.len().min(7)]
+        ));
+    }
+    Ok(())
+}
+
+/// Gives the commits after `base` new author and committer dates: `date`
+/// for the first, and a minute more for each one after, in the zone of the
+/// committer identity. A rebase with an `exec` after each commit amends it.
+fn reshelve(workdir: &Path, base: &str, date: &str, log: &mut Transcript) -> std::io::Result<()> {
+    // As a hash: the script below runs while HEAD moves, and a base such
+    // as `HEAD~2` would move with it.
+    let Some(base_hash) = rev_parse(workdir, &format!("{base}^{{commit}}")) else {
+        log.fail(&format!("{base} is not a commit"));
+        return Ok(());
+    };
+    let range = format!("{base_hash}..HEAD");
+    let oldest = GitCommand::new(workdir, args_of(&["rev-list", "--reverse", &range]))
+        .run()?
+        .stdout
+        .lines()
+        .next()
+        .map(str::to_string);
+    let Some(oldest) = oldest else {
+        log.fail(&format!("there are no commits after {base}"));
+        return Ok(());
+    };
+    if is_pushed(workdir, &oldest) {
+        log.fail(
+            "some of those commits are already pushed; new dates would rewrite published history",
+        );
+        return Ok(());
+    }
+    // git's own date parser, which takes what `--since` takes.
+    let parsed = GitCommand::new(workdir, args_of(&["rev-parse", &format!("--since={date}")]))
+        .run()?
+        .stdout;
+    let Some(start) = parsed
+        .trim()
+        .strip_prefix("--max-age=")
+        .and_then(|epoch| epoch.parse::<i64>().ok())
+    else {
+        log.fail(&format!("`{date}` is not a date git understands"));
+        return Ok(());
+    };
+    let zone = GitCommand::new(workdir, args_of(&["var", "GIT_COMMITTER_IDENT"]))
+        .run()?
+        .stdout
+        .split_whitespace()
+        .last()
+        .filter(|zone| zone.starts_with(['+', '-']))
+        .unwrap_or("+0000")
+        .to_string();
+
+    // Run after each commit is picked: HEAD is then the n-th commit after
+    // the base, and gets the start plus n - 1 minutes.
+    let exec = format!(
+        "n=$(git rev-list --count {range}) && d=\"$(( {start} + (n - 1) * 60 )) {zone}\" && \
+         GIT_COMMITTER_DATE=\"$d\" git commit --amend --no-edit --allow-empty --no-verify --date=\"$d\" --quiet",
+        range = shell_word(&range),
+    );
+    let ok = log.run(
+        workdir,
+        &args_of(&["rebase", "--no-autosquash", "--exec", &exec, &base_hash]),
+    )?;
+    if ok {
+        log.note = Some(format!("New dates for the commits after {base}"));
+    }
+    Ok(())
+}
+
+/// `word` quoted for `sh`.
+fn shell_word(word: &str) -> String {
+    format!("'{}'", word.replace('\'', r"'\''"))
+}
+
+fn rev_parse(workdir: &Path, rev: &str) -> Option<String> {
+    let output = GitCommand::new(workdir, args_of(&["rev-parse", "--verify", "--quiet", rev]))
+        .run()
+        .ok()?;
+    output
+        .success
+        .then(|| output.stdout.trim().to_string())
+        .filter(|hash| !hash.is_empty())
+}
+
+/// What `git clean` with these arguments would remove, by asking it with
+/// `-n` in place of `-f`: the paths, as git names them.
+pub fn clean_preview(workdir: &Path, args: &[String]) -> Result<Vec<String>, String> {
+    let dry: Vec<String> = args
+        .iter()
+        .map(|arg| {
+            if arg == "-f" {
+                "-n".to_string()
+            } else {
+                arg.clone()
+            }
+        })
+        .collect();
+    let output = GitCommand::new(workdir, dry)
+        .run()
+        .map_err(|err| err.to_string())?;
+    if !output.success {
+        return Err(output.summary());
+    }
+    Ok(output
+        .stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix("Would remove "))
+        .map(str::to_string)
+        .collect())
 }
 
 /// The outputs of several commands, as one.
@@ -1639,13 +1866,18 @@ pub fn head_message(working_directory: &Path) -> Option<String> {
 /// Amending such a commit rewrites history someone else may have, so it is
 /// worth a confirmation.
 pub fn head_is_pushed(working_directory: &Path) -> bool {
+    is_pushed(working_directory, "HEAD")
+}
+
+/// Whether `rev` is on some remote-tracking branch, i.e. already pushed.
+pub fn is_pushed(working_directory: &Path, rev: &str) -> bool {
     let output = GitCommand::new(
         working_directory,
         vec![
             "branch".into(),
             "--remotes".into(),
             "--contains".into(),
-            "HEAD".into(),
+            rev.into(),
         ],
     )
     .run();

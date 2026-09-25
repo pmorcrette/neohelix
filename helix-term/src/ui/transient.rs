@@ -122,6 +122,7 @@ impl TransientOverlay {
             MenuKind::Ignore => return String::new(),
             MenuKind::Sparse => "git sparse-checkout",
             MenuKind::Bundle => "git bundle",
+            MenuKind::Clean => "git clean",
             MenuKind::BranchConfig | MenuKind::RemoteConfig => "git config",
             MenuKind::Resolve | MenuKind::File => return String::new(),
             MenuKind::Diff => "git diff",
@@ -387,6 +388,35 @@ impl TransientOverlay {
                             crate::magit::show_conflict_side(cx.editor, &workdir, &path, side);
                         }
                     }
+                })))
+            }
+            MagitCommand::InsertRevision => {
+                EventResult::Consumed(Some(Box::new(|compositor, cx| {
+                    compositor.remove(TransientOverlay::ID);
+                    if let Some(prompt) = crate::magit::revision_prompt(cx.editor) {
+                        compositor.push(prompt);
+                    }
+                })))
+            }
+            MagitCommand::Mergetool => {
+                let Some((path, AskKind::Path)) = self.target.clone() else {
+                    return EventResult::Consumed(Some(close));
+                };
+                let workdir = self.workdir.clone();
+                EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                    compositor.remove(TransientOverlay::ID);
+                    crate::magit::mergetool(cx.editor, compositor, &workdir, &path);
+                })))
+            }
+            MagitCommand::FileEditLineCommit => {
+                let Some((path, AskKind::Path)) = self.target.clone() else {
+                    return EventResult::Consumed(Some(close));
+                };
+                let workdir = self.workdir.clone();
+                let line = self.line;
+                EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                    compositor.remove(TransientOverlay::ID);
+                    crate::magit::edit_line_commit(compositor, cx, workdir, &path, line);
                 })))
             }
             MagitCommand::FileDiff | MagitCommand::FileLog | MagitCommand::FileBlame => {
@@ -755,6 +785,9 @@ mod tests {
                         | MagitCommand::FileDiff
                         | MagitCommand::FileLog
                         | MagitCommand::FileBlame
+                        | MagitCommand::FileEditLineCommit
+                        | MagitCommand::InsertRevision
+                        | MagitCommand::Mergetool
                         | MagitCommand::ApplyDiffSettings
                         | MagitCommand::RunGit
                         | MagitCommand::RunShell

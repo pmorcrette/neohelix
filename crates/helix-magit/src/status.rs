@@ -237,6 +237,11 @@ fn log(workdir: &Path, range: &str, limit: usize) -> Vec<Commit> {
         .unwrap_or_default()
 }
 
+/// The subject of the commit `rev` names.
+pub fn commit_subject(workdir: &Path, rev: &str) -> Option<String> {
+    log(workdir, rev, 1).pop().map(|commit| commit.subject)
+}
+
 fn tracked(workdir: &Path, rev: &str) -> Option<Tracked> {
     let name = git(
         workdir,

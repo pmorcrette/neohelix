@@ -293,7 +293,7 @@ impl Component for BlameView {
         }
     }
 
-    fn handle_event(&mut self, event: &Event, _cx: &mut Context) -> EventResult {
+    fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
         let Event::Key(key) = event else {
             return EventResult::Consumed(None);
         };
@@ -333,6 +333,34 @@ impl Component for BlameView {
                     }
                     Err(err) => self.error = Some(err),
                 }
+            }
+            // Copy the line's commit.
+            (KeyCode::Char('w'), KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+                match self.current().filter(|line| !line.is_uncommitted()) {
+                    Some(line) => {
+                        let hash = line.short().to_string();
+                        crate::magit::copy_value(
+                            cx.editor,
+                            &self.workdir,
+                            &hash,
+                            helix_magit::AskKind::Revision,
+                        );
+                    }
+                    None => cx.editor.set_error("Not committed yet"),
+                }
+            }
+            // Edit the line's commit: an interactive rebase stopping there.
+            (KeyCode::Char('e'), KeyModifiers::NONE) => {
+                let Some(line) = self.current().filter(|line| !line.is_uncommitted()) else {
+                    self.error = Some("Not committed yet".to_string());
+                    return EventResult::Consumed(None);
+                };
+                let hash = line.hash.clone();
+                let workdir = self.workdir.clone();
+                return EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                    compositor.remove(BlameView::ID);
+                    crate::magit::edit_commit(compositor, cx, workdir, &hash);
+                })));
             }
             // The file's log, followed through renames.
             (KeyCode::Char('l'), KeyModifiers::NONE) => {
