@@ -333,6 +333,7 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
         | MagitCommand::ShowRefs
         | MagitCommand::ShowCherries
         | MagitCommand::ShowProcess
+        | MagitCommand::ListRepositories
         | MagitCommand::Shortlog
         | MagitCommand::ConflictEdit
         | MagitCommand::ConflictShowOurs

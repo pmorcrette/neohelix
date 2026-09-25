@@ -612,6 +612,100 @@ pub fn wip_after_save(editor: &Editor, path: &std::path::Path) {
     });
 }
 
+/// What to say of the documents [`refresh_documents`] could not reload.
+pub fn stale_message(stale: &[String]) -> Option<String> {
+    (!stale.is_empty()).then(|| format!("Not reloaded from disk: {}", stale.join(", ")))
+}
+
+/// Brings open documents back in step with their files after git changed
+/// them — a checkout, a reset, a discard, a stash. A document with no
+/// unsaved changes is reloaded; one with unsaved changes is left alone,
+/// and its name returned, so the caller can say that it is now behind its
+/// file rather than overwrite what was typed. A document whose file git
+/// removed is named too.
+pub fn refresh_documents(editor: &mut Editor) -> Vec<String> {
+    use helix_view::DocumentId;
+
+    let scrolloff = editor.config().scrolloff;
+    let focus = editor.tree.focus;
+    let mut stale = Vec::new();
+    let mut reload: Vec<DocumentId> = Vec::new();
+    for doc in editor.documents() {
+        let Some(path) = doc.path() else {
+            continue;
+        };
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                // Compared as text the way the buffer holds it; a file that
+                // is not UTF-8 is left to Helix's own reload.
+                let Ok(disk) = String::from_utf8(bytes) else {
+                    continue;
+                };
+                if *doc.text() == disk.as_str() {
+                    continue;
+                }
+                if doc.is_modified() {
+                    stale.push(format!("{} (unsaved changes)", doc.display_name()));
+                } else {
+                    reload.push(doc.id());
+                }
+            }
+            // Gone from disk. Only worth saying of a buffer that holds a
+            // file as it was: an unmodified one with something in it. A
+            // buffer never saved has no file either (and holds a lone line
+            // ending), and a modified one keeps its text whatever happened
+            // on disk.
+            Err(err)
+                if err.kind() == std::io::ErrorKind::NotFound
+                    && !doc.is_modified()
+                    && doc.text().chars().any(|c| c != '\n' && c != '\r') =>
+            {
+                stale.push(format!("{} (deleted)", doc.display_name()));
+            }
+            Err(_) => {}
+        }
+    }
+
+    for doc_id in reload {
+        let Some(doc) = editor.documents.get_mut(&doc_id) else {
+            continue;
+        };
+        let mut view_ids: Vec<_> = doc.selections().keys().cloned().collect();
+        if view_ids.is_empty() {
+            doc.ensure_view_init(focus);
+            view_ids.push(focus);
+        }
+        let trust_full = editor
+            .workspace_trust
+            .query(
+                doc.workspace_root(),
+                helix_loader::workspace_trust::TrustQuery::Git,
+            )
+            .is_trusted();
+        let view = helix_view::view_mut!(editor, view_ids[0]);
+        view.sync_changes(doc);
+        if let Err(err) = doc.reload(view, &editor.diff_providers, trust_full) {
+            stale.push(format!("{} ({err})", doc.display_name()));
+            continue;
+        }
+        if let Some(path) = doc.path().map(ToOwned::to_owned) {
+            editor
+                .language_servers
+                .file_event_handler
+                .file_changed(path);
+        }
+        for view_id in view_ids {
+            let doc = helix_view::doc_mut!(editor, &doc_id);
+            let view = helix_view::view_mut!(editor, view_id);
+            if view.doc == doc_id {
+                view.sync_changes(doc);
+                view.ensure_cursor_in_view(doc, scrolloff);
+            }
+        }
+    }
+    stale
+}
+
 /// Where `git clone` or `git init` put the repository it made.
 fn new_repository(workdir: &std::path::Path, plan: &Plan) -> Option<PathBuf> {
     match plan.args.first().map(String::as_str)? {
@@ -801,15 +895,23 @@ pub fn close_views(compositor: &mut Compositor) {
 /// Shows the outcome and brings the status buffer back in step.
 fn report(editor: &mut Editor, compositor: &mut Compositor, line: &str, output: GitOutput) {
     record(line, &output);
-    if output.success {
-        editor.set_status(format!("{line}: {}", output.summary()));
-    } else {
+    // Whatever ran may have rewritten files that are open.
+    let stale = stale_message(&refresh_documents(editor));
+    match (output.success, stale) {
+        (true, None) => editor.set_status(format!("{line}: {}", output.summary())),
+        (true, Some(stale)) => editor.set_error(stale),
         // git's own diagnosis is more useful than anything invented here.
-        editor.set_error(format!("{line}: {}", output.summary()));
+        (false, None) => editor.set_error(format!("{line}: {}", output.summary())),
+        (false, Some(stale)) => editor.set_error(format!("{line}: {}; {stale}", output.summary())),
     }
 
     // The index, HEAD, the working tree or the refs may all have moved.
-    for id in [DiffView::ID, DiffView::REFS_ID, DiffView::CHERRIES_ID] {
+    for id in [
+        DiffView::ID,
+        DiffView::REFS_ID,
+        DiffView::CHERRIES_ID,
+        DiffView::REPOSITORIES_ID,
+    ] {
         if let Some(view) = compositor.find_id::<DiffView>(id) {
             view.refresh(editor);
         }

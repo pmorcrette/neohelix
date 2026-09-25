@@ -164,12 +164,12 @@ impl LogFilter {
 }
 
 /// Hash, refs, date, author and subject, NUL-separated after the graph.
-const LOG_FORMAT: &str = "--format=%x00%h%x00%D%x00%ad%x00%an%x00%s";
+const LOG_FORMAT: &str = "--format=%x00%h%x00%D%x00%ad%x00%an%x00%at%x00%s";
 
 /// The reflog's lines in the same shape: the selector (`HEAD@{2}`) where
 /// the refs go, and why the ref moved (`reset: moving to HEAD~1`) as the
 /// subject.
-const REFLOG_FORMAT: &str = "--format=%x00%h%x00%gd%x00%as%x00%an%x00%gs";
+const REFLOG_FORMAT: &str = "--format=%x00%h%x00%gd%x00%as%x00%an%x00%at%x00%gs";
 
 /// One line of the log: a commit, or a line of graph joining commits.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -182,6 +182,8 @@ pub struct LogEntry {
     pub refs: Vec<String>,
     pub date: String,
     pub author: String,
+    /// Seconds since the epoch, for the margin's age.
+    pub time: i64,
     pub subject: String,
 }
 
@@ -195,7 +197,7 @@ pub fn parse_log(text: &str) -> Vec<LogEntry> {
                     ..LogEntry::default()
                 };
             };
-            let mut fields = rest.splitn(5, '\0');
+            let mut fields = rest.splitn(6, '\0');
             let mut next = || fields.next().unwrap_or_default().to_string();
             let hash = next();
             let refs = next();
@@ -209,10 +211,32 @@ pub fn parse_log(text: &str) -> Vec<LogEntry> {
                     .collect(),
                 date: next(),
                 author: next(),
+                time: next().parse().unwrap_or(0),
                 subject: next(),
             }
         })
         .collect()
+}
+
+/// How long ago `time` was, as the margin shows it: "5 minutes", "3 days",
+/// "2 years" — the largest unit that is at least one.
+pub fn age(time: i64, now: i64) -> String {
+    let seconds = (now - time).max(0);
+    let units = [
+        (365 * 86_400, "year"),
+        (30 * 86_400, "month"),
+        (7 * 86_400, "week"),
+        (86_400, "day"),
+        (3_600, "hour"),
+        (60, "minute"),
+    ];
+    for (length, name) in units {
+        let count = seconds / length;
+        if count >= 1 {
+            return format!("{count} {name}{}", if count == 1 { "" } else { "s" });
+        }
+    }
+    "just now".to_string()
 }
 
 /// Runs the log. An error is git's own message.
@@ -342,9 +366,10 @@ mod tests {
 
     #[test]
     fn graph_lines_and_commit_lines_are_told_apart() {
-        let text = "* \0a1b2c3d\0HEAD -> main, tag: v1\x002026-09-24\0Ann\0Merge topic\n\
+        let text =
+            "* \0a1b2c3d\0HEAD -> main, tag: v1\x002026-09-24\0Ann\x001790000000\0Merge topic\n\
                     |\\  \n\
-                    | * \0e4f5a6b\0\x002026-09-23\0Bob\0Topic work\n";
+                    | * \0e4f5a6b\0\x002026-09-23\0Bob\x001789900000\0Topic work\n";
         let entries = parse_log(text);
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].graph, "*");
@@ -405,5 +430,21 @@ mod tests {
     fn a_range_is_never_an_option() {
         assert!(LogFilter::valid_range("--output=/tmp/x").is_err());
         assert!(LogFilter::valid_range("main..topic").is_ok());
+    }
+
+    #[test]
+    fn an_age_is_the_largest_whole_unit() {
+        let now = 1_790_000_000;
+        assert_eq!(age(now - 30, now), "just now");
+        assert_eq!(age(now - 60, now), "1 minute");
+        assert_eq!(age(now - 3 * 3_600 - 5, now), "3 hours");
+        assert_eq!(age(now - 86_400 * 2, now), "2 days");
+        assert_eq!(age(now - 86_400 * 15, now), "2 weeks");
+        assert_eq!(age(now - 86_400 * 400, now), "1 year");
+        assert_eq!(
+            age(now + 100, now),
+            "just now",
+            "a clock ahead is not the future"
+        );
     }
 }

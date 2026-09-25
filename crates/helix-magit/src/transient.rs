@@ -193,6 +193,8 @@ pub enum MagitCommand {
     ShowRefs,
     ShowCherries,
     ShowProcess,
+    /// The repositories under `[editor.magit] repository-directories`.
+    ListRepositories,
 
     /// Open or refresh the status buffer.
     Status,
@@ -775,6 +777,7 @@ pub fn main_menu() -> TransientMenu {
             TransientAction::new('Q', "Run a git command", MagitCommand::RunGit),
             TransientAction::new('!', "Run a shell command", MagitCommand::RunShell),
             open(MenuKind::Views, "Switch view"),
+            TransientAction::new('R', "Repositories", MagitCommand::ListRepositories),
         ]),
         TransientGroup::new("Essential").with_actions([
             TransientAction::new('s', "Status", MagitCommand::Status),
@@ -1254,6 +1257,11 @@ pub fn setup_menu() -> TransientMenu {
             TransientAction::new('C', "Clone", MagitCommand::Clone),
             TransientAction::new('I', "Init", MagitCommand::Init),
         ]),
+        TransientGroup::new("Or go to one").with_actions([TransientAction::new(
+            'R',
+            "Repositories",
+            MagitCommand::ListRepositories,
+        )]),
         TransientGroup::new("Then").with_actions([TransientAction::new(
             'q',
             "Quit",

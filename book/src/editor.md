@@ -294,6 +294,8 @@ Set options for the Magit client (`<space>m`).
 | Key | Description | Default |
 |--|--|---------|
 |`wip` | Save uncommitted work to hidden work-in-progress refs (`refs/wip/…`) after writing a file in a repository, and before a command that can lose it | `false` |
+|`repository-directories` | Where the repository list (`R` in the Magit menu) looks for repositories; `~` is expanded | the current working directory |
+|`repository-depth` | How many directory levels below each of those directories the list searches | `2` |
 
 Example
 
@@ -306,6 +308,18 @@ The saves are commits on `refs/wip/wtree/<branch>` (the working tree's tracked
 files) and `refs/wip/index/<branch>` (the index); nothing else in the
 repository changes. They are listed by `w` and `W` in the log menu (`l`), and a
 save's files are put back with the reset menu's `w`.
+
+The repository list shows each repository's branch, its upstream, how many
+commits it is ahead (`↑`) and behind (`↓`), and `*` when it has uncommitted
+changes. `RET` opens a repository's status; a menu key opens that menu on the
+repository under the cursor. The search stops at a repository, so one inside
+another's working tree is not listed, and hidden directories are skipped.
+
+```toml
+[editor.magit]
+repository-directories = ["~/src", "~/work"]
+repository-depth = 2
+```
 
 ### `[editor.auto-pairs]` Section
 

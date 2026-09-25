@@ -7,6 +7,7 @@ pub(crate) mod editor;
 mod info;
 pub mod log_view;
 pub mod lsp;
+pub mod margin;
 mod markdown;
 pub mod menu;
 pub mod overlay;

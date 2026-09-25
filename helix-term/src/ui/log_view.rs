@@ -15,6 +15,7 @@ use tui::widgets::{Block, Widget};
 
 use crate::compositor::{Component, Compositor, Context, Event, EventResult};
 use crate::ui::diff_view::DiffView;
+use crate::ui::margin::{self, Margin, Stamp, LOG_MARGIN};
 use crate::ui::transient::TransientOverlay;
 
 pub struct LogView {
@@ -26,6 +27,7 @@ pub struct LogView {
     scroll: usize,
     /// git's complaint, when the log could not be read.
     error: Option<String>,
+    margin: Margin,
 }
 
 /// Which filter a prompt sets.
@@ -48,6 +50,7 @@ impl LogView {
             cursor: 0,
             scroll: 0,
             error: None,
+            margin: LOG_MARGIN.get(),
         };
         view.reload();
         view
@@ -265,6 +268,24 @@ impl Component for LogView {
         let right_style = theme.get("ui.virtual");
         let width = inner.width as usize;
 
+        // The margin of the visible commits, aligned among themselves.
+        let visible = self
+            .entries
+            .iter()
+            .skip(self.scroll)
+            .take(inner.height as usize);
+        let stamps: Vec<Option<Stamp>> = visible
+            .map(|entry| {
+                entry.hash.as_ref().map(|_| Stamp {
+                    author: entry.author.clone(),
+                    time: entry.time,
+                    date: entry.date.clone(),
+                })
+            })
+            .collect();
+        let stamps: Vec<Option<&Stamp>> = stamps.iter().map(Option::as_ref).collect();
+        let margins = margin::column(&stamps, self.margin, margin::now());
+
         for (offset, entry) in self
             .entries
             .iter()
@@ -285,13 +306,10 @@ impl Component for LogView {
                 surface.set_style(Rect::new(inner.x, y, inner.width, 1), cursor_style);
             }
 
-            // Author and date on the right, when there is room for them.
-            let right = match entry.hash {
-                Some(_) => format!(" {} {}", entry.author, entry.date),
-                None => String::new(),
-            };
+            // The margin on the right, when there is room for it.
+            let right = &margins[offset - self.scroll];
             let right_width = helix_core::unicode::width::UnicodeWidthStr::width(right.as_str());
-            let show_right = right_width * 3 < width;
+            let show_right = right_width > 0 && right_width * 3 < width;
             let left_end = inner.x
                 + if show_right {
                     width - right_width
@@ -329,7 +347,7 @@ impl Component for LogView {
                 surface.set_string_truncated(
                     left_end,
                     y,
-                    &right,
+                    right,
                     right_width,
                     |_| style(right_style),
                     false,
@@ -339,7 +357,7 @@ impl Component for LogView {
         }
     }
 
-    fn handle_event(&mut self, event: &Event, _cx: &mut Context) -> EventResult {
+    fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
         let Event::Key(key) = event else {
             return EventResult::Consumed(None);
         };
@@ -382,6 +400,11 @@ impl Component for LogView {
                     }
                     Err(err) => self.error = Some(err),
                 }
+            }
+            (KeyCode::Char('Z'), _) => {
+                self.margin = self.margin.next();
+                LOG_MARGIN.set(self.margin);
+                cx.editor.set_status(self.margin.describe());
             }
             (KeyCode::Char('+'), _) => {
                 self.filter.limit *= 2;
@@ -470,6 +493,7 @@ mod tests {
             cursor: 0,
             scroll: 0,
             error: None,
+            margin: Margin::Off,
         }
     }
 

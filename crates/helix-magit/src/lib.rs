@@ -12,6 +12,7 @@ pub mod log;
 pub mod patch;
 pub mod rebase;
 pub mod refs;
+pub mod repos;
 pub mod repository;
 pub mod status;
 pub mod transient;

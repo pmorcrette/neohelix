@@ -1789,13 +1789,34 @@ wip log that says they are off.
 Three separate modules that all concern how the fork's Git buffers behave
 rather than what they run.
 
-- [ ] A repository list: the repositories the user works in, with their branch
+- [x] A repository list: the repositories the user works in, with their branch
       and how far ahead or behind each is.
-- [ ] Refresh open buffers when git changes files underneath them. A checkout
+- [x] Refresh open buffers when git changes files underneath them. A checkout
       or a reset currently leaves every open document stale, which is a
       correctness problem, not a convenience one.
-- [ ] A margin alongside log and status lines showing the author and the age of
+- [x] A margin alongside log and status lines showing the author and the age of
       each commit, and a way to toggle it.
+
+*Done.* The list is `R` in the Magit menu (and in the menu shown outside a
+repository): `helix_magit::repos` finds the repositories under
+`[editor.magit] repository-directories` (default: the working directory),
+`repository-depth` levels down (default 2), stopping at a repository and
+skipping hidden directories, and summarizes each with one
+`git status --porcelain=v2 --branch`: branch, upstream, `↑`/`↓` counts, `*`
+when dirty. `RET` opens a repository's status over the list, a menu key opens
+that menu on the repository under the cursor, and the list refreshes after a
+command like the other views. Every git command the fork runs, and a discard,
+apply or reverse from the status, is followed by a pass over the open
+documents: an unmodified one whose file changed is reloaded (as `:reload`
+would, keeping its views in place); one with unsaved changes is left alone and
+named in a "Not reloaded from disk" message, as is an unmodified one whose file
+git removed. The comparison is of contents, not modification times, so a
+command that rewrites a file identically reloads nothing. The margin is the
+author and the age (`3 days`) or the date, flush right and aligned among the
+visible lines, in the log and on the status buffer's commit lines; `Z` cycles
+age → date → hidden, and the choice holds for the session, separately for the
+log (shown by default, as in Magit) and the status (hidden by default). Stash
+lines have no margin: `git stash list` is read without author or date.
 
 ### Task 2.18: Sparse Checkout and Bundles
 

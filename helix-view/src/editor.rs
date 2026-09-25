@@ -570,7 +570,7 @@ pub struct PendingRebase {
 }
 
 /// The Magit client's configuration.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub struct MagitConfig {
     /// Save uncommitted work to hidden work-in-progress refs
@@ -579,6 +579,21 @@ pub struct MagitConfig {
     /// repository on every save, which nobody should find out about by
     /// surprise.
     pub wip: bool,
+    /// Where the repository list looks for repositories. Empty means the
+    /// current working directory.
+    pub repository_directories: Vec<PathBuf>,
+    /// How many directory levels below each of those the list searches.
+    pub repository_depth: usize,
+}
+
+impl Default for MagitConfig {
+    fn default() -> Self {
+        Self {
+            wip: false,
+            repository_directories: Vec::new(),
+            repository_depth: 2,
+        }
+    }
 }
 
 /// Org-Roam knowledge graph configuration.

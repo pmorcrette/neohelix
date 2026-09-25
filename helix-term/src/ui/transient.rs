@@ -448,6 +448,26 @@ impl TransientOverlay {
                     compositor.push(Box::new(crate::magit::shortlog_prompt(workdir, args)));
                 })))
             }
+            MagitCommand::ListRepositories => {
+                EventResult::Consumed(Some(Box::new(|compositor, cx| {
+                    compositor.remove(TransientOverlay::ID);
+                    let config = cx.editor.config().magit.clone();
+                    let roots = if config.repository_directories.is_empty() {
+                        vec![helix_stdx::env::current_working_dir()]
+                    } else {
+                        config
+                            .repository_directories
+                            .iter()
+                            .map(|dir| helix_stdx::path::expand_tilde(dir.as_path()).into_owned())
+                            .collect()
+                    };
+                    compositor.remove(DiffView::REPOSITORIES_ID);
+                    compositor.push(Box::new(DiffView::repositories(
+                        roots,
+                        config.repository_depth,
+                    )));
+                })))
+            }
             MagitCommand::ShowProcess => EventResult::Consumed(Some(Box::new(|compositor, cx| {
                 compositor.remove(TransientOverlay::ID);
                 crate::magit::close_views(compositor);
@@ -712,6 +732,7 @@ mod tests {
                         | MagitCommand::ShowRefs
                         | MagitCommand::ShowCherries
                         | MagitCommand::ShowProcess
+                        | MagitCommand::ListRepositories
                         | MagitCommand::Shortlog
                         | MagitCommand::ConflictEdit
                         | MagitCommand::ConflictShowOurs

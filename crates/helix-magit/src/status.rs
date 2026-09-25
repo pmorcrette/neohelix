@@ -20,11 +20,16 @@ pub const RECENT_COUNT: usize = 10;
 pub const DIVERGENCE_LIMIT: usize = 100;
 
 /// A commit as a status section lists it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Commit {
     /// The abbreviated hash.
     pub hash: String,
     pub subject: String,
+    /// For the margin: who wrote it, and when — in seconds since the
+    /// epoch, and as a date.
+    pub author: String,
+    pub time: i64,
+    pub date: String,
 }
 
 /// A stash entry.
@@ -188,16 +193,22 @@ fn git(workdir: &Path, args: &[&str]) -> Option<String> {
 }
 
 /// The format [`parse_commits`] reads: hash and subject, NUL-separated.
-const COMMIT_FORMAT: &str = "--format=%h%x00%s";
+const COMMIT_FORMAT: &str = "--format=%h%x00%s%x00%an%x00%at%x00%as";
 
-/// Reads `git log --format=%h%x00%s` output.
+/// Reads `git log` output in [`COMMIT_FORMAT`]: hash, subject, author, time
+/// and date, the last three optional.
 pub fn parse_commits(text: &str) -> Vec<Commit> {
     text.lines()
         .filter_map(|line| {
-            let (hash, subject) = line.split_once('\0')?;
+            let mut fields = line.split('\0');
+            let hash = fields.next()?.to_string();
+            let subject = fields.next()?.to_string();
             Some(Commit {
-                hash: hash.to_string(),
-                subject: subject.to_string(),
+                hash,
+                subject,
+                author: fields.next().unwrap_or_default().to_string(),
+                time: fields.next().and_then(|t| t.parse().ok()).unwrap_or(0),
+                date: fields.next().unwrap_or_default().to_string(),
             })
         })
         .collect()
@@ -452,15 +463,19 @@ mod tests {
     #[test]
     fn log_and_stash_output_is_read() {
         assert_eq!(
-            parse_commits("abc1234\0First\ndef5678\0Second: with colon\n"),
+            parse_commits("abc1234\0First\ndef5678\0Second: with colon\0Ann\x0042\x001970-01-01\n"),
             [
                 Commit {
                     hash: "abc1234".into(),
-                    subject: "First".into()
+                    subject: "First".into(),
+                    ..Commit::default()
                 },
                 Commit {
                     hash: "def5678".into(),
-                    subject: "Second: with colon".into()
+                    subject: "Second: with colon".into(),
+                    author: "Ann".into(),
+                    time: 42,
+                    date: "1970-01-01".into(),
                 }
             ]
         );
@@ -499,6 +514,7 @@ mod tests {
             Some(Commit {
                 hash: short_hash(rev).to_string(),
                 subject: "Add things".into(),
+                ..Commit::default()
             })
         })
         .unwrap();
