@@ -171,6 +171,8 @@ pub enum Special {
     /// New author and committer dates for the commits after `args[0]`, from
     /// the date `args[1]`, a minute apart.
     Reshelve,
+    /// The staged hunks folded into their commits (see [`crate::absorb`]).
+    Absorb(crate::absorb::Mode),
     /// A shell command line, `args[0]`, run by `sh -c` in the repository.
     Shell,
 }
@@ -321,6 +323,15 @@ impl Plan {
         if self.special == Some(Special::Abort) {
             return "git … --abort".to_string();
         }
+        match self.special {
+            Some(Special::Absorb(crate::absorb::Mode::Absorb)) => {
+                return "git commit --fixup=… per hunk, then git rebase --autosquash".to_string()
+            }
+            Some(Special::Absorb(crate::absorb::Mode::Autofixup)) => {
+                return "git commit --fixup=… per unpushed commit the hunks belong to".to_string()
+            }
+            _ => {}
+        }
         if self.special == Some(Special::EditCommit) {
             let commit = self.args.first().map(String::as_str).unwrap_or("");
             let short = &commit[..commit.len().min(7)];
@@ -434,6 +445,18 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
         MagitCommand::Continue => {
             Plan::new(Vec::<String>::new(), "Continue").special(Special::Continue)
         }
+        MagitCommand::CommitAbsorb => Plan::new(
+            Vec::<String>::new(),
+            "Fold the staged hunks into their unpushed commits and squash them in",
+        )
+        .special(Special::Absorb(crate::absorb::Mode::Absorb))
+        .destructive(),
+        MagitCommand::CommitAutofixup => Plan::new(
+            Vec::<String>::new(),
+            "Make a fixup! commit for each unpushed commit the staged hunks belong to",
+        )
+        .special(Special::Absorb(crate::absorb::Mode::Autofixup))
+        .destructive(),
         MagitCommand::Abort => Plan::new(Vec::<String>::new(), "Abort what is in progress")
             .special(Special::Abort)
             .destructive(),
@@ -1324,6 +1347,14 @@ pub fn run_plan(workdir: &Path, plan: &Plan) -> std::io::Result<GitOutput> {
                 }
             }
         }
+        Some(Special::Absorb(mode)) => match crate::absorb::run(workdir, mode) {
+            Ok(outcome) => {
+                log.ran = true;
+                log.success = true;
+                log.note = Some(outcome.describe(mode));
+            }
+            Err(err) => log.fail(&err),
+        },
         Some(Special::EditCommit) => {
             let commit = plan.args.first().cloned().unwrap_or_default();
             edit_commit(workdir, &commit, &mut log)?;
@@ -1781,7 +1812,9 @@ pub fn commit_template_with(working_directory: &Path, amend: bool, verbose: bool
         "\n\
          # Write the commit message above, then write and close this buffer.\n\
          # Lines starting with '#' are ignored, and an empty message aborts\n\
-         # the commit, leaving the index untouched.\n",
+         # the commit, leaving the index untouched.\n\
+         # :magit-trailer adds a trailer (Signed-off-by, Co-authored-by, …);\n\
+         # :magit-insert-revision a commit looked at recently.\n",
     );
 
     if let Ok(status) = GitCommand::new(

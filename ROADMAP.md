@@ -1896,16 +1896,39 @@ Three commit-building tools upstream offers that the fork has no equivalent of.
 The first is small and used constantly; the other two are the reason people
 describe Magit as letting them commit the way they think.
 
-- [ ] Trailers in the message buffer: insert `Signed-off-by`, `Co-authored-by`,
+- [x] Trailers in the message buffer: insert `Signed-off-by`, `Co-authored-by`,
       `Reported-by` and the rest, with completion over people already in the
       history rather than retyping an address.
-- [ ] Absorb: take the staged changes and fold each hunk into whichever earlier
+- [x] Absorb: take the staged changes and fold each hunk into whichever earlier
       commit introduced the lines it touches, instead of one catch-all fixup.
       This needs blame per hunk and then an autosquash, so it depends on
       Tasks 2.11 and 2.7.
-- [ ] Autofixup: the same idea driven from the diff rather than from blame.
-- [ ] Both rewrite history, so they inherit Task 2.4's rule about not amending
+- [x] Autofixup: the same idea driven from the diff rather than from blame.
+- [x] Both rewrite history, so they inherit Task 2.4's rule about not amending
       what is already pushed, and need the same confirmation.
+
+*Done.* `:magit-trailer [kind] [person]` adds a trailer to the message
+buffer, asking for what is missing: the kind from the usual ten (a part of the
+name is enough, `signed`; an ambiguous one says what it could be), the person
+from the authors and committers of the last 2000 commits, most frequent first —
+the user first for a sign-off, and never for `Co-authored-by`. It goes where
+`git interpret-trailers` would put it: into the last paragraph when that is
+already trailers, into a paragraph of its own otherwise, above git's comment
+lines and the `--verbose` diff, and not twice. The message template mentions
+it. Absorb and autofixup are `x` and `X` in the commit menu (Magit's keys).
+Both split the staged diff into hunks and look each one up with a blame of
+HEAD, among the commits on no remote only: absorb takes the commit that last
+changed every line the hunk removes (the lines either side, for a hunk that
+only adds), on `-U0` hunks, and then squashes the `fixup!` commits in with an
+autosquash rebase that sets uncommitted changes aside and stages again what
+was left staged; autofixup takes the one unpushed commit among those that last
+changed the hunk's lines, context included (git-autofixup's default), and stops
+at the `fixup!` commits for review. A hunk with no such commit, or several,
+stays staged, as do new and binary files. Each fixup commit is built in the
+index from the original HEAD, so the working tree is untouched until the
+rebase, and a failure puts HEAD and the index back. Pushed commits are never
+candidates, a merge after the oldest target is refused, and both are behind
+the usual confirmation.
 
 ---
 

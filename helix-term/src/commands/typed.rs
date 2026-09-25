@@ -2438,6 +2438,34 @@ fn magit_file(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> 
     Ok(())
 }
 
+/// `:magit-trailer [kind] [person]`: add a trailer to the commit message.
+fn magit_trailer(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let mut words = args.into_iter().map(|arg| arg.to_string());
+    let kind = words
+        .next()
+        .map(|kind| kind.trim_end_matches(':').to_string());
+    let person: Vec<String> = words.collect();
+    let person = (!person.is_empty()).then(|| person.join(" "));
+    cx.jobs.callback(async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                if let Some(prompt) = crate::magit::trailer_prompt(editor, kind, person) {
+                    compositor.push(prompt);
+                }
+            },
+        ));
+        Ok(call)
+    });
+    Ok(())
+}
+
 /// `:magit-insert-revision`: insert a revision looked at recently.
 fn magit_insert_revision(
     cx: &mut compositor::Context,
@@ -4228,6 +4256,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "magit-trailer",
+        aliases: &[],
+        doc: "Add a trailer (Signed-off-by, Co-authored-by, …) to the commit message, choosing from people in the history.",
+        fun: magit_trailer,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, None),
             ..Signature::DEFAULT
         },
     },

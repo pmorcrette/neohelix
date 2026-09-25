@@ -4,6 +4,7 @@
 //! model of a diff, the transient-menu model, and a thin Git layer over
 //! `gix`. Rendering and key handling live in `helix-term`.
 
+pub mod absorb;
 pub mod blame;
 pub mod command;
 pub mod conflict;
@@ -15,6 +16,7 @@ pub mod refs;
 pub mod repos;
 pub mod repository;
 pub mod status;
+pub mod trailers;
 pub mod transient;
 pub mod wip;
 

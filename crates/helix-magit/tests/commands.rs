@@ -354,3 +354,94 @@ fn reshelving_gives_the_commits_dates_a_minute_apart() {
         .answered(&["HEAD~3".into(), "2020-01-02".into()]);
     assert!(!run_plan(&work, &pushed).success);
 }
+
+/// `initial` pushed; then `a` (f.txt's lines), `b` (g.txt) and `h` unpushed.
+/// Staged: a change to a line of `a`'s, one of `b`'s and one of the pushed
+/// commit's; unstaged: a change to another file.
+fn absorb_fixture(work: &Path) {
+    commit_file(work, "f.txt", "one\nA1\nA2\nA3\n", "a");
+    commit_file(work, "g.txt", "B1\nB2\n", "b");
+    commit_file(work, "h.txt", "h\n", "h");
+    fs::write(work.join("f.txt"), "ONE\nA1\nA2 fixed\nA3\n").unwrap();
+    fs::write(work.join("g.txt"), "B1\nB2\nB3\n").unwrap();
+    git(work, &["add", "f.txt", "g.txt"]).unwrap();
+    fs::write(work.join("h.txt"), "h, unstaged\n").unwrap();
+}
+
+fn absorb_plan(command: MagitCommand) -> helix_magit::Plan {
+    let plan = resolve(command, &[]).unwrap();
+    assert!(plan.destructive, "history is rewritten: confirmed first");
+    plan
+}
+
+#[test]
+fn absorb_folds_each_hunk_into_its_commit_and_leaves_the_rest() {
+    let (_dir, work) = fixture_or_skip!();
+    absorb_fixture(&work);
+    let output = run_plan(&work, &absorb_plan(MagitCommand::CommitAbsorb));
+    assert!(output.success, "{output:?}");
+    assert!(output.summary().contains("Absorbed 2 hunks"), "{output:?}");
+    assert!(
+        output.summary().contains("1 hunk left staged"),
+        "{output:?}"
+    );
+
+    // No fixup! commit left: squashed into a and b.
+    let subjects = git(&work, &["log", "--format=%s", "origin/main..HEAD"]).unwrap();
+    assert_eq!(subjects.lines().collect::<Vec<_>>(), ["h", "b", "a"]);
+    assert_eq!(
+        git(&work, &["show", "HEAD~2:f.txt"]).unwrap(),
+        "one\nA1\nA2 fixed\nA3\n"
+    );
+    assert_eq!(
+        git(&work, &["show", "HEAD~1:g.txt"]).unwrap(),
+        "B1\nB2\nB3\n"
+    );
+    // The pushed commit's line is still staged; the unstaged change is
+    // still in the working tree, unstaged.
+    assert_eq!(
+        git(&work, &["diff", "--cached", "--name-only"]).unwrap(),
+        "f.txt\n"
+    );
+    assert!(git(&work, &["diff", "--cached"]).unwrap().contains("+ONE"));
+    assert_eq!(git(&work, &["diff", "--name-only"]).unwrap(), "h.txt\n");
+    assert_eq!(
+        fs::read_to_string(work.join("f.txt")).unwrap(),
+        "ONE\nA1\nA2 fixed\nA3\n"
+    );
+}
+
+#[test]
+fn autofixup_makes_the_fixup_commits_and_stops_there() {
+    let (_dir, work) = fixture_or_skip!();
+    absorb_fixture(&work);
+    let output = run_plan(&work, &absorb_plan(MagitCommand::CommitAutofixup));
+    assert!(output.success, "{output:?}");
+
+    let subjects = git(&work, &["log", "--format=%s", "origin/main..HEAD"]).unwrap();
+    let subjects: Vec<&str> = subjects.lines().collect();
+    assert_eq!(subjects[..2], ["fixup! b", "fixup! a"]);
+    // With its context, f.txt's change is one hunk, touching the pushed
+    // line and a's: a is the one unpushed commit among them.
+    assert!(git(&work, &["diff", "--cached"]).unwrap().is_empty());
+    assert_eq!(git(&work, &["diff", "--name-only"]).unwrap(), "h.txt\n");
+}
+
+#[test]
+fn absorb_refuses_when_nothing_belongs_to_an_unpushed_commit() {
+    let (_dir, work) = fixture_or_skip!();
+    fs::write(work.join("f.txt"), "changed\n").unwrap();
+    git(&work, &["add", "f.txt"]).unwrap();
+    let head = git(&work, &["rev-parse", "HEAD"]).unwrap();
+    let output = run_plan(&work, &absorb_plan(MagitCommand::CommitAbsorb));
+    assert!(!output.success);
+    assert!(
+        output.summary().contains("every commit is pushed"),
+        "{output:?}"
+    );
+    assert_eq!(git(&work, &["rev-parse", "HEAD"]).unwrap(), head);
+    assert_eq!(
+        git(&work, &["diff", "--cached", "--name-only"]).unwrap(),
+        "f.txt\n"
+    );
+}

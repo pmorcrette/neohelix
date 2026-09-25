@@ -174,6 +174,10 @@ pub enum MagitCommand {
     Continue,
     /// Abort whichever is in progress, bisect included.
     Abort,
+    /// Fold each staged hunk into the unpushed commit it belongs to, by
+    /// blame, and squash it in; or only make the `fixup!` commits.
+    CommitAbsorb,
+    CommitAutofixup,
     /// Resolve a conflicted file with `git mergetool`, in the terminal.
     Mergetool,
 
@@ -852,6 +856,10 @@ pub fn commit_menu() -> TransientMenu {
             TransientAction::new('a', "Amend", MagitCommand::CommitAmend),
             TransientAction::new('e', "Extend", MagitCommand::CommitExtend),
             TransientAction::new('f', "Fixup", MagitCommand::CommitFixup),
+        ]),
+        TransientGroup::new("Fold the staged hunks in").with_actions([
+            TransientAction::new('x', "Absorb", MagitCommand::CommitAbsorb),
+            TransientAction::new('X', "Autofixup", MagitCommand::CommitAutofixup),
         ]),
     ])
 }

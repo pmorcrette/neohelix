@@ -56,6 +56,7 @@
 | `:terminal`, `:term` | Open the integrated terminal. |
 | `:magit` | Open the Magit transient menu. |
 | `:magit-file` | Open the Magit menu for the current file: stage, unstage, diff, log, blame. |
+| `:magit-trailer` | Add a trailer (Signed-off-by, Co-authored-by, …) to the commit message, choosing from people in the history. |
 | `:magit-insert-revision` | Insert a revision looked at recently (a commit opened or copied) as `hash ("subject")`. |
 | `:conflict-take` | Resolve the merge conflict under the cursor with ours, theirs, base or both. |
 | `:rebase-todo` | In a rebase todo-list, set the selected lines to pick, reword, edit, squash, fixup or drop, or move them up or down. |

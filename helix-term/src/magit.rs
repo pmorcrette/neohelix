@@ -1345,3 +1345,147 @@ pub fn short_hash(workdir: &std::path::Path, rev: &str) -> Option<String> {
         .then(|| output.stdout.trim().to_string())
         .filter(|hash| !hash.is_empty())
 }
+
+// ── Trailers in the message buffer ───────────────────────────────────────
+
+/// The repository a document belongs to — the commit message file lives in
+/// the git directory, whose parent is the working tree.
+fn document_repository(editor: &Editor) -> Option<PathBuf> {
+    let doc = helix_view::doc!(editor);
+    let dir = doc.path()?.parent()?.to_path_buf();
+    let dir = if dir.file_name().is_some_and(|name| name == ".git") {
+        dir.parent()?.to_path_buf()
+    } else {
+        dir
+    };
+    helix_magit::Repository::discover(&dir)
+        .ok()
+        .map(|repository| repository.workdir().to_path_buf())
+}
+
+/// Adds `trailer` to the message in the current buffer, where git expects
+/// trailers.
+pub fn insert_trailer(editor: &mut Editor, trailer: &str) {
+    let (view, doc) = helix_view::current!(editor);
+    let before = doc.text().clone();
+    let original = before.to_string();
+    let text = helix_magit::trailers::add(&original, trailer);
+    if text == original {
+        editor.set_status(format!("Already there: {trailer}"));
+        return;
+    }
+    let after = helix_core::Rope::from(text.as_str());
+    let transaction = helix_core::diff::compare_ropes(&before, &after);
+    doc.apply(&transaction, view.id);
+    editor.set_status(format!("Added {trailer}"));
+}
+
+/// `:magit-trailer`: asks for the kind of trailer, then the person — from
+/// the history, most frequent first, the user first for a sign-off — and
+/// adds it. `kind` and `person` skip their question when given.
+pub fn trailer_prompt(
+    editor: &mut Editor,
+    kind: Option<String>,
+    person: Option<String>,
+) -> Option<Box<dyn crate::compositor::Component>> {
+    let Some(workdir) = document_repository(editor) else {
+        editor.set_error("This buffer is not in a git repository");
+        return None;
+    };
+    let kind = match kind.map(|kind| helix_magit::trailers::resolve_kind(&kind)) {
+        Some(Ok(kind)) => Some(kind),
+        Some(Err(err)) => {
+            editor.set_error(err);
+            return None;
+        }
+        None => None,
+    };
+    match (kind, person) {
+        (Some(kind), Some(person)) => {
+            insert_trailer(editor, &format!("{kind}: {person}"));
+            None
+        }
+        (Some(kind), None) => Some(person_prompt(workdir, kind)),
+        (None, _) => {
+            let prompt = crate::ui::Prompt::new(
+                "Trailer (RET: Signed-off-by): ".into(),
+                None,
+                |_, input| {
+                    let input = input.to_lowercase();
+                    helix_magit::trailers::KINDS
+                        .iter()
+                        .filter(|kind| kind.to_lowercase().contains(&input))
+                        .map(|kind| (0.., (*kind).into()))
+                        .collect()
+                },
+                move |cx, input, event| {
+                    if event != crate::ui::PromptEvent::Validate {
+                        return;
+                    }
+                    let kind = match input.trim() {
+                        "" => "Signed-off-by".to_string(),
+                        kind => match helix_magit::trailers::resolve_kind(kind) {
+                            Ok(kind) => kind,
+                            Err(err) => return cx.editor.set_error(err),
+                        },
+                    };
+                    let workdir = workdir.clone();
+                    // The next question, once this prompt has closed.
+                    cx.jobs.callback(async move {
+                        Ok(Callback::EditorCompositor(Box::new(
+                            move |_: &mut Editor, compositor: &mut Compositor| {
+                                compositor.push(person_prompt(workdir, kind));
+                            },
+                        )))
+                    });
+                },
+            );
+            Some(Box::new(prompt))
+        }
+    }
+}
+
+fn person_prompt(workdir: PathBuf, kind: String) -> Box<dyn crate::compositor::Component> {
+    let mut people = helix_magit::trailers::people(&workdir);
+    let me = helix_magit::trailers::me(&workdir);
+    // One signs off oneself; one is not one's own co-author.
+    if let Some(me) = me {
+        people.retain(|person| *person != me);
+        if kind == "Signed-off-by" {
+            people.insert(0, me);
+        } else if !kind.starts_with("Co-") {
+            people.push(me);
+        }
+    }
+    let default = people.first().cloned();
+    let label = match &default {
+        Some(default) => format!("{kind} (RET: {default}): "),
+        None => format!("{kind}: "),
+    };
+    Box::new(crate::ui::Prompt::new(
+        label.into(),
+        None,
+        move |_, input| {
+            let input = input.to_lowercase();
+            people
+                .iter()
+                .filter(|person| person.to_lowercase().contains(&input))
+                .take(50)
+                .map(|person| (0.., person.clone().into()))
+                .collect()
+        },
+        move |cx, input, event| {
+            if event != crate::ui::PromptEvent::Validate {
+                return;
+            }
+            let person = match input.trim() {
+                "" => match &default {
+                    Some(default) => default.clone(),
+                    None => return,
+                },
+                person => person.to_string(),
+            };
+            insert_trailer(cx.editor, &format!("{kind}: {person}"));
+        },
+    ))
+}
