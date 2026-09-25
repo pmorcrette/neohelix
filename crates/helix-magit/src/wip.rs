@@ -82,6 +82,18 @@ pub fn save(workdir: &Path, message: &str, paths: Option<&[PathBuf]>) -> Result<
     let real = git_dir.join("index");
     if real.exists() {
         std::fs::copy(&real, &scratch).map_err(|err| err.to_string())?;
+        // With the real index's time: git takes an entry changed in the
+        // same second the index was written as possibly stale, and reads
+        // the file. A copy dated now would make such an entry — a file
+        // rewritten at the same size just after a commit — look unchanged.
+        let modified = std::fs::metadata(&real)
+            .and_then(|meta| meta.modified())
+            .map_err(|err| err.to_string())?;
+        std::fs::File::options()
+            .write(true)
+            .open(&scratch)
+            .and_then(|file| file.set_modified(modified))
+            .map_err(|err| err.to_string())?;
     } else {
         let _ = std::fs::remove_file(&scratch);
     }
