@@ -1746,11 +1746,43 @@ Magit can commit the working tree and the index to hidden refs on every save
 and every operation, so that uncommitted work is recoverable even though it was
 never committed. It is off by default there and would be here too.
 
-- [ ] Write worktree and index wip refs on save and before destructive
+- [x] Write worktree and index wip refs on save and before destructive
       operations.
-- [ ] A log over the wip refs, and a way to restore from one.
-- [ ] Decide the default. This writes to the repository on every save, so it is
+- [x] A log over the wip refs, and a way to restore from one.
+- [x] Decide the default. This writes to the repository on every save, so it is
       opt-in or it is a surprise.
+
+*Done. Decision: off by default*, turned on with `[editor.magit] wip = true`
+(documented in the book's editor page). Asked for, it writes to the repository
+on every save; unasked, that is the surprise the item warns about.
+
+- `helix_magit::wip` keeps Magit's layout: `refs/wip/index/<branch>` for the
+  index and `refs/wip/wtree/<branch>` for the working tree's tracked files
+  (`HEAD` in place of the branch when detached). The working tree's commit is
+  built in a copy of the index, so the real index, the working tree and every
+  branch are left exactly as they were (tested). Each save goes on top of the
+  previous one while the chain still builds on HEAD, and starts again from HEAD
+  once HEAD has moved past it; a save that would record nothing new records
+  nothing; a conflicted index, which has no tree, is skipped; before the first
+  commit nothing is saved. Without a configured identity the private commits
+  are made as "Helix wip".
+- When: after a file in a repository is written (only that file, off the
+  editor's thread; git's own files such as the commit message are not work);
+  before any command that asks for confirmation because it can lose work; and
+  before `x` discards. If that save fails, the command or the discard does not
+  run, and says why.
+- `w` and `W` in the log menu show the working tree's and the index's chains
+  (or say that there are none, and whether wip saves are off). A save is a
+  commit: `RET` shows what it changed since the save before, `a` / `v` apply or
+  reverse a hunk of it, and the reset menu's new `w` puts the whole working tree
+  as the save has it (`git restore --worktree --source=…`), leaving HEAD and
+  the index alone.
+
+Checked in the editor with wip on: a file written (the save appears on the
+worktree chain), a hard reset that threw away uncommitted work (saved just
+before it), the chain listed with both saves, and the work put back from the
+save before the reset; and with wip off, a write that saves nothing and a
+wip log that says they are off.
 
 ### Task 2.17: Repository List, Buffer Freshness and the Margin
 

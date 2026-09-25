@@ -54,11 +54,18 @@ pub enum MagitCommand {
     /// The reflog of HEAD, or of a ref asked for.
     Reflog,
     ReflogOther,
+    /// The log of the work-in-progress refs: the working tree's saves, or
+    /// the index's.
+    WipLog,
+    WipIndexLog,
 
     ResetMixed,
     ResetSoft,
     ResetHard,
     ResetKeep,
+    /// The working tree's files as a commit has them, HEAD and the index
+    /// left alone: how a wip save is restored.
+    ResetWorktree,
 
     StashBoth,
     StashIndex,
@@ -1289,6 +1296,8 @@ pub fn log_menu() -> TransientMenu {
         TransientGroup::new("Reflog").with_actions([
             TransientAction::new('r', "HEAD's reflog", MagitCommand::Reflog),
             TransientAction::new('R', "Another ref's reflog", MagitCommand::ReflogOther),
+            TransientAction::new('w', "Working tree saves (wip)", MagitCommand::WipLog),
+            TransientAction::new('W', "Index saves (wip)", MagitCommand::WipIndexLog),
         ]),
     ])
 }
@@ -1302,6 +1311,11 @@ pub fn reset_menu() -> TransientMenu {
         TransientAction::new('s', "nothing else (soft)", MagitCommand::ResetSoft),
         TransientAction::new('h', "index and worktree (hard)", MagitCommand::ResetHard),
         TransientAction::new('k', "keeping local changes (keep)", MagitCommand::ResetKeep),
+        TransientAction::new(
+            'w',
+            "only the worktree's files",
+            MagitCommand::ResetWorktree,
+        ),
     ])])
 }
 

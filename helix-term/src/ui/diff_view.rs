@@ -1063,6 +1063,14 @@ impl DiffView {
     /// Throws away what the confirmation agreed to, then refreshes.
     fn discard(&mut self, target: Discard, editor: &mut Editor) {
         self.error = None;
+        // What is about to be thrown away goes to the wip refs first, when
+        // they are on; if that fails, nothing is thrown away.
+        if editor.config().magit.wip {
+            if let Err(err) = helix_magit::wip::save(&self.workdir, "before discarding", None) {
+                self.error = Some(format!("wip save failed, nothing discarded: {err}"));
+                return;
+            }
+        }
         let repository = match self.repository() {
             Ok(repository) => repository,
             Err(err) => {

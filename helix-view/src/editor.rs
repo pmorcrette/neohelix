@@ -430,6 +430,8 @@ pub struct Config {
     pub editor_config: bool,
     /// Org-Roam knowledge graph settings.
     pub roam: RoamConfig,
+    /// The Magit client's settings.
+    pub magit: MagitConfig,
     /// Whether to render rainbow colors for matching brackets. Defaults to `false`.
     pub rainbow_brackets: bool,
     /// Whether to enable Kitty Keyboard Protocol
@@ -565,6 +567,18 @@ pub struct PendingRebase {
     pub working_directory: PathBuf,
     /// HEAD when the list was made; the list is refused if it moved.
     pub head: Option<String>,
+}
+
+/// The Magit client's configuration.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct MagitConfig {
+    /// Save uncommitted work to hidden work-in-progress refs
+    /// (`refs/wip/…`) after writing a file in a repository and before a
+    /// command that can lose it. Off by default: it writes to the
+    /// repository on every save, which nobody should find out about by
+    /// surprise.
+    pub wip: bool,
 }
 
 /// Org-Roam knowledge graph configuration.
@@ -1400,6 +1414,7 @@ impl Default for Config {
             clipboard_provider: ClipboardProvider::default(),
             editor_config: true,
             roam: RoamConfig::default(),
+            magit: MagitConfig::default(),
             rainbow_brackets: false,
             kitty_keyboard_protocol: Default::default(),
             buffer_picker: BufferPickerConfig::default(),

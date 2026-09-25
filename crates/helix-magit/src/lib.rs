@@ -15,6 +15,7 @@ pub mod refs;
 pub mod repository;
 pub mod status;
 pub mod transient;
+pub mod wip;
 
 pub use command::{resolve, Ask, AskKind, GitCommand, GitOutput, Plan, Requirement, Special};
 pub use diff::{

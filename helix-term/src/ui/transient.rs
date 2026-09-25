@@ -473,6 +473,43 @@ impl TransientOverlay {
                     compositor.push(Box::new(LogView::new(workdir, filter)));
                 })))
             }
+            MagitCommand::WipLog | MagitCommand::WipIndexLog => {
+                let refs = helix_magit::wip::refs(&self.workdir);
+                let wip_ref = if command == MagitCommand::WipLog {
+                    refs.worktree
+                } else {
+                    refs.index
+                };
+                let workdir = self.workdir.clone();
+                EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                    compositor.remove(TransientOverlay::ID);
+                    let exists = helix_magit::GitCommand::new(
+                        &workdir,
+                        vec![
+                            "rev-parse".into(),
+                            "--verify".into(),
+                            "--quiet".into(),
+                            wip_ref.clone(),
+                        ],
+                    )
+                    .run()
+                    .is_ok_and(|output| output.success);
+                    if !exists {
+                        cx.editor.set_error(if cx.editor.config().magit.wip {
+                            "No wip save yet on this branch".to_string()
+                        } else {
+                            "No wip saves: they are off (editor.magit.wip = true turns them on)"
+                                .to_string()
+                        });
+                        return;
+                    }
+                    let filter = LogFilter {
+                        range: Some(wip_ref),
+                        ..LogFilter::default()
+                    };
+                    compositor.push(Box::new(LogView::new(workdir, filter)));
+                })))
+            }
             MagitCommand::ReflogOther => {
                 let filter = LogFilter {
                     reflog: true,
@@ -670,6 +707,8 @@ mod tests {
                         | MagitCommand::LogOther
                         | MagitCommand::Reflog
                         | MagitCommand::ReflogOther
+                        | MagitCommand::WipLog
+                        | MagitCommand::WipIndexLog
                         | MagitCommand::ShowRefs
                         | MagitCommand::ShowCherries
                         | MagitCommand::ShowProcess

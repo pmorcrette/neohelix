@@ -328,6 +328,8 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
         | MagitCommand::LogOther
         | MagitCommand::Reflog
         | MagitCommand::ReflogOther
+        | MagitCommand::WipLog
+        | MagitCommand::WipIndexLog
         | MagitCommand::ShowRefs
         | MagitCommand::ShowCherries
         | MagitCommand::ShowProcess
@@ -465,6 +467,12 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
             "Reset HEAD, index and worktree, discarding uncommitted changes",
         )
         .asking([Ask::required(AskKind::Revision, "Reset to")])
+        .destructive(),
+        MagitCommand::ResetWorktree => Plan::new(
+            ["restore", "--worktree", "--source={0}", "--", "."],
+            "Put the working tree's files as the commit has them, discarding changes",
+        )
+        .asking([Ask::required(AskKind::Revision, "Files from")])
         .destructive(),
         MagitCommand::ResetKeep => {
             Plan::new(["reset", "--keep"], "Reset HEAD, keeping local changes")

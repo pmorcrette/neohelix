@@ -287,6 +287,26 @@ The graph backs `:roam-node-find` (`<space>nf`) and the backlinks panel opened
 by `:roam-backlinks-toggle` (`<space>nb`). `:roam-reindex` rebuilds it from
 scratch, which is needed after Org files change outside the editor.
 
+### `[editor.magit]` Section
+
+Set options for the Magit client (`<space>m`).
+
+| Key | Description | Default |
+|--|--|---------|
+|`wip` | Save uncommitted work to hidden work-in-progress refs (`refs/wip/…`) after writing a file in a repository, and before a command that can lose it | `false` |
+
+Example
+
+```toml
+[editor.magit]
+wip = true
+```
+
+The saves are commits on `refs/wip/wtree/<branch>` (the working tree's tracked
+files) and `refs/wip/index/<branch>` (the index); nothing else in the
+repository changes. They are listed by `w` and `W` in the log menu (`l`), and a
+save's files are put back with the reset menu's `w`.
+
 ### `[editor.auto-pairs]` Section
 
 Enables automatic insertion of pairs to parentheses, brackets, etc. Can be a

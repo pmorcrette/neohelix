@@ -327,7 +327,7 @@ fn ask_next(
         if plan.destructive {
             confirm_then_run(compositor, plan, workdir);
         } else {
-            spawn_run(plan, workdir);
+            spawn_run(plan, workdir, false);
         }
         return;
     };
@@ -534,13 +534,27 @@ pub fn conflict_take(editor: &mut Editor, side: &str) -> Result<(), String> {
 fn run(cx: &mut Context, plan: Plan, workdir: PathBuf) {
     cx.editor
         .set_status(format!("Running {}…", plan.command_line()));
-    spawn_run(plan, workdir);
+    // A command that can lose work saves it to the wip refs first, when
+    // they are on.
+    let wip = plan.destructive && cx.editor.config().magit.wip;
+    spawn_run(plan, workdir, wip);
 }
 
-/// The running half of [`run`], for callers without a context.
-fn spawn_run(plan: Plan, workdir: PathBuf) {
+/// The running half of [`run`], for callers without a context. With `wip`,
+/// the uncommitted work is saved to the wip refs before anything runs.
+fn spawn_run(plan: Plan, workdir: PathBuf, wip: bool) {
     let line = plan.command_line();
     tokio::task::spawn_blocking(move || {
+        if wip {
+            let message = format!("before {}", plan.summary);
+            if let Err(err) = helix_magit::wip::save(&workdir, &message, None) {
+                // Not saved: do not go ahead as if it had been.
+                crate::job::dispatch_blocking(move |editor, _| {
+                    editor.set_error(format!("wip save failed, nothing was run: {err}"));
+                });
+                return;
+            }
+        }
         let outcome = command::run_plan(&workdir, &plan);
         crate::job::dispatch_blocking(move |editor, compositor| match outcome {
             Ok(output) => {
@@ -565,6 +579,36 @@ fn spawn_run(plan: Plan, workdir: PathBuf) {
             }
             Err(err) => editor.set_error(format!("{line}: {err}")),
         });
+    });
+}
+
+/// After a file is written: saves the repository's uncommitted work for that
+/// file to the wip refs, when they are on. Off the editor's thread; a
+/// failure is reported, never in the way of the write.
+pub fn wip_after_save(editor: &Editor, path: &std::path::Path) {
+    if !editor.config().magit.wip {
+        return;
+    }
+    // Git's own files — a commit message, a rebase list — are not work.
+    if path.components().any(|part| part.as_os_str() == ".git") {
+        return;
+    }
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let Ok(repository) = helix_magit::Repository::discover(path.parent().unwrap_or(&path))
+        else {
+            return;
+        };
+        let workdir = repository.workdir().to_path_buf();
+        let Some(relative) = crate::ui::blame_view::relative_to(&workdir, &path) else {
+            return;
+        };
+        let message = format!("autosave {}", relative.display());
+        if let Err(err) = helix_magit::wip::save(&workdir, &message, Some(&[relative])) {
+            crate::job::dispatch_blocking(move |editor, _| {
+                editor.set_error(format!("wip save failed: {err}"));
+            });
+        }
     });
 }
 

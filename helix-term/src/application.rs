@@ -639,6 +639,7 @@ impl Application {
 
         crate::magit::commit_if_written(&mut self.editor, &doc_save_event.path);
         crate::magit::rebase_if_written(&mut self.editor, &doc_save_event.path);
+        crate::magit::wip_after_save(&self.editor, &doc_save_event.path);
         crate::roam::sync_src_edit(
             &mut self.editor,
             &doc_save_event.path,
