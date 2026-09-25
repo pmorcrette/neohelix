@@ -151,6 +151,22 @@ fn header_lines(overview: &Overview) -> Vec<HeaderLine> {
         }
     }
 
+    // Which part of the tree is there, when not all of it is.
+    if let Some(directories) = &overview.sparse {
+        let text = if directories.is_empty() {
+            "top-level files only".to_string()
+        } else {
+            directories.join(" ")
+        };
+        lines.push(HeaderLine {
+            label: "Sparse:",
+            parts: vec![
+                (text, Tone::Emphasis),
+                ("  > to change".to_string(), Tone::Dim),
+            ],
+        });
+    }
+
     if let Some(state) = &overview.in_progress {
         lines.push(HeaderLine {
             label: "State:",
@@ -2715,12 +2731,17 @@ mod tests {
             }],
             worktrees: Vec::new(),
             submodules: Vec::new(),
+            sparse: None,
         }
     }
 
     #[test]
     fn the_header_says_where_head_is_and_what_is_under_way() {
-        let lines = header_lines(&overview());
+        let overview = Overview {
+            sparse: Some(vec!["docs".into(), "src/core".into()]),
+            ..overview()
+        };
+        let lines = header_lines(&overview);
         let text: Vec<String> = lines
             .iter()
             .map(|line| {
@@ -2733,6 +2754,7 @@ mod tests {
             [
                 "Head: main  abc1234 Latest",
                 "Upstream: origin/main  def5678 Theirs",
+                "Sparse: docs src/core  > to change",
                 "State: Merging 0123456",
                 " C to commit the merge; m then z to abort",
             ]

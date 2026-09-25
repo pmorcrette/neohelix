@@ -120,6 +120,8 @@ impl TransientOverlay {
             MenuKind::Subtree => "git subtree",
             MenuKind::Notes => "git notes",
             MenuKind::Ignore => return String::new(),
+            MenuKind::Sparse => "git sparse-checkout",
+            MenuKind::Bundle => "git bundle",
             MenuKind::BranchConfig | MenuKind::RemoteConfig => "git config",
             MenuKind::Resolve | MenuKind::File => return String::new(),
             MenuKind::Diff => "git diff",
@@ -600,6 +602,18 @@ impl TransientOverlay {
                         }
                     } else {
                         plan.preset(value, *kind);
+                    }
+                }
+                // The directories there now, to edit rather than retype.
+                if command == MagitCommand::SparseSet {
+                    let current = helix_magit::status::sparse_directories(&self.workdir)
+                        .filter(|directories| !directories.is_empty());
+                    if let (Some(current), helix_magit::Requirement::Ask(asks)) =
+                        (current, &mut plan.requirement)
+                    {
+                        if let Some(ask) = asks.first_mut() {
+                            ask.preset = Some(current.join(" "));
+                        }
                     }
                 }
                 // A repository is cloned or made where the editor is, not

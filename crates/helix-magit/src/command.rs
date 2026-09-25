@@ -69,6 +69,10 @@ pub struct Ask {
     pub suggested: bool,
     /// Whether the answer is several arguments, split at spaces: refspecs.
     pub words: bool,
+    /// Whether what the menu was opened on is kept out of this question: a
+    /// bundle's file is never the file under the cursor, which writing the
+    /// bundle would overwrite.
+    pub untargeted: bool,
 }
 
 impl Ask {
@@ -80,7 +84,14 @@ impl Ask {
             preset: None,
             suggested: false,
             words: false,
+            untargeted: false,
         }
+    }
+
+    /// Keeps what the menu was opened on out of this question.
+    pub fn untargeted(mut self) -> Self {
+        self.untargeted = true;
+        self
     }
 
     /// Makes the answer several arguments, split at spaces.
@@ -108,8 +119,15 @@ impl Ask {
     pub fn refuse(&self, answer: &str) -> Option<String> {
         if answer.is_empty() && !self.optional {
             Some(format!("{} is required", self.label))
-        } else if answer.starts_with('-') && self.kind != AskKind::Message {
-            Some(format!("`{answer}` would be taken for an option"))
+        } else if self.kind != AskKind::Message {
+            // Each word of an answer of several is an argument of its own.
+            let first = |word: &str| word.starts_with('-');
+            let dashed = if self.words {
+                answer.split_whitespace().find(|word| first(word))
+            } else {
+                first(answer).then_some(answer)
+            };
+            dashed.map(|word| format!("`{word}` would be taken for an option"))
         } else {
             None
         }
@@ -196,7 +214,7 @@ impl Plan {
         if let Requirement::Ask(asks) = &mut self.requirement {
             if let Some(ask) = asks
                 .iter_mut()
-                .find(|ask| ask.preset.is_none() && ask.takes(given))
+                .find(|ask| ask.preset.is_none() && !ask.untargeted && ask.takes(given))
             {
                 ask.preset = Some(value.to_string());
                 return true;
@@ -793,6 +811,74 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
             )])
             .destructive(),
         MagitCommand::NotePrune => Plan::new(["notes", "prune"], "Prune notes of lost commits"),
+
+        // ── Sparse checkout ──
+        // Cone mode, the one git recommends: whole directories, named as
+        // they are, rather than gitignore-style patterns.
+        MagitCommand::SparseEnable => Plan::new(
+            ["sparse-checkout", "set", "--cone"],
+            "Enable sparse checkout",
+        ),
+        MagitCommand::SparseSet => Plan::new(
+            ["sparse-checkout", "set", "--cone", "{0}"],
+            "Set the sparse checkout's directories",
+        )
+        .asking([
+            Ask::optional(AskKind::Path, "Directories (space-separated)")
+                .words()
+                .suggested()
+                .untargeted(),
+        ]),
+        MagitCommand::SparseAdd => Plan::new(
+            ["sparse-checkout", "add", "{0}"],
+            "Add directories to the sparse checkout",
+        )
+        .asking([
+            Ask::required(AskKind::Path, "Directories (space-separated)")
+                .words()
+                .untargeted(),
+        ]),
+        MagitCommand::SparseReapply => Plan::new(
+            ["sparse-checkout", "reapply"],
+            "Reapply the sparse checkout",
+        ),
+        MagitCommand::SparseDisable => {
+            Plan::new(["sparse-checkout", "disable"], "Disable sparse checkout")
+        }
+
+        // ── Bundles ──
+        MagitCommand::BundleCreate => {
+            // The file, then what goes in it: `--all`, or revisions.
+            let mut plan_args = with(["bundle", "create", "{0}"], args);
+            plan_args.push("{1}".to_string());
+            Plan::new(plan_args, "Create a bundle").asking([
+                Ask::required(AskKind::Path, "Bundle file").untargeted(),
+                Ask::optional(
+                    AskKind::Revision,
+                    "Revisions (e.g. main, or v1.0..main; empty with --all)",
+                )
+                .words(),
+            ])
+        }
+        MagitCommand::BundleVerify => Plan::new(["bundle", "verify", "{0}"], "Verify a bundle")
+            .asking([Ask::required(AskKind::Path, "Bundle file").untargeted()]),
+        MagitCommand::BundleListHeads => {
+            Plan::new(["bundle", "list-heads", "{0}"], "List a bundle's heads")
+                .asking([Ask::required(AskKind::Path, "Bundle file").untargeted()])
+        }
+        // `git bundle unbundle` only stores the objects; fetching them
+        // gives the branches names to reach them by.
+        MagitCommand::BundleUnbundle => Plan::new(
+            ["fetch", "{0}", "+refs/heads/*:refs/remotes/{1}/*"],
+            "Unbundle",
+        )
+        .asking([
+            Ask::required(AskKind::Path, "Bundle file").untargeted(),
+            Ask::required(
+                AskKind::Text,
+                "Name for its branches (refs/remotes/<name>/…)",
+            ),
+        ]),
 
         // ── Ignoring ──
         MagitCommand::IgnoreShared => Plan::new(["{0}"], "Ignore in .gitignore")
@@ -1725,6 +1811,48 @@ mod tests {
             None
         );
         assert_eq!(Ask::optional(AskKind::Stash, "Stash").refuse(""), None);
+    }
+
+    #[test]
+    fn every_word_of_a_several_word_answer_is_checked() {
+        let dirs = Ask::required(AskKind::Path, "Directories").words();
+        assert_eq!(dirs.refuse("docs src"), None);
+        assert_eq!(
+            dirs.refuse("docs -x"),
+            Some("`-x` would be taken for an option".to_string())
+        );
+    }
+
+    #[test]
+    fn sparse_checkout_and_bundles() {
+        let set = plan(MagitCommand::SparseSet, &[]);
+        assert_eq!(
+            set.answered(&["docs src/core".into()]).args,
+            ["sparse-checkout", "set", "--cone", "docs", "src/core"]
+        );
+        // Nothing named: the top-level files only.
+        assert_eq!(
+            set.answered(&[String::new()]).args,
+            ["sparse-checkout", "set", "--cone"]
+        );
+
+        let mut create = plan(MagitCommand::BundleCreate, &["--all"]);
+        // The file under the cursor is never the bundle's file.
+        assert!(!create.preset("src/main.rs", AskKind::Path));
+        assert!(create.preset("abc1234", AskKind::Revision));
+        assert_eq!(
+            create
+                .answered(&["out.bundle".into(), "abc1234".into()])
+                .args,
+            ["bundle", "create", "out.bundle", "--all", "abc1234"]
+        );
+
+        let unbundle = plan(MagitCommand::BundleUnbundle, &[])
+            .answered(&["x.bundle".into(), "imported".into()]);
+        assert_eq!(
+            unbundle.args,
+            ["fetch", "x.bundle", "+refs/heads/*:refs/remotes/imported/*"]
+        );
     }
 
     #[test]

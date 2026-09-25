@@ -1824,8 +1824,24 @@ Two self-contained areas with no equivalent in the fork. Neither is needed for
 the daily loop; both are the kind of thing whose absence is only discovered at
 the moment it is wanted.
 
-- [ ] Sparse checkout: enable it, list and edit the directories included.
-- [ ] Bundles: create a bundle from a range of commits, and unbundle one.
+- [x] Sparse checkout: enable it, list and edit the directories included.
+- [x] Bundles: create a bundle from a range of commits, and unbundle one.
+
+*Done.* Sparse checkout is `>` (Magit's key), in the main menu and from the
+status and the log: enable (`git sparse-checkout set --cone`: the top-level
+files only), set the directories, add some, reapply, disable. Cone mode only
+is offered, as git recommends; a repository already in the older pattern mode
+is shown and edited as its patterns. The status header gains a `Sparse:` line
+listing the directories while it is on. Setting starts from the current
+directories, filled in to edit. Every word of an answer of several words is
+now checked for a leading dash, not only the first. Bundles are `n` (Magit
+binds none; `n` is free in every view): create (`--all`, or revisions such as
+`v1.0..main`; from the log, the commit under the cursor), verify, list heads,
+and unbundle. Unbundling fetches the bundle's branches into
+`refs/remotes/<name>/…`, since `git bundle unbundle` only stores objects and
+names nothing. A bundle's file is never taken from the file under the cursor,
+which writing the bundle would overwrite. What verify and list-heads print in
+full is in the process output (`$`).
 
 ### Task 2.19: The Long Tail of Everyday Commands
 

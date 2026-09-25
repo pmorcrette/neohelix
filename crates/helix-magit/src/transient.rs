@@ -133,6 +133,19 @@ pub enum MagitCommand {
     NoteRemove,
     NotePrune,
 
+    /// Sparse checkout: only some directories in the working tree.
+    SparseEnable,
+    SparseSet,
+    SparseAdd,
+    SparseReapply,
+    SparseDisable,
+
+    /// Bundles: commits in a file, to carry where no remote reaches.
+    BundleCreate,
+    BundleVerify,
+    BundleListHeads,
+    BundleUnbundle,
+
     IgnoreShared,
     IgnorePrivate,
 
@@ -283,6 +296,8 @@ pub enum MenuKind {
     Subtree,
     Notes,
     Ignore,
+    Sparse,
+    Bundle,
     /// A branch's and a remote's own configuration, opened from the branch
     /// and remote menus.
     BranchConfig,
@@ -303,7 +318,7 @@ pub enum MenuKind {
 }
 
 impl MenuKind {
-    pub const ALL: [MenuKind; 31] = [
+    pub const ALL: [MenuKind; 33] = [
         MenuKind::Main,
         MenuKind::Commit,
         MenuKind::Push,
@@ -326,6 +341,8 @@ impl MenuKind {
         MenuKind::Subtree,
         MenuKind::Notes,
         MenuKind::Ignore,
+        MenuKind::Sparse,
+        MenuKind::Bundle,
         MenuKind::BranchConfig,
         MenuKind::RemoteConfig,
         MenuKind::Resolve,
@@ -364,6 +381,8 @@ impl MenuKind {
             MenuKind::Subtree => 'O',
             MenuKind::Notes => 'T',
             MenuKind::Ignore => 'i',
+            MenuKind::Sparse => '>',
+            MenuKind::Bundle => 'n',
             MenuKind::Diff => 'd',
             MenuKind::DiffSettings => 'D',
             MenuKind::Jump => '\'',
@@ -408,6 +427,8 @@ impl MenuKind {
             MenuKind::Subtree => subtree_menu(),
             MenuKind::Notes => notes_menu(),
             MenuKind::Ignore => ignore_menu(),
+            MenuKind::Sparse => sparse_menu(),
+            MenuKind::Bundle => bundle_menu(),
             MenuKind::BranchConfig => branch_config_menu(),
             MenuKind::RemoteConfig => remote_config_menu(),
             MenuKind::Resolve => resolve_menu(),
@@ -778,6 +799,8 @@ pub fn main_menu() -> TransientMenu {
             TransientAction::new('!', "Run a shell command", MagitCommand::RunShell),
             open(MenuKind::Views, "Switch view"),
             TransientAction::new('R', "Repositories", MagitCommand::ListRepositories),
+            open(MenuKind::Sparse, "Sparse checkout"),
+            open(MenuKind::Bundle, "Bundle"),
         ]),
         TransientGroup::new("Essential").with_actions([
             TransientAction::new('s', "Status", MagitCommand::Status),
@@ -1101,6 +1124,48 @@ pub fn notes_menu() -> TransientMenu {
             TransientAction::new('r', "Remove", MagitCommand::NoteRemove),
             TransientAction::new('p', "Prune", MagitCommand::NotePrune),
         ])])
+}
+
+pub fn sparse_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::Sparse, "Sparse checkout").with_groups([
+        TransientGroup::new("Directories").with_actions([
+            TransientAction::new(
+                'e',
+                "Enable (top-level files only)",
+                MagitCommand::SparseEnable,
+            ),
+            TransientAction::new('s', "Set the directories", MagitCommand::SparseSet),
+            TransientAction::new('a', "Add directories", MagitCommand::SparseAdd),
+        ]),
+        TransientGroup::new("Working tree").with_actions([
+            TransientAction::new('r', "Reapply", MagitCommand::SparseReapply),
+            TransientAction::new(
+                'd',
+                "Disable (check out everything)",
+                MagitCommand::SparseDisable,
+            ),
+        ]),
+    ])
+}
+
+pub fn bundle_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::Bundle, "Bundle").with_groups([
+        TransientGroup::new("Arguments").with_arguments([switch(
+            'a',
+            "--all",
+            "Every ref, when creating",
+        )]),
+        TransientGroup::new("Bundle").with_actions([
+            TransientAction::new('c', "Create", MagitCommand::BundleCreate),
+            TransientAction::new('v', "Verify", MagitCommand::BundleVerify),
+            TransientAction::new('l', "List heads", MagitCommand::BundleListHeads),
+            TransientAction::new(
+                'u',
+                "Unbundle (fetch its branches)",
+                MagitCommand::BundleUnbundle,
+            ),
+        ]),
+    ])
 }
 
 pub fn ignore_menu() -> TransientMenu {

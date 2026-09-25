@@ -118,6 +118,9 @@ pub struct Overview {
     /// Every worktree but this one.
     pub worktrees: Vec<Worktree>,
     pub submodules: Vec<Submodule>,
+    /// With a sparse checkout, the directories in the working tree (none:
+    /// the top-level files only); `None` when everything is checked out.
+    pub sparse: Option<Vec<String>>,
 }
 
 /// Another working tree of the same repository.
@@ -302,6 +305,8 @@ pub fn read(workdir: &Path) -> Overview {
         Vec::new()
     };
 
+    let sparse = sparse_directories(workdir);
+
     Overview {
         branch,
         head,
@@ -314,7 +319,26 @@ pub fn read(workdir: &Path) -> Overview {
         stashes,
         worktrees,
         submodules,
+        sparse,
     }
+}
+
+/// The directories a sparse checkout includes, or `None` without one. In
+/// the older non-cone mode, these are the patterns instead.
+pub fn sparse_directories(workdir: &Path) -> Option<Vec<String>> {
+    let enabled = git(workdir, &["config", "--type=bool", "core.sparseCheckout"])?;
+    if enabled.trim() != "true" {
+        return None;
+    }
+    let listed = git(workdir, &["sparse-checkout", "list"]).unwrap_or_default();
+    Some(
+        listed
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 /// The repository's git directory — `.git`, or elsewhere for a linked

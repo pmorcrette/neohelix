@@ -259,3 +259,24 @@ fn refs_and_cherries_are_read() {
         ["origin"]
     );
 }
+
+#[test]
+fn a_sparse_checkout_lists_its_directories() {
+    let (_dir, work, _other) = fixture_or_skip!();
+    assert_eq!(status::read(&work).sparse, None);
+
+    fs::create_dir_all(work.join("docs")).unwrap();
+    fs::create_dir_all(work.join("src")).unwrap();
+    commit(&work, "docs/a.md", "a\n", "docs").unwrap();
+    commit(&work, "src/b.rs", "b\n", "src").unwrap();
+    git(&work, &["sparse-checkout", "set", "--cone"]).unwrap();
+    assert_eq!(status::read(&work).sparse, Some(Vec::new()));
+    assert!(!work.join("docs/a.md").exists());
+
+    git(&work, &["sparse-checkout", "add", "docs"]).unwrap();
+    assert_eq!(status::read(&work).sparse, Some(vec!["docs".to_string()]));
+    assert!(work.join("docs/a.md").exists() && !work.join("src/b.rs").exists());
+
+    git(&work, &["sparse-checkout", "disable"]).unwrap();
+    assert_eq!(status::read(&work).sparse, None);
+}
