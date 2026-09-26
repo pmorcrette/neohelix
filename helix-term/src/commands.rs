@@ -3592,11 +3592,7 @@ pub fn spawn_terminal(editor: &mut Editor, directory: Option<PathBuf>) -> Option
         (area.width, area.height.saturating_sub(1))
     };
 
-    let settings = editor.config().integrated_terminal.clone();
-    let options = helix_pty::Options {
-        scrollback: settings.scrollback,
-        kitty_keyboard: settings.kitty_keyboard,
-    };
+    let options = editor.config().integrated_terminal.options();
     match helix_pty::PtyTerminal::spawn_with(columns, rows, directory, redraw, options) {
         Ok(terminal) => Some(editor.terminals.add(terminal)),
         Err(err) => {

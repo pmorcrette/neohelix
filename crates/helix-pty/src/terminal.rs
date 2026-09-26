@@ -20,7 +20,9 @@ use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::{ClipboardType, Config, Osc52, Term};
-use alacritty_terminal::vte::ansi::{Processor, Rgb, StdSyncHandler};
+use alacritty_terminal::vte::ansi::{
+    CursorShape as AnsiCursorShape, CursorStyle, Processor, Rgb, StdSyncHandler,
+};
 use crossbeam_channel::{Sender, TrySendError};
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 
@@ -30,13 +32,36 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 /// dropping keystrokes is better than growing until memory runs out.
 const WRITE_QUEUE: usize = 1024;
 
+/// The cursor's shape until a program asks for another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CursorShape {
+    #[default]
+    Block,
+    Underline,
+    Beam,
+}
+
 /// How a terminal is set up.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
     /// Lines kept above the screen, to scroll back through.
     pub scrollback: usize,
     /// Whether programs may switch the Kitty keyboard protocol on.
     pub kitty_keyboard: bool,
+    /// The program to run and its arguments; empty runs [`default_shell`].
+    pub shell: Vec<String>,
+    /// What `TERM` tells programs the terminal is.
+    pub term: String,
+    /// Variables set for the program, after `TERM`; an empty value removes
+    /// the variable instead.
+    pub environment: Vec<(String, String)>,
+    /// The cursor's shape until a program sets it.
+    pub cursor_shape: CursorShape,
+    /// The characters that end a word for copy mode's `w`, `b` and `e`.
+    pub word_separators: String,
+    /// Whether programs may copy into the clipboard (OSC 52). Reading it is
+    /// never allowed: a program could take whatever was copied last.
+    pub clipboard_copy: bool,
 }
 
 impl Default for Options {
@@ -45,7 +70,44 @@ impl Default for Options {
             // Alacritty's own default, chosen here rather than inherited.
             scrollback: 10_000,
             kitty_keyboard: true,
+            shell: Vec::new(),
+            // Alacritty emulates a terminal of this class; claiming anything
+            // else makes programs send sequences it may not implement.
+            term: "xterm-256color".to_string(),
+            environment: Vec::new(),
+            cursor_shape: CursorShape::Block,
+            word_separators: alacritty_terminal::term::SEMANTIC_ESCAPE_CHARS.to_string(),
+            clipboard_copy: true,
         }
+    }
+}
+
+/// The emulator's configuration for `options`.
+fn emulator_config(options: &Options) -> Config {
+    let shape = match options.cursor_shape {
+        CursorShape::Block => AnsiCursorShape::Block,
+        CursorShape::Underline => AnsiCursorShape::Underline,
+        CursorShape::Beam => AnsiCursorShape::Beam,
+    };
+    Config {
+        osc52: if options.clipboard_copy {
+            Osc52::OnlyCopy
+        } else {
+            Osc52::Disabled
+        },
+        scrolling_history: options.scrollback,
+        kitty_keyboard: options.kitty_keyboard,
+        default_cursor_style: CursorStyle {
+            shape,
+            blinking: false,
+        },
+        // Copy mode's cursor is a block whatever the program chose, so it is
+        // told apart from the program's.
+        vi_mode_cursor_style: Some(CursorStyle {
+            shape: AnsiCursorShape::Block,
+            blinking: false,
+        }),
+        semantic_escape_chars: options.word_separators.clone(),
     }
 }
 
@@ -327,14 +389,27 @@ impl PtyTerminal {
             .openpty(pty_size)
             .map_err(|err| Error::OpenPty(err.to_string()))?;
 
-        let shell = default_shell();
-        let mut command = CommandBuilder::new(&shell);
+        let (program, arguments) = match options.shell.split_first() {
+            Some((program, arguments)) => (program.clone(), arguments.to_vec()),
+            None => (default_shell(), Vec::new()),
+        };
+        let shell = std::iter::once(program.as_str())
+            .chain(arguments.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut command = CommandBuilder::new(&program);
+        command.args(&arguments);
         if let Some(directory) = working_directory {
             command.cwd(directory);
         }
-        // Alacritty emulates a terminal of this class; claiming anything else
-        // would make programs send sequences the emulator does not implement.
-        command.env("TERM", "xterm-256color");
+        command.env("TERM", &options.term);
+        for (name, value) in &options.environment {
+            if value.is_empty() {
+                command.env_remove(name);
+            } else {
+                command.env(name, value);
+            }
+        }
 
         let child = pair
             .slave
@@ -366,13 +441,7 @@ impl PtyTerminal {
             redraw: Arc::clone(&redraw),
             notices: Arc::clone(&notices),
         };
-        let config = Config {
-            // Programs may copy into the clipboard, never read it.
-            osc52: Osc52::OnlyCopy,
-            scrolling_history: options.scrollback,
-            kitty_keyboard: options.kitty_keyboard,
-            ..Config::default()
-        };
+        let config = emulator_config(&options);
         let term = Arc::new(FairMutex::new(Term::new(config, &size, proxy)));
         let finished = Arc::new(AtomicBool::new(false));
 
@@ -622,10 +691,7 @@ mod tests {
             redraw: Arc::new(|| {}),
             notices: Arc::clone(&notices),
         };
-        let config = Config {
-            osc52: Osc52::OnlyCopy,
-            ..Config::default()
-        };
+        let config = emulator_config(&Options::default());
         (Term::new(config, &size, proxy), notices, replies)
     }
 
@@ -698,6 +764,28 @@ mod tests {
         );
         assert_eq!(paste_bytes("a\x1b[201~b", true), b"\x1b[200~ab\x1b[201~");
         assert_eq!(paste_bytes("one\ntwo\r\n", false), b"one\rtwo\r");
+    }
+
+    #[test]
+    fn the_options_reach_the_emulator() {
+        let options = Options {
+            cursor_shape: CursorShape::Beam,
+            word_separators: " /".to_string(),
+            clipboard_copy: false,
+            scrollback: 42,
+            ..Options::default()
+        };
+        let config = emulator_config(&options);
+        assert_eq!(config.default_cursor_style.shape, AnsiCursorShape::Beam);
+        assert_eq!(config.semantic_escape_chars, " /");
+        assert_eq!(config.osc52, Osc52::Disabled);
+        assert_eq!(config.scrolling_history, 42);
+        assert_eq!(emulator_config(&Options::default()).osc52, Osc52::OnlyCopy);
+
+        // Copy mode keeps a block cursor whatever the program set.
+        let (mut term, _, _) = emulator();
+        feed(&mut term, b"\x1b[6 q");
+        assert_eq!(term.cursor_style().shape, AnsiCursorShape::Beam);
     }
 
     #[test]

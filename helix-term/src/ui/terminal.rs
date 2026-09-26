@@ -9,7 +9,7 @@ use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::TermMode;
-use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor};
+use alacritty_terminal::vte::ansi::{Color as AnsiColor, CursorShape, NamedColor};
 use helix_pty::{encode_key_with, Key, KittyModes, Modifiers};
 use helix_view::graphics::{Color, CursorKind, Modifier, Rect, Style, UnderlineStyle};
 use helix_view::input::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
@@ -893,13 +893,22 @@ impl Component for TerminalView {
             return (None, CursorKind::Hidden);
         }
 
+        // The shape the program asked for, or the configured one; copy mode
+        // always has a block.
+        let kind = match term.cursor_style().shape {
+            CursorShape::Block | CursorShape::HollowBlock => CursorKind::Block,
+            CursorShape::Underline => CursorKind::Underline,
+            CursorShape::Beam => CursorKind::Bar,
+            CursorShape::Hidden => return (None, CursorKind::Hidden),
+        };
+
         // Below the title bar.
         (
             Some(helix_core::Position::new(
                 viewport.y as usize + 1 + line.0 as usize,
                 viewport.x as usize + column.0,
             )),
-            CursorKind::Block,
+            kind,
         )
     }
 

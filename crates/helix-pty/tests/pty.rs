@@ -265,3 +265,26 @@ fn the_program_in_the_foreground_and_its_directory_are_known() {
     assert_eq!(found.command, "sleep");
     assert_eq!(found.directory.as_deref(), Some(directory.as_path()));
 }
+
+#[cfg(unix)]
+#[test]
+fn the_program_term_and_environment_are_the_ones_configured() {
+    let options = helix_pty::Options {
+        shell: vec!["/bin/sh".to_string()],
+        term: "screen-256color".to_string(),
+        environment: vec![
+            ("HELIX_PTY_TEST".to_string(), "configured".to_string()),
+            ("HOME".to_string(), String::new()),
+        ],
+        ..helix_pty::Options::default()
+    };
+    let terminal = PtyTerminal::spawn_with(80, 24, None, Arc::new(|| {}), options)
+        .expect("a pseudo-terminal should be available");
+    assert!(terminal.write(&b"echo \"[$TERM:$HELIX_PTY_TEST:${HOME-unset}]\"\n"[..]));
+    let lines = wait_for(
+        &terminal,
+        "[screen-256color:configured:unset]",
+        Duration::from_secs(10),
+    );
+    assert!(lines.is_some(), "screen was {:?}", screen(&terminal));
+}

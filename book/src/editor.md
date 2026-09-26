@@ -295,6 +295,15 @@ Set options for the integrated terminal (`:terminal`, `<space>t`).
 |--|--|---------|
 |`scrollback` | Lines kept above the screen to scroll back through, per terminal | `10000` |
 |`kitty-keyboard` | Let programs switch on the Kitty keyboard protocol, which tells apart keys such as `Ctrl-i` and `Tab` | `true` |
+|`shell` | The program to run and its arguments, such as `["fish", "--login"]`; empty runs `$SHELL` | `[]` |
+|`term` | What `TERM` tells programs the terminal is. The emulator implements `xterm-256color`; claiming another terminal can make programs send sequences it does not understand | `"xterm-256color"` |
+|`environment` | Environment variables for the shell, such as `{ EDITOR = "hx" }`, set after `TERM`; an empty value removes the variable | `{}` |
+|`cursor-shape` | The cursor's shape until a program asks for another: `block`, `underline` or `bar`. Copy mode's cursor is always a block | `"block"` |
+|`word-separators` | The characters that end a word for copy mode's `w`, `b` and `e` | ``",│`\|:\"' ()[]{}<>\t"`` |
+|`clipboard-copy` | Let programs copy into the clipboard registers (OSC 52). Programs can never read them | `true` |
+
+Settings apply to terminals started after they change; a running terminal
+keeps the ones it was started with.
 
 In the terminal, `Ctrl-\ Ctrl-n` returns to the editor, and `Shift-PageUp` and
 `Shift-PageDown` scroll back through the output; typing returns to the bottom.

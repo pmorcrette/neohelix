@@ -13,5 +13,6 @@ pub mod terminal;
 pub use keys::{encode_key, encode_key_with, Key, KittyModes, Modifiers};
 pub use mouse::{encode_mouse, MouseAction, MouseButton, MouseModes, MouseReport};
 pub use terminal::{
-    default_shell, Clipboard, Error, Foreground, Options, PtyTerminal, SharedTerm, TermSize,
+    default_shell, Clipboard, CursorShape, Error, Foreground, Options, PtyTerminal, SharedTerm,
+    TermSize,
 };

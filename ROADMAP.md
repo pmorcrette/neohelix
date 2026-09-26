@@ -2108,14 +2108,34 @@ cleared, so text of the document underneath showed through it.
 `TerminalConfig` holds a command and its arguments. The emulator is built with
 `Config::default()`, so everything it can be told is currently left unsaid.
 
-- [ ] Scrollback size, cursor style, and the word characters used when
+- [x] Scrollback size, cursor style, and the word characters used when
       selecting by word.
-- [ ] The OSC 52 clipboard policy from Task 3.3, and whether the Kitty
+- [x] The OSC 52 clipboard policy from Task 3.3, and whether the Kitty
       keyboard protocol from Task 3.5 is offered.
-- [ ] Environment variables for the shell, and whether `TERM` should claim
+- [x] Environment variables for the shell, and whether `TERM` should claim
       something other than what the crate advertises.
-- [ ] These belong in Helix's own configuration idiom rather than as a copy of
+- [x] These belong in Helix's own configuration idiom rather than as a copy of
       Alacritty's, and the mapping is the work.
+
+*Done.* Everything is in `[editor.integrated-terminal]`, in kebab-case like
+the rest of Helix's configuration: `scrollback` and `kitty-keyboard` (from
+Tasks 3.4 and 3.5), and now `shell` (a program and its arguments; empty runs
+`$SHELL`), `term` (default `xterm-256color`, what the emulator implements;
+another value is allowed and the book says what it risks), `environment` (a
+table, applied after `TERM`, where an empty value removes a variable),
+`cursor-shape` (`block`, `underline`, `bar`), `word-separators` (Alacritty's
+semantic escape characters, used by copy mode's `w`/`b`/`e`) and
+`clipboard-copy` (OSC 52 writes; reading the clipboard is never offered).
+`IntegratedTerminalConfig::options` maps them onto `helix_pty::Options`, and
+`helix_pty` maps those onto Alacritty's `Config`, so neither Helix's
+configuration nor the view names an Alacritty type. The view now draws the
+cursor in the shape the program set (DECSCUSR), falling back to the configured
+one, and copy mode's cursor stays a block. Settings apply to terminals started
+afterwards. Tested: the TOML parse, the emulator config, and a real `/bin/sh`
+started with a custom `TERM` and environment; checked in the editor (shell,
+`TERM`, a variable and a bar cursor from the configuration, an underline
+cursor set by a program). The `TerminalConfig` the task opened with is
+upstream's debugger terminal, which is left alone.
 
 ---
 

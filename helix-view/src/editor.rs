@@ -582,13 +582,71 @@ pub struct IntegratedTerminalConfig {
     /// which tells apart keys the usual encoding confuses, such as `Ctrl-i`
     /// and `Tab`. Programs that do not ask for it are unaffected.
     pub kitty_keyboard: bool,
+    /// The program to run and its arguments, such as `["fish", "--login"]`.
+    /// Empty, the default, runs `$SHELL`.
+    pub shell: Vec<String>,
+    /// What `TERM` tells programs the terminal is. The emulator implements
+    /// `xterm-256color`; claiming another terminal makes programs send
+    /// sequences it may not understand.
+    pub term: String,
+    /// Environment variables for the shell, set after `TERM`. An empty value
+    /// removes the variable.
+    pub environment: BTreeMap<String, String>,
+    /// The cursor's shape until a program asks for another.
+    pub cursor_shape: TerminalCursorShape,
+    /// The characters that end a word for copy mode's `w`, `b` and `e`.
+    pub word_separators: String,
+    /// Let programs copy into the clipboard registers (OSC 52). Programs can
+    /// never read them.
+    pub clipboard_copy: bool,
+}
+
+/// The integrated terminal's cursor shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TerminalCursorShape {
+    #[default]
+    Block,
+    Underline,
+    Bar,
 }
 
 impl Default for IntegratedTerminalConfig {
     fn default() -> Self {
+        let pty = helix_pty::Options::default();
         Self {
-            scrollback: 10_000,
-            kitty_keyboard: true,
+            scrollback: pty.scrollback,
+            kitty_keyboard: pty.kitty_keyboard,
+            shell: pty.shell,
+            term: pty.term,
+            environment: BTreeMap::new(),
+            cursor_shape: TerminalCursorShape::Block,
+            word_separators: pty.word_separators,
+            clipboard_copy: pty.clipboard_copy,
+        }
+    }
+}
+
+impl IntegratedTerminalConfig {
+    /// The options a new terminal is started with.
+    pub fn options(&self) -> helix_pty::Options {
+        helix_pty::Options {
+            scrollback: self.scrollback,
+            kitty_keyboard: self.kitty_keyboard,
+            shell: self.shell.clone(),
+            term: self.term.clone(),
+            environment: self
+                .environment
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect(),
+            cursor_shape: match self.cursor_shape {
+                TerminalCursorShape::Block => helix_pty::CursorShape::Block,
+                TerminalCursorShape::Underline => helix_pty::CursorShape::Underline,
+                TerminalCursorShape::Bar => helix_pty::CursorShape::Beam,
+            },
+            word_separators: self.word_separators.clone(),
+            clipboard_copy: self.clipboard_copy,
         }
     }
 }
