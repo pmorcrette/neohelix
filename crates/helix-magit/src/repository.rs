@@ -567,6 +567,34 @@ impl Repository {
         }
     }
 
+    /// `git add` of whole files: several at once, binary and deleted ones
+    /// included, which the patch-based [`Repository::stage`] cannot do.
+    pub fn stage_paths(&self, paths: &[PathBuf]) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let mut args = vec!["add", "--all", "--"];
+        let paths: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+        args.extend(paths.iter().map(String::as_str));
+        self.run_git(&args)
+    }
+
+    /// Whole files back out of the index, the working tree untouched.
+    pub fn unstage_paths(&self, paths: &[PathBuf]) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        let paths: Vec<String> = paths.iter().map(|p| p.display().to_string()).collect();
+        let mut args = if self.inner.head_id().is_ok() {
+            vec!["reset", "--quiet", "--"]
+        } else {
+            // Before the first commit there is no HEAD to reset to.
+            vec!["rm", "--cached", "--quiet", "-r", "--"]
+        };
+        args.extend(paths.iter().map(String::as_str));
+        self.run_git(&args)
+    }
+
     fn run_git(&self, args: &[&str]) -> Result<()> {
         let output = crate::GitCommand::new(
             &self.workdir,

@@ -1989,15 +1989,33 @@ rather than building it twice.
 `s`, `u` and `x` act on one line, one hunk or one file; Magit acts on a
 region as readily as on a single section.
 
-- [ ] Select several lines of a hunk and stage, unstage, discard, apply or
+- [x] Select several lines of a hunk and stage, unstage, discard, apply or
       reverse them together.
-- [ ] Select several files (or hunks) and act on all of them at once.
-- [ ] Stage or unstage a whole section from its heading (`s` on "Unstaged
+- [x] Select several files (or hunks) and act on all of them at once.
+- [x] Stage or unstage a whole section from its heading (`s` on "Unstaged
       changes"), not only with `S` and `U`.
-- [ ] Visibility levels: `1`-`4` for the section at point and `M-1`-`M-4`
+- [x] Visibility levels: `1`-`4` for the section at point and `M-1`-`M-4`
       for the whole buffer.
-- [ ] Jump to the next or previous sibling section (`M-n` / `M-p`).
-- [ ] Keep each section folded or unfolded across a refresh.
+- [x] Jump to the next or previous sibling section (`M-n` / `M-p`).
+- [x] Keep each section folded or unfolded across a refresh.
+
+*Done.* `C-Space` (Magit's key) starts a selection at the cursor, shown
+highlighted as the cursor moves; `C-Space` again or `Esc` drops it (docked,
+`Esc` drops the selection before it gives the keys back to the documents).
+The selection follows Magit's rule that its two ends be siblings: lines of
+one hunk, hunks of one file (a line standing for its hunk), or files of one
+section (from a file's row, or from inside one file to inside another).
+Anything else is refused with that rule as the message. `s`, `u`, `x`, and
+`a` / `v` in a commit act on it, as does a section heading, which stands for
+every file in it. Parts of files go through one patch per file, so two hunks
+are staged together (`Selection::Hunks`); whole files go through `git add` /
+`git reset` by path, which also covers binary and deleted files. `x` says how
+much it throws away ("2 lines of g.txt", "all changes to 3 files", "3
+untracked files"). `1`-`4` set the section at the cursor to headings only,
+files, hunk headers or everything, `M-1`-`M-4` every section, and the cursor
+moves up to whatever still shows. Sections and files already kept their
+folding across a refresh; hunks now do too, known by their lines rather than
+their position, so staging a neighbour does not unfold them.
 
 ### Task 2.22: Commits That Rewrite History, and the Message Buffer
 

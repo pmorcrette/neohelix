@@ -14,6 +14,8 @@ pub enum Selection {
     File,
     /// One whole hunk, by its index in [`FileDiff::hunks`].
     Hunk(usize),
+    /// Several whole hunks, as a region over them selects.
+    Hunks(Vec<usize>),
     /// Individual lines of one hunk, by their indices in [`DiffHunk::lines`].
     Lines { hunk: usize, lines: Vec<usize> },
 }
@@ -24,6 +26,7 @@ impl Selection {
         match self {
             Selection::File => true,
             Selection::Hunk(hunk) => *hunk == hunk_index,
+            Selection::Hunks(hunks) => hunks.contains(&hunk_index),
             Selection::Lines { hunk, lines } => *hunk == hunk_index && lines.contains(&line_index),
         }
     }

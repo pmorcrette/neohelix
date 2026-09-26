@@ -209,3 +209,54 @@ fn unstaging_everything_works_before_the_first_commit() {
     repo.unstage_all().unwrap();
     assert_eq!(status(dir.path()), "?? a.txt\n");
 }
+
+#[test]
+fn several_files_are_staged_and_unstaged_by_path() {
+    let dir = fixture_or_skip!(OLD);
+    fs::write(dir.path().join("f.txt"), NEW).unwrap();
+    fs::write(dir.path().join("new.txt"), "x\n").unwrap();
+    fs::write(dir.path().join("other.bin"), [0u8, 1, 2, 255]).unwrap();
+
+    let repo = Repository::discover(dir.path()).unwrap();
+    let paths: Vec<std::path::PathBuf> = ["f.txt", "new.txt", "other.bin"]
+        .iter()
+        .map(std::path::PathBuf::from)
+        .collect();
+    repo.stage_paths(&paths).unwrap();
+    assert_eq!(status(dir.path()), "M  f.txt\nA  new.txt\nA  other.bin\n");
+
+    repo.unstage_paths(&paths[..2]).unwrap();
+    assert_eq!(status(dir.path()), " M f.txt\nA  other.bin\n?? new.txt\n");
+}
+
+#[test]
+fn staging_a_deleted_file_by_path_stages_the_deletion() {
+    let dir = fixture_or_skip!(OLD);
+    fs::remove_file(dir.path().join("f.txt")).unwrap();
+
+    let repo = Repository::discover(dir.path()).unwrap();
+    repo.stage_paths(&[std::path::PathBuf::from("f.txt")])
+        .unwrap();
+    assert_eq!(status(dir.path()), "D  f.txt\n");
+}
+
+#[test]
+fn two_hunks_are_staged_together_as_one_patch() {
+    let dir = fixture_or_skip!(OLD);
+    let three = "A\nb\nc\nd\ne\nF\ng\nh\ni\nj\nk\nL\n";
+    fs::write(dir.path().join("f.txt"), three).unwrap();
+
+    let repo = Repository::discover(dir.path()).unwrap();
+    let options = helix_magit::diff::DiffOptions {
+        context: 1,
+        ..Default::default()
+    };
+    let repo = repo.with_diff_options(options);
+    let diffs = repo.worktree_diff().unwrap();
+    assert_eq!(diffs[0].hunks.len(), 3);
+    repo.stage(&diffs[0], &Selection::Hunks(vec![1, 2]))
+        .unwrap();
+
+    let staged = git(dir.path(), &["show", ":f.txt"]).unwrap();
+    assert_eq!(staged, "a\nb\nc\nd\ne\nF\ng\nh\ni\nj\nk\nL\n");
+}

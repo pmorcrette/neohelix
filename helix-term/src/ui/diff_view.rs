@@ -331,14 +331,19 @@ fn new_line_near(hunk: &helix_magit::DiffHunk, index: usize) -> u32 {
 
 /// What `x` throws away, once confirmed.
 enum Discard {
-    Change {
-        file: FileDiff,
-        selection: Selection,
+    Changes {
+        changes: Vec<(FileDiff, Selection)>,
         staged: bool,
     },
-    Untracked(PathBuf),
+    Untracked(Vec<PathBuf>),
     Stash(String),
 }
+
+/// What an action on changes covers: a section's index and, for each file,
+/// the part of it selected.
+type Changes = (usize, Vec<(FileDiff, Selection)>);
+
+const INVALID_REGION: &str = "Select lines of one hunk, hunks of one file, or files of one section";
 
 /// One rendered line, and what it stands for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -415,6 +420,9 @@ pub struct DiffView {
     word_ranges: HashMap<(usize, usize, usize, usize), Vec<Range<usize>>>,
     /// What the margin of commit lines shows.
     margin: Margin,
+    /// Where a selection started (`C-Space`), as a row: the region runs
+    /// from here to the cursor.
+    mark: Option<usize>,
 }
 
 /// The views built on the status buffer's rendering.
@@ -508,6 +516,7 @@ impl DiffView {
             options,
             word_ranges: HashMap::new(),
             margin: STATUS_MARGIN.get(),
+            mark: None,
         };
         view.replace_sections(vec![Section {
             kind: SectionKind::Commit,
@@ -631,6 +640,7 @@ impl DiffView {
             options: DiffOptions::default(),
             word_ranges: HashMap::new(),
             margin: STATUS_MARGIN.get(),
+            mark: None,
         }
     }
 
@@ -840,6 +850,7 @@ impl DiffView {
             options: DiffOptions::default(),
             word_ranges: HashMap::new(),
             margin: STATUS_MARGIN.get(),
+            mark: None,
         };
         view.reload(&repository)?;
         Ok(view)
@@ -944,10 +955,17 @@ impl DiffView {
     fn replace_sections(&mut self, mut sections: Vec<Section>) {
         let mut files: HashMap<(SectionKind, PathBuf), bool> = HashMap::new();
         let mut folded_sections: HashMap<SectionKind, bool> = HashMap::new();
+        // A hunk is known by its lines, since staging its neighbours moves
+        // its line numbers; a hunk whose lines changed starts unfolded.
+        let mut hunks: HashMap<(SectionKind, PathBuf, u64), bool> = HashMap::new();
         for section in &self.sections {
             folded_sections.insert(section.kind, section.folded);
             for file in &section.files {
                 files.insert((section.kind, file.path.clone()), file.folded);
+                for hunk in &file.hunks {
+                    let key = (section.kind, file.path.clone(), hunk_fingerprint(hunk));
+                    hunks.insert(key, hunk.folded);
+                }
             }
         }
 
@@ -961,6 +979,10 @@ impl DiffView {
                     .get(&(section.kind, file.path.clone()))
                     .copied()
                     .unwrap_or(section.kind == SectionKind::Untracked);
+                for hunk in file.hunks.iter_mut() {
+                    let key = (section.kind, file.path.clone(), hunk_fingerprint(hunk));
+                    hunk.folded = hunks.get(&key).copied().unwrap_or(hunk.folded);
+                }
             }
         }
 
@@ -1026,6 +1048,8 @@ impl DiffView {
 
         self.rows = rows;
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
+        // The rows the mark pointed at may be gone or moved.
+        self.mark = None;
 
         self.word_ranges.clear();
         if self.options.word_diff && !self.options.stat {
@@ -1067,6 +1091,133 @@ impl DiffView {
         }
     }
 
+    /// The rows between the mark and the cursor, when a selection is on.
+    fn region(&self) -> Option<(usize, usize)> {
+        let mark = self.mark?.min(self.rows.len().saturating_sub(1));
+        Some((mark.min(self.cursor), mark.max(self.cursor)))
+    }
+
+    /// What the region covers, by Magit's rule: its two ends must be
+    /// siblings. Lines of one hunk, hunks of one file (a line standing for
+    /// its hunk), or files of one section.
+    fn region_changes(&self, first: usize, last: usize) -> Result<Changes, String> {
+        let (a, b) = (self.rows[first], self.rows[last]);
+        let file_diff = |section: usize, file: usize| {
+            self.sections
+                .get(section)
+                .and_then(|section| section.files.get(file))
+                .cloned()
+                .ok_or_else(|| INVALID_REGION.to_string())
+        };
+
+        if let (
+            Row::Line {
+                section,
+                file,
+                hunk,
+                line: from,
+            },
+            Row::Line {
+                section: s2,
+                file: f2,
+                hunk: h2,
+                line: to,
+            },
+        ) = (a, b)
+        {
+            if (section, file, hunk) == (s2, f2, h2) {
+                let selection = Selection::Lines {
+                    hunk,
+                    lines: (from..=to).collect(),
+                };
+                return Ok((section, vec![(file_diff(section, file)?, selection)]));
+            }
+        }
+
+        let hunk_of = |row: Row| match row {
+            Row::Hunk {
+                section,
+                file,
+                hunk,
+            }
+            | Row::Line {
+                section,
+                file,
+                hunk,
+                ..
+            } => Some((section, file, hunk)),
+            _ => None,
+        };
+        if let (Some((s1, f1, h1)), Some((s2, f2, h2))) = (hunk_of(a), hunk_of(b)) {
+            if (s1, f1) == (s2, f2) {
+                let selection = if h1 == h2 {
+                    Selection::Hunk(h1)
+                } else {
+                    Selection::Hunks((h1..=h2).collect())
+                };
+                return Ok((s1, vec![(file_diff(s1, f1)?, selection)]));
+            }
+        }
+
+        // Files: from a file's row, or anything inside it, to another's.
+        let file_of = |row: Row| match row {
+            Row::File { section, file }
+            | Row::Hunk { section, file, .. }
+            | Row::Line { section, file, .. } => Some((section, file)),
+            _ => None,
+        };
+        if let (Some((s1, f1)), Some((s2, f2))) = (file_of(a), file_of(b)) {
+            let on_a_file = matches!(a, Row::File { .. }) || matches!(b, Row::File { .. });
+            if s1 == s2 && (f1 != f2 || on_a_file) {
+                let files = (f1..=f2)
+                    .map(|file| Ok((file_diff(s1, file)?, Selection::File)))
+                    .collect::<Result<Vec<_>, String>>()?;
+                return Ok((s1, files));
+            }
+        }
+        Err(INVALID_REGION.to_string())
+    }
+
+    /// What `s`, `u`, `x`, `a` and `v` act on: the region when there is
+    /// one, every file of a section on its heading, or the file, hunk or
+    /// line at the cursor.
+    fn changes_at_cursor(&self) -> Result<Changes, String> {
+        if let Some((first, last)) = self.region() {
+            return self.region_changes(first, last);
+        }
+        let row = self
+            .current_row()
+            .ok_or_else(|| "Nothing here".to_string())?;
+        if let Row::Section { section } = row {
+            let heading = &self.sections[section];
+            if heading.files.is_empty() {
+                return Err("Move to a file, hunk or line first".to_string());
+            }
+            let files = heading
+                .files
+                .iter()
+                .map(|file| (file.clone(), Selection::File))
+                .collect();
+            return Ok((section, files));
+        }
+        let (Some(section), Some(file), Some(selection)) =
+            (row.section(), self.file_at(row), self.selection_at(row))
+        else {
+            return Err("Move to a file, hunk or line first".to_string());
+        };
+        Ok((section, vec![(file.clone(), selection)]))
+    }
+
+    /// `C-Space`: starts a selection at the cursor, or drops it.
+    fn toggle_mark(&mut self) -> &'static str {
+        if self.mark.take().is_some() {
+            "Selection cleared"
+        } else {
+            self.mark = Some(self.cursor);
+            "Selecting: move, then s, u, x, a or v; Esc to stop"
+        }
+    }
+
     fn move_cursor(&mut self, delta: isize) {
         if self.rows.is_empty() {
             return;
@@ -1086,6 +1237,97 @@ impl DiffView {
         }
         for index in (0..self.cursor).rev() {
             if self.rows[index].depth() < depth {
+                self.cursor = index;
+                return;
+            }
+        }
+    }
+
+    /// Magit's visibility levels, for the section at the cursor or, with
+    /// `all`, every section: 1 shows the headings only, 2 the files (or
+    /// commits), 3 the hunks' headers, 4 everything.
+    fn set_level(&mut self, level: u8, all: bool) {
+        let current = self.current_row();
+        let only = if all {
+            None
+        } else {
+            current.and_then(Row::section)
+        };
+        for (index, section) in self.sections.iter_mut().enumerate() {
+            if only.is_some_and(|only| only != index) {
+                continue;
+            }
+            section.folded = level <= 1;
+            for file in section.files.iter_mut() {
+                file.folded = level <= 2;
+                for hunk in file.hunks.iter_mut() {
+                    hunk.folded = level <= 3;
+                }
+            }
+        }
+        self.rebuild_rows();
+        if let Some(row) = current {
+            self.keep_cursor_on(row);
+        }
+    }
+
+    /// Puts the cursor back on `row`, or on the nearest of its ancestors
+    /// still shown when folding hid it.
+    fn keep_cursor_on(&mut self, row: Row) {
+        let mut candidates = vec![row];
+        match row {
+            Row::Line {
+                section,
+                file,
+                hunk,
+                ..
+            } => candidates.extend([
+                Row::Hunk {
+                    section,
+                    file,
+                    hunk,
+                },
+                Row::File { section, file },
+                Row::Section { section },
+            ]),
+            Row::Hunk { section, file, .. } => {
+                candidates.extend([Row::File { section, file }, Row::Section { section }])
+            }
+            Row::File { section, .. } | Row::Item { section, .. } => {
+                candidates.push(Row::Section { section })
+            }
+            Row::Header { .. } | Row::Section { .. } => {}
+        }
+        if let Some(at) = candidates
+            .iter()
+            .find_map(|wanted| self.rows.iter().position(|row| row == wanted))
+        {
+            self.cursor = at;
+        }
+    }
+
+    /// `M-n` / `M-p`: the next or previous row at the cursor's level under
+    /// the same parent — the next file of a section, hunk of a file, or
+    /// section.
+    fn move_to_sibling(&mut self, forward: bool) {
+        let Some(row) = self.current_row() else {
+            return;
+        };
+        let depth = row.depth();
+        let is_heading = |row: &Row| !matches!(row, Row::Header { .. });
+        let mut index = self.cursor;
+        loop {
+            index = match (forward, index) {
+                (true, index) if index + 1 < self.rows.len() => index + 1,
+                (false, index) if index > 0 => index - 1,
+                _ => return,
+            };
+            let candidate = self.rows[index];
+            if candidate.depth() < depth {
+                // Out of the parent: no sibling that way.
+                return;
+            }
+            if candidate.depth() == depth && is_heading(&candidate) {
                 self.cursor = index;
                 return;
             }
@@ -1163,6 +1405,9 @@ impl DiffView {
             .ok_or_else(|| "Move to a change or a stash first".to_string())?;
 
         if let Row::Item { item, .. } = row {
+            if self.mark.is_some() {
+                return Err(INVALID_REGION.to_string());
+            }
             let item = &section.items[item];
             return match section.kind {
                 SectionKind::Stashes => Ok((
@@ -1173,42 +1418,35 @@ impl DiffView {
             };
         }
 
-        if section.kind.staged().is_none() {
+        let (section, changes) = self.changes_at_cursor()?;
+        let kind = self.sections[section].kind;
+        if kind.staged().is_none() {
             return Err("A commit cannot be discarded; v reverses its change".to_string());
         }
-        let file = self
-            .file_at(row)
-            .ok_or_else(|| "Move to a file, hunk or line first".to_string())?;
-        let selection = self
-            .selection_at(row)
-            .ok_or_else(|| "Move to a file, hunk or line first".to_string())?;
-        let path = file.path.display();
 
-        if section.kind == SectionKind::Untracked && selection == Selection::File {
-            return Ok((
-                format!("Delete untracked file {path}? (y/N)"),
-                Discard::Untracked(file.path.clone()),
-            ));
+        if kind == SectionKind::Untracked {
+            let paths: Vec<PathBuf> = changes
+                .iter()
+                .filter(|(_, selection)| *selection == Selection::File)
+                .map(|(file, _)| file.path.clone())
+                .collect();
+            if paths.len() == changes.len() {
+                let question = match paths.as_slice() {
+                    [path] => format!("Delete untracked file {}? (y/N)", path.display()),
+                    _ => format!("Delete {} untracked files? (y/N)", paths.len()),
+                };
+                return Ok((question, Discard::Untracked(paths)));
+            }
         }
-        let what = match &selection {
-            Selection::File => format!("all changes to {path}"),
-            Selection::Hunk(_) => format!("this hunk of {path}"),
-            Selection::Lines { .. } => format!("this line of {path}"),
-        };
-        let staged = section.kind.staged() == Some(true);
+
+        let what = describe_changes(&changes);
+        let staged = kind.staged() == Some(true);
         let question = if staged {
             format!("Discard {what}, staged and in the working tree? (y/N)")
         } else {
             format!("Discard {what}? (y/N)")
         };
-        Ok((
-            question,
-            Discard::Change {
-                file: file.clone(),
-                selection,
-                staged,
-            },
-        ))
+        Ok((question, Discard::Changes { changes, staged }))
     }
 
     /// Throws away what the confirmation agreed to, then refreshes.
@@ -1230,12 +1468,12 @@ impl DiffView {
             }
         };
         let outcome = match &target {
-            Discard::Change {
-                file,
-                selection,
-                staged,
-            } => repository.discard(file, selection, *staged),
-            Discard::Untracked(path) => repository.discard_untracked(path),
+            Discard::Changes { changes, staged } => changes
+                .iter()
+                .try_for_each(|(file, selection)| repository.discard(file, selection, *staged)),
+            Discard::Untracked(paths) => paths
+                .iter()
+                .try_for_each(|path| repository.discard_untracked(path)),
             Discard::Stash(name) => {
                 match helix_magit::GitCommand::new(
                     &self.workdir,
@@ -1288,31 +1526,25 @@ impl DiffView {
     /// as it is.
     fn reverse_change(&mut self) {
         self.error = None;
-        let Some(row) = self.current_row() else {
-            return;
+        let (section, changes) = match self.changes_at_cursor() {
+            Ok(changes) => changes,
+            Err(err) => {
+                self.error = Some(err);
+                return;
+            }
         };
-        let staged = row
-            .section()
-            .and_then(|section| self.sections.get(section))
-            .and_then(|section| section.kind.staged());
-        let (Some(file), Some(selection)) = (self.file_at(row).cloned(), self.selection_at(row))
-        else {
-            self.error = Some("Move to a change or a commit first".to_string());
-            return;
-        };
-        let in_commit = row
-            .section()
-            .and_then(|section| self.sections.get(section))
-            .is_some_and(|section| section.kind == SectionKind::Commit);
-        if in_commit {
+        let kind = self.sections[section].kind;
+        if kind == SectionKind::Commit {
             return self.apply_commit_change(true);
         }
-        if staged != Some(true) {
+        if kind.staged() != Some(true) {
             self.error = Some("Unstaged changes cannot be reversed — use x to discard".to_string());
             return;
         }
         let outcome = self.repository().and_then(|repository| {
-            repository.reverse(&file, &selection)?;
+            for (file, selection) in &changes {
+                repository.reverse(file, selection)?;
+            }
             self.reload(&repository)
         });
         if let Err(err) = outcome {
@@ -1320,21 +1552,23 @@ impl DiffView {
         }
     }
 
-    /// `a` and `v` in a commit: the change under the cursor applied to the
-    /// working tree, or taken back out of it.
+    /// `a` and `v` in a commit: the change under the cursor, or the
+    /// selection, applied to the working tree or taken back out of it.
     fn apply_commit_change(&mut self, reverse: bool) {
         self.error = None;
-        let Some(row) = self.current_row() else {
-            return;
+        let changes = match self.changes_at_cursor() {
+            Ok((_, changes)) => changes,
+            Err(err) => {
+                self.error = Some(err);
+                return;
+            }
         };
-        let (Some(file), Some(selection)) = (self.file_at(row).cloned(), self.selection_at(row))
-        else {
-            self.error = Some("Move to a file, hunk or line first".to_string());
-            return;
-        };
-        let outcome = self
-            .repository()
-            .and_then(|repository| repository.apply_to_worktree(&file, &selection, reverse));
+        self.mark = None;
+        let outcome = self.repository().and_then(|repository| {
+            changes.iter().try_for_each(|(file, selection)| {
+                repository.apply_to_worktree(file, selection, reverse)
+            })
+        });
         self.error = Some(match outcome {
             Ok(()) if reverse => "Reversed in the working tree".to_string(),
             Ok(()) => "Applied to the working tree".to_string(),
@@ -1543,20 +1777,17 @@ impl DiffView {
         Ok((file.path.clone(), line.unwrap_or(1).max(1) as usize))
     }
 
-    /// Stages or unstages what the cursor is on, then refreshes.
+    /// Stages or unstages what the cursor is on, or the selection, then
+    /// refreshes.
     fn apply(&mut self, stage: bool) {
         self.error = None;
 
-        let Some(row) = self.current_row() else {
-            return;
-        };
-        let Some(selection) = self.selection_at(row) else {
-            self.error = Some("Move to a file, hunk or line first".to_string());
-            return;
-        };
-
-        let Some(section) = row.section() else {
-            return;
+        let (section, changes) = match self.changes_at_cursor() {
+            Ok(changes) => changes,
+            Err(err) => {
+                self.error = Some(err);
+                return;
+            }
         };
         match (stage, self.sections[section].kind.staged()) {
             (true, Some(true)) => {
@@ -1574,10 +1805,6 @@ impl DiffView {
             _ => {}
         }
 
-        let Some(file) = self.file_at(row).cloned() else {
-            return;
-        };
-
         let repository = match self.repository() {
             Ok(repository) => repository,
             Err(err) => {
@@ -1586,15 +1813,31 @@ impl DiffView {
             }
         };
 
-        let outcome = if stage {
-            repository.stage(&file, &selection)
+        // Whole files go through git, which handles binary and deleted files
+        // and many at once; parts of files through a patch of their own.
+        let whole: Vec<PathBuf> = changes
+            .iter()
+            .filter(|(_, selection)| *selection == Selection::File)
+            .map(|(file, _)| file.path.clone())
+            .collect();
+        let outcome = if whole.len() == changes.len() {
+            if stage {
+                repository.stage_paths(&whole)
+            } else {
+                repository.unstage_paths(&whole)
+            }
         } else {
-            repository.unstage(&file, &selection)
+            changes.iter().try_for_each(|(file, selection)| {
+                if stage {
+                    repository.stage(file, selection)
+                } else {
+                    repository.unstage(file, selection)
+                }
+            })
         };
 
         if let Err(err) = outcome {
             self.error = Some(err.to_string());
-            return;
         }
 
         // The tree just changed shape, so the view is rebuilt from git rather
@@ -1704,6 +1947,10 @@ impl Component for DiffView {
             })
             .collect();
         let margins = margin::column(&stamps, self.margin, margin::now());
+        let region = self.region();
+        let selection = cx.editor.theme.get("ui.selection");
+        let selection = helix_view::graphics::Style::default()
+            .bg(selection.bg.unwrap_or(helix_view::graphics::Color::Reset));
 
         for ((offset, row), margin) in self
             .rows
@@ -1715,14 +1962,21 @@ impl Component for DiffView {
         {
             let y = inner.y + (offset - self.scroll) as u16;
             let line = Rect::new(inner.x, y, inner.width, 1);
+            if region.is_some_and(|(first, last)| (first..=last).contains(&offset)) {
+                surface.set_style(line, selection);
+            }
             renderer.render(self, *row, offset == self.cursor, line, margin, surface);
         }
     }
 
     fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
         // Docked, the keys are Magit's only while it has the focus; `Esc`
-        // gives them back to the documents and `q` still closes.
-        if let Some(result) = crate::ui::dock::route(crate::ui::dock::MAGIT, event, cx.editor, true)
+        // gives them back to the documents and `q` still closes. While a
+        // selection is on, `Esc` drops it instead.
+        let drops_selection =
+            self.mark.is_some() && matches!(event, Event::Key(key) if key.code == KeyCode::Esc);
+        if let Some(result) =
+            crate::ui::dock::route(crate::ui::dock::MAGIT, event, cx.editor, !drops_selection)
         {
             return result;
         }
@@ -1732,6 +1986,14 @@ impl Component for DiffView {
 
         // The status buffer is modal: it owns the keyboard while it is open.
         match (key.code, key.modifiers) {
+            (KeyCode::Esc, _) if self.mark.is_some() => {
+                self.mark = None;
+                cx.editor.set_status("Selection cleared");
+            }
+            (KeyCode::Char(' ' | '@'), KeyModifiers::CONTROL) => {
+                let message = self.toggle_mark();
+                cx.editor.set_status(message);
+            }
             (KeyCode::Esc, _) | (KeyCode::Char('q'), KeyModifiers::NONE) => {
                 let id = self.view_id();
                 return EventResult::Consumed(Some(Box::new(move |compositor, _| {
@@ -1745,6 +2007,13 @@ impl Component for DiffView {
             (KeyCode::Char('g'), KeyModifiers::NONE) => self.cursor = 0,
             (KeyCode::Char('G'), _) => self.cursor = self.rows.len().saturating_sub(1),
             (KeyCode::Char('h') | KeyCode::Left, KeyModifiers::NONE) => self.move_to_parent(),
+            (KeyCode::Char('n'), KeyModifiers::ALT) => self.move_to_sibling(true),
+            (KeyCode::Char('p'), KeyModifiers::ALT) => self.move_to_sibling(false),
+            (KeyCode::Char(level @ '1'..='4'), modifiers)
+                if matches!(modifiers, KeyModifiers::NONE | KeyModifiers::ALT) =>
+            {
+                self.set_level(level as u8 - b'0', modifiers == KeyModifiers::ALT)
+            }
             (KeyCode::Tab, _) | (KeyCode::Char('l') | KeyCode::Right, KeyModifiers::NONE) => {
                 self.toggle_fold()
             }
@@ -1966,6 +2235,52 @@ impl Component for DiffView {
 
     fn id(&self) -> Option<&'static str> {
         Some(self.view_id())
+    }
+}
+
+/// What identifies a hunk across a refresh: its lines, not its position.
+fn hunk_fingerprint(hunk: &helix_magit::DiffHunk) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for line in &hunk.lines {
+        (line.kind as u8).hash(&mut hasher);
+        line.content.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+/// How a discard's question names what it throws away.
+fn describe_changes(changes: &[(FileDiff, Selection)]) -> String {
+    let plural = |n: usize, one: &str| {
+        if n == 1 {
+            format!("this {one}")
+        } else {
+            format!("{n} {one}s")
+        }
+    };
+    match changes {
+        [(file, selection)] => {
+            let path = file.path.display();
+            match selection {
+                Selection::File => format!("all changes to {path}"),
+                Selection::Hunk(_) => format!("this hunk of {path}"),
+                Selection::Hunks(hunks) => format!("{} of {path}", plural(hunks.len(), "hunk")),
+                Selection::Lines { hunk, lines } => {
+                    let changed = file.hunks.get(*hunk).map_or(0, |hunk| {
+                        lines
+                            .iter()
+                            .filter(|&&line| {
+                                hunk.lines
+                                    .get(line)
+                                    .is_some_and(|line| line.kind != DiffLineKind::Context)
+                            })
+                            .count()
+                    });
+                    format!("{} of {path}", plural(changed.max(1), "line"))
+                }
+            }
+        }
+        _ => format!("all changes to {} files", changes.len()),
     }
 }
 
@@ -2552,6 +2867,7 @@ mod tests {
             options: DiffOptions::default(),
             word_ranges: HashMap::new(),
             margin: STATUS_MARGIN.get(),
+            mark: None,
         };
         view.replace_sections(build_sections(
             unmerged, untracked, unstaged, staged, overview,
@@ -2736,9 +3052,15 @@ mod tests {
     }
 
     #[test]
-    fn acting_on_a_section_header_says_what_to_do_instead() {
-        let mut view = make_view(vec![file("a.rs", 1, 1)], Vec::new());
-        view.cursor = 0;
+    fn acting_on_a_heading_without_files_says_what_to_do_instead() {
+        let mut view = make_full_view(vec![], vec![], vec![], vec![], &overview());
+        view.cursor = view
+            .rows
+            .iter()
+            .position(|row| {
+                matches!(row, Row::Section { section } if view.sections[*section].kind == SectionKind::Stashes)
+            })
+            .unwrap();
 
         view.apply(true);
         assert!(view.error.as_deref().unwrap().contains("Move to a file"));
@@ -2924,8 +3246,12 @@ mod tests {
             question(&view).unwrap(),
             "Discard this hunk of f.txt, staged and in the working tree? (y/N)"
         );
+        // A heading stands for every file in its section.
         view.cursor = 0;
-        assert!(question(&view).is_err(), "a section header");
+        assert_eq!(
+            question(&view).unwrap(),
+            "Discard all changes to f.txt? (y/N)"
+        );
 
         let untracked = make_full_view(
             vec![],
@@ -3064,5 +3390,211 @@ mod tests {
             stat_bar(1, 99, 100),
             "+----------------------------------------"
         );
+    }
+
+    /// Unstaged: a.rs with two hunks of two lines, b.rs with one.
+    fn two_files() -> DiffView {
+        make_view(vec![file("a.rs", 2, 2), file("b.rs", 1, 2)], Vec::new())
+    }
+
+    fn select(view: &mut DiffView, from: usize, to: usize) {
+        view.mark = Some(from);
+        view.cursor = to;
+    }
+
+    #[test]
+    fn a_region_inside_one_hunk_selects_its_lines() {
+        let mut view = two_files();
+        select(&mut view, 3, 4);
+        let (section, changes) = view.changes_at_cursor().unwrap();
+        assert_eq!(view.sections[section].kind, SectionKind::Unstaged);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(
+            changes[0].1,
+            Selection::Lines {
+                hunk: 0,
+                lines: vec![0, 1]
+            }
+        );
+    }
+
+    #[test]
+    fn a_region_across_hunks_selects_them_whole() {
+        let mut view = two_files();
+        // From the first hunk's header to a line of the second.
+        select(&mut view, 2, 6);
+        let (_, changes) = view.changes_at_cursor().unwrap();
+        assert_eq!(changes[0].1, Selection::Hunks(vec![0, 1]));
+
+        // Backwards works the same, and one hunk is just that hunk.
+        select(&mut view, 4, 2);
+        let (_, changes) = view.changes_at_cursor().unwrap();
+        assert_eq!(changes[0].1, Selection::Hunk(0));
+    }
+
+    #[test]
+    fn a_region_across_files_selects_every_file_between() {
+        let mut view = two_files();
+        select(&mut view, 1, 10);
+        let (_, changes) = view.changes_at_cursor().unwrap();
+        let paths: Vec<_> = changes.iter().map(|(file, _)| file.path.clone()).collect();
+        assert_eq!(paths, [PathBuf::from("a.rs"), PathBuf::from("b.rs")]);
+        assert!(changes.iter().all(|(_, s)| *s == Selection::File));
+    }
+
+    #[test]
+    fn a_region_that_is_not_of_siblings_is_refused() {
+        let mut view = make_view(vec![file("a.rs", 1, 1)], vec![file("b.rs", 1, 1)]);
+        // From the unstaged file to the staged one: two sections.
+        let staged_file = view
+            .rows
+            .iter()
+            .rposition(|row| matches!(row, Row::File { .. }))
+            .unwrap();
+        select(&mut view, 1, staged_file);
+        assert_eq!(view.changes_at_cursor().unwrap_err(), INVALID_REGION);
+        // From a heading.
+        select(&mut view, 0, 2);
+        assert_eq!(view.changes_at_cursor().unwrap_err(), INVALID_REGION);
+    }
+
+    #[test]
+    fn a_section_heading_stands_for_all_its_files() {
+        let mut view = two_files();
+        view.cursor = 0;
+        let (_, changes) = view.changes_at_cursor().unwrap();
+        assert_eq!(changes.len(), 2);
+        assert!(changes.iter().all(|(_, s)| *s == Selection::File));
+    }
+
+    #[test]
+    fn folding_or_refreshing_drops_the_selection() {
+        let mut view = two_files();
+        select(&mut view, 3, 4);
+        view.toggle_fold();
+        assert_eq!(view.mark, None);
+    }
+
+    #[test]
+    fn a_discard_names_how_much_it_throws_away() {
+        let mut changed = file("a.rs", 2, 3);
+        for hunk in &mut changed.hunks {
+            hunk.lines[1].kind = DiffLineKind::Addition;
+            hunk.lines[2].kind = DiffLineKind::Deletion;
+        }
+        let two_lines = [(
+            changed.clone(),
+            Selection::Lines {
+                hunk: 0,
+                lines: vec![0, 1, 2],
+            },
+        )];
+        assert_eq!(describe_changes(&two_lines), "2 lines of a.rs");
+        let hunks = [(changed.clone(), Selection::Hunks(vec![0, 1]))];
+        assert_eq!(describe_changes(&hunks), "2 hunks of a.rs");
+        let files = [
+            (changed.clone(), Selection::File),
+            (changed, Selection::File),
+        ];
+        assert_eq!(describe_changes(&files), "all changes to 2 files");
+    }
+
+    #[test]
+    fn levels_fold_down_to_headings_files_hunks_or_nothing() {
+        let mut view = make_view(vec![file("a.rs", 2, 2)], vec![file("b.rs", 1, 2)]);
+        let count = |view: &DiffView| view.rows.len();
+        let full = count(&view);
+
+        view.set_level(1, true);
+        assert_eq!(count(&view), 2, "two headings");
+        view.set_level(2, true);
+        assert_eq!(count(&view), 4, "headings and files");
+        view.set_level(3, true);
+        assert_eq!(count(&view), 2 + 2 + 3, "and the hunks' headers");
+        view.set_level(4, true);
+        assert_eq!(count(&view), full);
+
+        // Only the section at the cursor: the staged one stays open.
+        view.cursor = 0;
+        view.set_level(1, false);
+        assert_eq!(count(&view), full - (1 + 2 * 3));
+        assert_eq!(view.cursor, 0);
+    }
+
+    #[test]
+    fn a_level_that_hides_the_cursor_moves_it_to_what_contains_it() {
+        let mut view = two_files();
+        view.cursor = 6; // a line of a.rs's second hunk
+        view.set_level(2, true);
+        assert_eq!(
+            view.current_row(),
+            Some(Row::File {
+                section: 2,
+                file: 0
+            })
+        );
+    }
+
+    #[test]
+    fn siblings_are_the_next_row_at_the_same_level_under_the_same_parent() {
+        let mut view = two_files();
+        view.cursor = 2; // a.rs, first hunk
+        view.move_to_sibling(true);
+        assert_eq!(view.cursor, 5, "second hunk");
+        view.move_to_sibling(true);
+        assert_eq!(view.cursor, 5, "no third hunk in a.rs");
+
+        view.cursor = 1;
+        view.move_to_sibling(true);
+        assert_eq!(view.cursor, 8, "b.rs");
+        view.move_to_sibling(false);
+        assert_eq!(view.cursor, 1);
+    }
+
+    #[test]
+    fn a_folded_hunk_stays_folded_across_a_refresh() {
+        let mut view = two_files();
+        view.cursor = 5;
+        view.toggle_fold();
+        assert!(view.sections[2].files[0].hunks[1].folded);
+
+        let unmerged = Vec::new();
+        view.replace_sections(build_sections(
+            unmerged,
+            Vec::new(),
+            vec![file("a.rs", 2, 2), file("b.rs", 1, 2)],
+            Vec::new(),
+            &Overview::default(),
+        ));
+        // Both hunks of a.rs have the same lines here, so both are known
+        // as the folded one.
+        assert!(view.sections[2].files[0].hunks[1].folded);
+        assert!(!view.sections[2].files[1].hunks[0].folded);
+    }
+
+    #[test]
+    fn toggling_the_mark_starts_and_drops_a_selection() {
+        let mut view = two_files();
+        view.cursor = 3;
+        view.toggle_mark();
+        assert_eq!(view.region(), Some((3, 3)));
+        view.cursor = 1;
+        assert_eq!(view.region(), Some((1, 3)));
+        view.toggle_mark();
+        assert_eq!(view.region(), None);
+    }
+
+    #[test]
+    fn level_four_unfolds_untracked_files_too() {
+        let mut view = make_full_view(
+            vec![],
+            vec![file("n.txt", 1, 1)],
+            vec![],
+            vec![],
+            &Overview::default(),
+        );
+        assert!(view.sections[1].files[0].folded, "untracked start folded");
+        view.set_level(4, true);
+        assert!(!view.sections[1].files[0].folded);
     }
 }
