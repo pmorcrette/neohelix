@@ -19,7 +19,14 @@ pub enum MagitCommand {
     Commit,
     CommitAmend,
     CommitExtend,
+    CommitReword,
     CommitFixup,
+    CommitSquash,
+    CommitAugment,
+    CommitAlter,
+    CommitRevise,
+    CommitInstantFixup,
+    CommitInstantSquash,
 
     Push,
     PushToUpstream,
@@ -851,11 +858,26 @@ pub fn commit_menu() -> TransientMenu {
             switch('G', "--gpg-sign", "Sign with the default key"),
             option('S', "--gpg-sign=", "Sign with key"),
         ]),
-        TransientGroup::new("Create").with_actions([
-            TransientAction::new('c', "Commit", MagitCommand::Commit),
-            TransientAction::new('a', "Amend", MagitCommand::CommitAmend),
+        TransientGroup::new("Create").with_actions([TransientAction::new(
+            'c',
+            "Commit",
+            MagitCommand::Commit,
+        )]),
+        TransientGroup::new("Edit HEAD").with_actions([
             TransientAction::new('e', "Extend", MagitCommand::CommitExtend),
+            TransientAction::new('a', "Amend", MagitCommand::CommitAmend),
+            TransientAction::new('w', "Reword", MagitCommand::CommitReword),
+        ]),
+        TransientGroup::new("Edit").with_actions([
             TransientAction::new('f', "Fixup", MagitCommand::CommitFixup),
+            TransientAction::new('s', "Squash", MagitCommand::CommitSquash),
+            TransientAction::new('A', "Alter", MagitCommand::CommitAlter),
+            TransientAction::new('n', "Augment", MagitCommand::CommitAugment),
+            TransientAction::new('W', "Revise", MagitCommand::CommitRevise),
+        ]),
+        TransientGroup::new("Edit and rebase").with_actions([
+            TransientAction::new('F', "Instant fixup", MagitCommand::CommitInstantFixup),
+            TransientAction::new('S', "Instant squash", MagitCommand::CommitInstantSquash),
         ]),
         TransientGroup::new("Fold the staged hunks in").with_actions([
             TransientAction::new('x', "Absorb", MagitCommand::CommitAbsorb),

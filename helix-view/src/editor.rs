@@ -559,6 +559,11 @@ pub struct PendingCommit {
     /// Arguments for `git`, without the message itself.
     pub args: Vec<String>,
     pub working_directory: PathBuf,
+    /// A revision to squash the new commit into at once: the instant squash.
+    pub fold_into: Option<String>,
+    /// Whether the message passed the style checks, or the user said to
+    /// commit it anyway.
+    pub checked: bool,
 }
 
 /// An interactive rebase whose todo-list the user is editing.

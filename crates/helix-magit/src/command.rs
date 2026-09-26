@@ -26,8 +26,8 @@ pub enum Requirement {
     None,
     /// A commit message has to be composed first.
     CommitMessage {
-        /// Whether to seed the buffer from HEAD's message.
-        amend: bool,
+        /// What the buffer starts with.
+        seed: Seed,
     },
     /// Values have to be supplied, asked in order. They fill the plan's
     /// `{0}`, `{1}`… placeholders, or are appended when it has none.
@@ -35,6 +35,38 @@ pub enum Requirement {
     /// An interactive rebase: its todo-list has to be edited first, and
     /// where to rebase from may still have to be asked.
     TodoList,
+}
+
+/// What the commit message buffer starts with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Seed {
+    /// Nothing but the help: a new commit.
+    Empty,
+    /// HEAD's message, to edit: amend and reword.
+    Head,
+    /// The text a `squash!` commit of this revision adds to its message;
+    /// git writes the `squash!` line above it.
+    Squash(String),
+    /// An `amend!` commit of this revision: `amend! <subject>`, then the
+    /// revision's whole message to edit, which replaces it when the commit
+    /// is squashed in.
+    Amend(String),
+}
+
+impl Seed {
+    /// Whether composing it rewrites HEAD, and so is refused once HEAD is
+    /// pushed.
+    pub fn amends_head(&self) -> bool {
+        *self == Seed::Head
+    }
+
+    fn filled(&self, fill: impl Fn(&str) -> String) -> Seed {
+        match self {
+            Seed::Squash(rev) => Seed::Squash(fill(rev)),
+            Seed::Amend(rev) => Seed::Amend(fill(rev)),
+            other => other.clone(),
+        }
+    }
 }
 
 /// What a value asked for is, which decides how it is completed and
@@ -69,6 +101,8 @@ pub struct Ask {
     pub suggested: bool,
     /// Whether the answer is several arguments, split at spaces: refspecs.
     pub words: bool,
+    /// What an empty answer stands for: `HEAD` for the commit to fix up.
+    pub fallback: Option<&'static str>,
     /// Whether what the menu was opened on is kept out of this question: a
     /// bundle's file is never the file under the cursor, which writing the
     /// bundle would overwrite.
@@ -84,7 +118,22 @@ impl Ask {
             preset: None,
             suggested: false,
             words: false,
+            fallback: None,
             untargeted: false,
+        }
+    }
+
+    /// Lets the answer be empty, standing for `value`.
+    pub fn or(mut self, value: &'static str) -> Self {
+        self.fallback = Some(value);
+        self
+    }
+
+    /// The answer `input` gives: itself, or the fallback when empty.
+    pub fn answer(&self, input: &str) -> String {
+        match (input.is_empty(), self.fallback) {
+            (true, Some(fallback)) => fallback.to_string(),
+            _ => input.to_string(),
         }
     }
 
@@ -117,7 +166,7 @@ impl Ask {
     /// lands on git's command line as an argument of its own, where a
     /// leading dash would make it an option.
     pub fn refuse(&self, answer: &str) -> Option<String> {
-        if answer.is_empty() && !self.optional {
+        if answer.is_empty() && !self.optional && self.fallback.is_none() {
             Some(format!("{} is required", self.label))
         } else if self.kind != AskKind::Message {
             // Each word of an answer of several is an argument of its own.
@@ -173,6 +222,9 @@ pub enum Special {
     Reshelve,
     /// The staged hunks folded into their commits (see [`crate::absorb`]).
     Absorb(crate::absorb::Mode),
+    /// A `fixup!` commit of `args[0]`, with the rest of `args` as `git
+    /// commit`'s arguments, squashed in at once.
+    InstantFixup,
     /// A shell command line, `args[0]`, run by `sh -c` in the repository.
     Shell,
 }
@@ -194,6 +246,12 @@ pub struct Plan {
     /// Set when the plan is carried out by [`run_plan`] rather than as git
     /// command lines.
     pub special: Option<Special>,
+    /// A message to compose once the questions are answered, and what it
+    /// starts with.
+    pub compose: Option<Seed>,
+    /// A revision to fold the new commit into, with an autosquash rebase,
+    /// once it is made: the instant fixup and squash.
+    pub fold_into: Option<String>,
 }
 
 impl Plan {
@@ -205,7 +263,20 @@ impl Plan {
             destructive: false,
             summary: summary.to_string(),
             special: None,
+            compose: None,
+            fold_into: None,
         }
+    }
+
+    /// Composes a message once the questions are answered.
+    fn composing(mut self, seed: Seed) -> Self {
+        self.compose = Some(seed);
+        self
+    }
+
+    fn folding_into(mut self, rev: &str) -> Self {
+        self.fold_into = Some(rev.to_string());
+        self
     }
 
     fn asking(self, asks: impl IntoIterator<Item = Ask>) -> Self {
@@ -238,11 +309,15 @@ impl Plan {
     /// anywhere, the answers are appended instead. An empty answer drops a
     /// placeholder-only argument, and a `--flag={N}` one with it.
     pub fn answered(&self, answers: &[String]) -> Plan {
+        // The message's seed and the revision folded into use the answers
+        // too, which then are not arguments of their own.
         let placeholders = self
             .args
             .iter()
             .chain(self.then.iter().flatten())
-            .any(|arg| arg.contains("{0}"));
+            .chain(&self.fold_into)
+            .any(|arg| arg.contains("{0}"))
+            || matches!(&self.compose, Some(Seed::Squash(rev) | Seed::Amend(rev)) if rev.contains("{0}"));
         let words: Vec<bool> = match &self.requirement {
             Requirement::Ask(asks) => asks.iter().map(|ask| ask.words).collect(),
             _ => Vec::new(),
@@ -288,6 +363,20 @@ impl Plan {
         };
         let mut plan = self.clone();
         plan.requirement = Requirement::None;
+        let fill_one = |text: &str| {
+            answers
+                .iter()
+                .enumerate()
+                .fold(text.to_string(), |text, (index, answer)| {
+                    text.replace(&format!("{{{index}}}"), answer)
+                })
+        };
+        if let Some(seed) = &self.compose {
+            plan.requirement = Requirement::CommitMessage {
+                seed: seed.filled(fill_one),
+            };
+        }
+        plan.fold_into = self.fold_into.as_deref().map(fill_one);
         plan.args = fill(&self.args);
         plan.then = self.then.iter().map(|args| fill(args)).collect();
         if !placeholders {
@@ -571,18 +660,68 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
         }
 
         MagitCommand::Commit => Plan::new(with(["commit"], args), "Commit")
-            .requiring(Requirement::CommitMessage { amend: false }),
+            .requiring(Requirement::CommitMessage { seed: Seed::Empty }),
         MagitCommand::CommitAmend => Plan::new(with(["commit", "--amend"], args), "Amend")
-            .requiring(Requirement::CommitMessage { amend: true }),
+            .requiring(Requirement::CommitMessage { seed: Seed::Head }),
         // Extend adds the staged changes to HEAD without touching its message.
         MagitCommand::CommitExtend => Plan::new(
             with(["commit", "--amend", "--no-edit"], args),
             "Extend the last commit",
         ),
+        // Reword changes HEAD's message and nothing else: `--only` with no
+        // paths leaves out what is staged.
+        MagitCommand::CommitReword => Plan::new(
+            with(["commit", "--amend", "--only", "--allow-empty"], args),
+            "Reword the last commit",
+        )
+        .requiring(Requirement::CommitMessage { seed: Seed::Head }),
+
+        // The commits made to be squashed in later by `r` with `-A`: which
+        // commit is asked, the one at the cursor offered, HEAD when empty.
         MagitCommand::CommitFixup => Plan::new(
-            with(["commit", "--fixup=HEAD"], args),
-            "Fixup the last commit",
-        ),
+            with(["commit", "--fixup={0}"], args),
+            "Make a fixup! commit",
+        )
+        .asking([fold_target("Fixup commit")]),
+        MagitCommand::CommitSquash => Plan::new(
+            with(["commit", "--no-edit", "--squash={0}"], args),
+            "Make a squash! commit",
+        )
+        .asking([fold_target("Squash into commit")]),
+        // Augment is a squash with words of its own for the message.
+        MagitCommand::CommitAugment => Plan::new(
+            with(["commit", "--squash={0}"], args),
+            "Make a squash! commit, with a message",
+        )
+        .asking([fold_target("Augment commit")])
+        .composing(Seed::Squash("{0}".into())),
+        // git's `--fixup=amend:` will not take a message from a file, so the
+        // `amend!` message is written out here instead: the same commit.
+        MagitCommand::CommitAlter => Plan::new(with(["commit"], args), "Make an amend! commit")
+            .asking([fold_target("Alter commit")])
+            .composing(Seed::Amend("{0}".into())),
+        // Revise: the message alone, as an empty `amend!` commit that
+        // leaves what is staged alone.
+        MagitCommand::CommitRevise => Plan::new(
+            with(["commit", "--only", "--allow-empty"], args),
+            "Make an amend! commit of the message alone",
+        )
+        .asking([fold_target("Revise commit")])
+        .composing(Seed::Amend("{0}".into())),
+        // The instant ones fold the new commit in at once.
+        MagitCommand::CommitInstantFixup => {
+            Plan::new(with(["{0}"], args), "Fixup a commit and squash it in now")
+                .asking([fold_target("Fixup commit")])
+                .special(Special::InstantFixup)
+                .destructive()
+        }
+        MagitCommand::CommitInstantSquash => Plan::new(
+            with(["commit", "--squash={0}"], args),
+            "Squash into a commit now, with a message",
+        )
+        .asking([fold_target("Squash into commit")])
+        .composing(Seed::Squash("{0}".into()))
+        .folding_into("{0}"),
 
         // git resolves the upstream itself, so both of these are a bare push.
         MagitCommand::Push | MagitCommand::PushToUpstream => {
@@ -1135,6 +1274,12 @@ pub fn typed_shell(line: &str) -> Result<Plan, String> {
 }
 
 /// Appends the menu's arguments to a fixed prefix.
+/// The commit a fixup, squash or amend is made for: the one at the cursor
+/// when the menu was opened on one, else asked, HEAD when left empty.
+fn fold_target(label: &'static str) -> Ask {
+    Ask::required(AskKind::Revision, label).or("HEAD")
+}
+
 fn with(prefix: impl IntoIterator<Item = &'static str>, args: &[String]) -> Vec<String> {
     prefix
         .into_iter()
@@ -1358,6 +1503,27 @@ pub fn run_plan(workdir: &Path, plan: &Plan) -> std::io::Result<GitOutput> {
         Some(Special::EditCommit) => {
             let commit = plan.args.first().cloned().unwrap_or_default();
             edit_commit(workdir, &commit, &mut log)?;
+        }
+        Some(Special::InstantFixup) => {
+            let target = plan.args.first().cloned().unwrap_or_default();
+            match crate::absorb::check_fold(workdir, &target) {
+                Err(err) => log.fail(&err),
+                Ok(full) => {
+                    let mut commit = args_of(&["commit", &format!("--fixup={full}")]);
+                    commit.extend(plan.args.iter().skip(1).cloned());
+                    if log.run(workdir, &commit)? {
+                        match crate::absorb::fold_in(workdir, &full) {
+                            Ok(()) => {
+                                log.note = Some(format!(
+                                    "Fixed up {} and squashed it in",
+                                    &full[..full.len().min(7)]
+                                ))
+                            }
+                            Err(err) => log.fail(&err),
+                        }
+                    }
+                }
+            }
         }
         Some(Special::Reshelve) => {
             let base = plan.args.first().cloned().unwrap_or_default();
@@ -1799,12 +1965,40 @@ pub const SCISSORS: &str = "# ------------------------ >8 ----------------------
 /// message is supplied with `-F`, so no editor of git's runs and the switch
 /// itself would do nothing; the fork writes the diff in instead.
 pub fn commit_template_with(working_directory: &Path, amend: bool, verbose: bool) -> String {
-    let mut template = String::new();
+    let seed = if amend { Seed::Head } else { Seed::Empty };
+    commit_template_for(working_directory, &seed, verbose)
+}
 
-    if amend {
-        if let Some(message) = head_message(working_directory) {
-            template.push_str(&message);
-            template.push('\n');
+/// The message buffer's first contents for `seed`: see [`Seed`].
+pub fn commit_template_for(working_directory: &Path, seed: &Seed, verbose: bool) -> String {
+    let mut template = String::new();
+    let amend = seed.amends_head();
+
+    match seed {
+        Seed::Empty => {}
+        Seed::Head => {
+            if let Some(message) = head_message(working_directory) {
+                template.push_str(&message);
+                template.push('\n');
+            }
+        }
+        Seed::Squash(rev) => {
+            template.push_str(&format!(
+                "\n# git puts \"squash! {}\" above what you write here, and\n\
+                 # the rebase adds it to that commit's message.\n",
+                message_of(working_directory, rev)
+                    .and_then(|message| message.lines().next().map(str::to_string))
+                    .unwrap_or_else(|| rev.clone())
+            ));
+        }
+        Seed::Amend(rev) => {
+            let message = message_of(working_directory, rev).unwrap_or_default();
+            let subject = message.lines().next().unwrap_or(rev);
+            template.push_str(&format!(
+                "amend! {subject}\n\n{message}\n\
+                 \n# Keep the first line, which names the commit. What is below it\n\
+                 # replaces that commit's message when the rebase squashes this in.\n"
+            ));
         }
     }
 
@@ -1814,7 +2008,9 @@ pub fn commit_template_with(working_directory: &Path, amend: bool, verbose: bool
          # Lines starting with '#' are ignored, and an empty message aborts\n\
          # the commit, leaving the index untouched.\n\
          # :magit-trailer adds a trailer (Signed-off-by, Co-authored-by, …);\n\
-         # :magit-insert-revision a commit looked at recently.\n",
+         # :magit-insert-revision a commit looked at recently;\n\
+         # :magit-message-previous / -next an earlier message;\n\
+         # :magit-message-diff shows what is staged.\n",
     );
 
     if let Ok(status) = GitCommand::new(
@@ -1884,9 +2080,20 @@ pub fn strip_comments(text: &str) -> String {
 
 /// The message HEAD was committed with, for seeding an amend.
 pub fn head_message(working_directory: &Path) -> Option<String> {
+    message_of(working_directory, "HEAD")
+}
+
+/// The message `rev` was committed with.
+pub fn message_of(working_directory: &Path, rev: &str) -> Option<String> {
     let output = GitCommand::new(
         working_directory,
-        vec!["log".into(), "-1".into(), "--pretty=%B".into()],
+        vec![
+            "log".into(),
+            "-1".into(),
+            "--pretty=%B".into(),
+            rev.into(),
+            "--".into(),
+        ],
     )
     .run()
     .ok()?;
@@ -1965,27 +2172,82 @@ mod tests {
         assert_eq!(commit.args, ["commit", "--signoff"]);
         assert_eq!(
             commit.requirement,
-            Requirement::CommitMessage { amend: false }
+            Requirement::CommitMessage { seed: Seed::Empty }
         );
 
-        // Amend seeds the buffer from HEAD instead of starting empty.
+        // Amend and reword seed the buffer from HEAD instead.
         let amend = plan(MagitCommand::CommitAmend, &[]);
         assert_eq!(
             amend.requirement,
-            Requirement::CommitMessage { amend: true }
+            Requirement::CommitMessage { seed: Seed::Head }
         );
         assert_eq!(amend.args, ["commit", "--amend"]);
+        let reword = plan(MagitCommand::CommitReword, &[]);
+        assert_eq!(
+            reword.args,
+            ["commit", "--amend", "--only", "--allow-empty"]
+        );
+        assert_eq!(
+            reword.requirement,
+            Requirement::CommitMessage { seed: Seed::Head }
+        );
     }
 
     #[test]
-    fn extend_and_fixup_need_no_message() {
+    fn extend_needs_no_message_and_fixup_asks_which_commit() {
         let extend = plan(MagitCommand::CommitExtend, &[]);
         assert_eq!(extend.args, ["commit", "--amend", "--no-edit"]);
         assert_eq!(extend.requirement, Requirement::None);
 
         let fixup = plan(MagitCommand::CommitFixup, &[]);
-        assert_eq!(fixup.args, ["commit", "--fixup=HEAD"]);
-        assert_eq!(fixup.requirement, Requirement::None);
+        let Requirement::Ask(asks) = &fixup.requirement else {
+            panic!("fixup asks for its commit");
+        };
+        // Left empty, it is HEAD, as before.
+        assert_eq!(asks[0].answer(""), "HEAD");
+        assert_eq!(asks[0].refuse(""), None);
+        assert_eq!(
+            fixup.answered(&["HEAD".into()]).args,
+            ["commit", "--fixup=HEAD"]
+        );
+
+        let squash = plan(MagitCommand::CommitSquash, &[]).answered(&["abc123".into()]);
+        assert_eq!(squash.args, ["commit", "--no-edit", "--squash=abc123"]);
+        assert_eq!(squash.requirement, Requirement::None);
+    }
+
+    #[test]
+    fn augment_alter_and_revise_compose_a_message_after_the_question() {
+        let answered = |command| plan(command, &[]).answered(&["abc123".into()]);
+
+        let augment = answered(MagitCommand::CommitAugment);
+        assert_eq!(augment.args, ["commit", "--squash=abc123"]);
+        assert_eq!(
+            augment.requirement,
+            Requirement::CommitMessage {
+                seed: Seed::Squash("abc123".into())
+            }
+        );
+
+        let alter = answered(MagitCommand::CommitAlter);
+        assert_eq!(alter.args, ["commit"]);
+        assert_eq!(
+            alter.requirement,
+            Requirement::CommitMessage {
+                seed: Seed::Amend("abc123".into())
+            }
+        );
+        let revise = answered(MagitCommand::CommitRevise);
+        assert_eq!(revise.args, ["commit", "--only", "--allow-empty"]);
+
+        let instant = answered(MagitCommand::CommitInstantSquash);
+        assert_eq!(instant.fold_into.as_deref(), Some("abc123"));
+        let fixup = plan(MagitCommand::CommitInstantFixup, &["--no-verify"]);
+        assert!(fixup.destructive);
+        assert_eq!(
+            fixup.answered(&["abc123".into()]).args,
+            ["abc123", "--no-verify"]
+        );
     }
 
     #[test]

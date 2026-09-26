@@ -2579,6 +2579,49 @@ fn magit_trailer(
     Ok(())
 }
 
+/// `:magit-message-previous` / `-next`: an earlier or later message.
+fn magit_message_previous(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        crate::magit::message_history(cx.editor, true);
+    }
+    Ok(())
+}
+
+fn magit_message_next(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        crate::magit::message_history(cx.editor, false);
+    }
+    Ok(())
+}
+
+/// `:magit-message-diff`: the staged changes beside the message.
+fn magit_message_diff(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    cx.jobs.callback(async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                crate::magit::message_diff(compositor, editor);
+            },
+        ));
+        Ok(call)
+    });
+    Ok(())
+}
+
 /// `:magit-insert-revision`: insert a revision looked at recently.
 fn magit_insert_revision(
     cx: &mut compositor::Context,
@@ -4424,6 +4467,39 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, None),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "magit-message-previous",
+        aliases: &[],
+        doc: "In the commit message buffer: replace the message with an earlier one (uncommitted ones first, then recent commits').",
+        fun: magit_message_previous,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "magit-message-next",
+        aliases: &[],
+        doc: "In the commit message buffer: go back to a later message, and then to the draft.",
+        fun: magit_message_next,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "magit-message-diff",
+        aliases: &[],
+        doc: "While writing a commit message: show the staged changes the commit records.",
+        fun: magit_message_diff,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
             ..Signature::DEFAULT
         },
     },

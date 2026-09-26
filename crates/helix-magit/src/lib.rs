@@ -10,6 +10,7 @@ pub mod command;
 pub mod conflict;
 pub mod diff;
 pub mod log;
+pub mod message;
 pub mod patch;
 pub mod rebase;
 pub mod refs;

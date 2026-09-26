@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 
+use helix_magit::command::Seed;
 use helix_magit::command::{self, GitCommand, GitOutput};
 use helix_magit::{Ask, AskKind, Plan, Requirement};
 use helix_view::editor::PendingCommit;
@@ -27,10 +28,10 @@ pub fn execute(compositor: &mut Compositor, cx: &mut Context, plan: Plan, workdi
             }
         }
         Requirement::Ask(asks) => ask_next(compositor, cx.editor, plan, workdir, asks, Vec::new()),
-        Requirement::CommitMessage { amend } => {
+        Requirement::CommitMessage { seed } => {
             // The message must be seen.
             step_aside(compositor, cx.editor);
-            compose(cx, plan, workdir, amend)
+            compose(cx.editor, plan, workdir, seed)
         }
         Requirement::TodoList => start_rebase(compositor, cx, plan, workdir),
     }
@@ -377,7 +378,7 @@ fn name_paths(paths: &[String], width: usize) -> String {
 /// answers. A question the menu's target already answered is skipped.
 fn ask_next(
     compositor: &mut Compositor,
-    editor: &Editor,
+    editor: &mut Editor,
     plan: Plan,
     workdir: PathBuf,
     asks: Vec<Ask>,
@@ -395,6 +396,11 @@ fn ask_next(
     }
     let Some(ask) = asks.get(answers.len()).cloned() else {
         let plan = plan.answered(&answers);
+        // Some plans go on to a message once they know which commit.
+        if let Requirement::CommitMessage { seed } = plan.requirement.clone() {
+            step_aside(compositor, editor);
+            return compose(editor, plan, workdir, seed);
+        }
         if plan.destructive {
             confirm_then_run(compositor, plan, workdir);
         } else {
@@ -404,10 +410,10 @@ fn ask_next(
     };
 
     let names = helix_magit::refs::names(&workdir, ask.kind);
-    let label = if ask.optional {
-        format!("{}: ", ask.label)
-    } else {
-        format!("{} (required): ", ask.label)
+    let label = match (ask.optional, ask.fallback) {
+        (_, Some(fallback)) => format!("{} (empty for {fallback}): ", ask.label),
+        (true, None) => format!("{}: ", ask.label),
+        (false, None) => format!("{} (required): ", ask.label),
     };
     let kind = ask.kind;
     let preset = ask.preset.clone();
@@ -432,7 +438,7 @@ fn ask_next(
                 return;
             }
             let mut answers = answers.clone();
-            answers.push(input);
+            answers.push(ask.answer(&input));
             let (plan, workdir, asks) = (plan.clone(), workdir.clone(), asks.clone());
             cx.jobs.callback(async move {
                 Ok(Callback::EditorCompositor(Box::new(
@@ -1011,13 +1017,24 @@ fn report(editor: &mut Editor, compositor: &mut Compositor, line: &str, output: 
 /// the index untouched. Closing is not the trigger, because Helix keeps a
 /// buffer open when its view goes away, so `:wq` never closes the document —
 /// and on a single view it would quit the editor before the commit could run.
-fn compose(cx: &mut Context, plan: Plan, workdir: PathBuf, amend: bool) {
-    if amend && command::head_is_pushed(&workdir) {
+fn compose(editor: &mut Editor, mut plan: Plan, workdir: PathBuf, seed: Seed) {
+    if seed.amends_head() && command::head_is_pushed(&workdir) {
         // Amending a commit that is already on the remote rewrites history
         // someone else may have; that is worth stopping for.
-        cx.editor
-            .set_error("HEAD is already pushed; amending it would rewrite published history");
+        editor.set_error("HEAD is already pushed; amending it would rewrite published history");
         return;
+    }
+    // Squashing in at once rewrites history too: refused before a message
+    // is written for nothing. The target is kept as a hash, since the new
+    // commit moves what `HEAD~1` names.
+    if let Some(target) = &plan.fold_into {
+        match helix_magit::absorb::check_fold(&workdir, target) {
+            Ok(full) => plan.fold_into = Some(full),
+            Err(err) => {
+                editor.set_error(err);
+                return;
+            }
+        }
     }
 
     let message_path = workdir.join(".git").join("COMMIT_EDITMSG");
@@ -1027,33 +1044,31 @@ fn compose(cx: &mut Context, plan: Plan, workdir: PathBuf, amend: bool) {
         .args
         .iter()
         .any(|arg| arg == "--verbose" || arg == "-v");
-    let template = command::commit_template_with(&workdir, amend, verbose);
+    let template = command::commit_template_for(&workdir, &seed, verbose);
 
     if let Err(err) = std::fs::write(&message_path, &template) {
-        cx.editor
-            .set_error(format!("could not write the commit message: {err}"));
+        editor.set_error(format!("could not write the commit message: {err}"));
         return;
     }
 
     // Opened in a split rather than in place: closing the message buffer must
     // return to what the user was doing, and `:wq` on the only buffer would
     // quit Helix before the commit could run.
-    if let Err(err) = cx
-        .editor
-        .open(&message_path, helix_view::editor::Action::HorizontalSplit)
-    {
-        cx.editor
-            .set_error(format!("could not open the commit message: {err}"));
+    if let Err(err) = editor.open(&message_path, helix_view::editor::Action::HorizontalSplit) {
+        editor.set_error(format!("could not open the commit message: {err}"));
         return;
     }
 
-    cx.editor.pending_commit = Some(PendingCommit {
+    // A new message starts the history from its own draft.
+    *HISTORY.lock().unwrap() = None;
+    editor.pending_commit = Some(PendingCommit {
         message_path,
         args: plan.args,
         working_directory: workdir,
+        fold_into: plan.fold_into,
+        checked: false,
     });
-    cx.editor
-        .set_status("Write the message, then `:w` to commit (`:q!` aborts)");
+    editor.set_status("Write the message, then `:w` to commit (`:q!` aborts)");
 }
 
 /// Commits when the message buffer is written.
@@ -1092,6 +1107,29 @@ fn finish_commit(pending: PendingCommit) {
             return;
         }
 
+        // git-commit's style checks: asked about, not enforced.
+        let problems = helix_magit::message::style_problems(&body);
+        if !pending.checked && !problems.is_empty() {
+            crate::job::dispatch_blocking(move |editor, compositor| {
+                // Still pending: saying no leaves the message to fix and
+                // write again.
+                editor.pending_commit = Some(pending);
+                let question = format!("{}. Commit anyway? (y/N)", sentence(&problems));
+                compositor.push(Box::new(Confirm::new(
+                    question,
+                    "No keeps the message open to fix",
+                    |cx| {
+                        if let Some(mut pending) = cx.editor.pending_commit.take() {
+                            pending.checked = true;
+                            cx.editor.set_status("Committing…");
+                            finish_commit(pending);
+                        }
+                    },
+                )));
+            });
+            return;
+        }
+
         let message_path = pending.message_path.clone();
 
         // git's `-F` does not strip comments — only its own editor path does —
@@ -1110,8 +1148,27 @@ fn finish_commit(pending: PendingCommit) {
         args.push("-F".into());
         args.push(message_path.to_string_lossy().into_owned());
 
-        let outcome = GitCommand::new(&pending.working_directory, args.clone()).run();
+        let mut outcome = GitCommand::new(&pending.working_directory, args.clone()).run();
         let line = format!("git {}", args[..args.len() - 2].join(" "));
+        // The instant squash: the commit is made, now it goes in.
+        if let (Ok(output), Some(target)) = (&mut outcome, &pending.fold_into) {
+            if output.success {
+                match helix_magit::absorb::fold_in(&pending.working_directory, target) {
+                    Ok(()) => output.stdout.push_str("Squashed into its commit\n"),
+                    Err(err) => {
+                        output.success = false;
+                        output.stderr.push_str(&err);
+                    }
+                }
+            }
+        }
+
+        // A message whose commit did not go through is kept, to be had
+        // back with `:magit-message-previous`.
+        let committed = outcome.as_ref().is_ok_and(|output| output.success);
+        if !committed && pending.fold_into.is_none() {
+            remember_message(&body);
+        }
 
         crate::job::dispatch_blocking(move |editor, compositor| match outcome {
             Ok(output) => {
@@ -1124,6 +1181,151 @@ fn finish_commit(pending: PendingCommit) {
             Err(err) => editor.set_error(format!("{line}: {err}")),
         });
     });
+}
+
+/// `a, b and c`, capitalised: the style problems as one sentence.
+fn sentence(parts: &[String]) -> String {
+    let joined = match parts {
+        [] => String::new(),
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+    };
+    let mut chars = joined.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => joined,
+    }
+}
+
+// ── The message history ──────────────────────────────────────────────────
+//
+// Magit's `M-p` / `M-n` in the message buffer: messages that were written
+// but not committed, then those of the recent commits.
+
+/// Messages whose commit did not go through, newest first.
+static SAVED_MESSAGES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Where the message buffer is in the history, and the draft it started
+/// from, to come back to.
+struct History {
+    path: PathBuf,
+    position: Option<usize>,
+    draft: String,
+}
+
+static HISTORY: std::sync::Mutex<Option<History>> = std::sync::Mutex::new(None);
+
+fn remember_message(message: &str) {
+    let mut saved = SAVED_MESSAGES.lock().unwrap();
+    saved.retain(|kept| kept != message);
+    saved.insert(0, message.to_string());
+    saved.truncate(50);
+}
+
+/// `:magit-message-previous` / `-next`: replaces the message being written
+/// with an older one, or a newer one, back to the draft.
+pub fn message_history(editor: &mut Editor, older: bool) {
+    let Some(pending) = &editor.pending_commit else {
+        editor.set_error("No commit message is being written");
+        return;
+    };
+    let (path, workdir) = (
+        pending.message_path.clone(),
+        pending.working_directory.clone(),
+    );
+    let (view, doc) = helix_view::current!(editor);
+    if doc.path() != Some(&path) {
+        editor.set_error("Not in the commit message buffer");
+        return;
+    }
+
+    let mut entries = SAVED_MESSAGES.lock().unwrap().clone();
+    for message in helix_magit::message::recent_messages(&workdir, 100) {
+        if !entries.contains(&message) {
+            entries.push(message);
+        }
+    }
+
+    let before = doc.text().clone();
+    let buffer = before.to_string();
+    let mut history = HISTORY.lock().unwrap();
+    let state = match history.as_mut() {
+        Some(state) if state.path == path => state,
+        _ => history.insert(History {
+            path,
+            position: None,
+            draft: helix_magit::message::message_part(&buffer).to_string(),
+        }),
+    };
+    let next = match (older, state.position) {
+        (true, None) if entries.is_empty() => None,
+        (true, None) => Some(Some(0)),
+        (true, Some(at)) if at + 1 < entries.len() => Some(Some(at + 1)),
+        (false, Some(0)) => Some(None),
+        (false, Some(at)) => Some(Some(at - 1)),
+        _ => None,
+    };
+    let Some(next) = next else {
+        let message = if older {
+            "No older message"
+        } else {
+            "Back at the draft already"
+        };
+        editor.set_status(message);
+        return;
+    };
+    if state.position.is_none() {
+        state.draft = helix_magit::message::message_part(&buffer).to_string();
+    }
+    state.position = next;
+    let message = match next {
+        Some(at) => entries[at].clone(),
+        None => state.draft.clone(),
+    };
+    let text = helix_magit::message::replace_message(&buffer, &message);
+    let after = helix_core::Rope::from(text.as_str());
+    let transaction = helix_core::diff::compare_ropes(&before, &after);
+    doc.apply(&transaction, view.id);
+    editor.set_status(match next {
+        Some(at) => format!("Message {} of {}", at + 1, entries.len()),
+        None => "Back to the draft".to_string(),
+    });
+}
+
+/// `:magit-message-diff`: what the commit will record, beside its message —
+/// the status buffer at its staged changes.
+pub fn message_diff(compositor: &mut Compositor, editor: &mut Editor) {
+    let Some(pending) = &editor.pending_commit else {
+        editor.set_error("No commit message is being written");
+        return;
+    };
+    let workdir = pending.working_directory.clone();
+    let amending = pending.args.iter().any(|arg| arg == "--amend");
+    let target = helix_magit::transient::JumpTarget::Staged;
+    let shown = match compositor.find_id::<DiffView>(DiffView::ID) {
+        Some(view) => {
+            view.refresh(editor);
+            view.jump_to(target)
+        }
+        None => match DiffView::new(&workdir) {
+            Ok(mut view) => {
+                let shown = view.jump_to(target);
+                compositor.push(Box::new(view));
+                shown
+            }
+            Err(err) => {
+                editor.set_error(err.to_string());
+                return;
+            }
+        },
+    };
+    match (shown, amending) {
+        (true, _) => editor.set_status("The staged changes, which the commit records"),
+        (false, true) => {
+            editor.set_status("Nothing staged: the amend keeps HEAD's changes as they are")
+        }
+        (false, false) => editor.set_error("Nothing is staged"),
+    }
 }
 
 /// Closes the message buffer once its commit has landed.
@@ -1142,7 +1344,17 @@ fn close_message_buffer(editor: &mut Editor, path: &std::path::Path) {
 
 #[cfg(test)]
 mod tests {
-    use super::has_base;
+    use super::{has_base, sentence};
+
+    #[test]
+    fn style_problems_read_as_one_sentence() {
+        let parts = |list: &[&str]| -> Vec<String> { list.iter().map(|p| p.to_string()).collect() };
+        assert_eq!(sentence(&parts(&["the line is long"])), "The line is long");
+        assert_eq!(
+            sentence(&parts(&["one", "two", "three"])),
+            "One, two and three"
+        );
+    }
 
     #[test]
     fn a_rebase_base_is_the_first_argument_that_is_not_a_flag() {

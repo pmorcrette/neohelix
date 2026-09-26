@@ -2019,18 +2019,43 @@ their position, so staging a neighbour does not unfold them.
 
 ### Task 2.22: Commits That Rewrite History, and the Message Buffer
 
-- [ ] Reword (`c w`): edit HEAD's message without touching its tree.
-- [ ] Squash (`c s`): a `squash!` commit, the counterpart of `Fixup`.
-- [ ] Instant fixup and instant squash (`c F`, `c S`): create the commit and
+- [x] Reword (`c w`): edit HEAD's message without touching its tree.
+- [x] Squash (`c s`): a `squash!` commit, the counterpart of `Fixup`.
+- [x] Instant fixup and instant squash (`c F`, `c S`): create the commit and
       fold it in with an autosquash rebase straight away.
-- [ ] Alter, Augment and Revise (`c A`, `c n`, `c W`): Magit 4's commands for
+- [x] Alter, Augment and Revise (`c A`, `c n`, `c W`): Magit 4's commands for
       editing an earlier commit's changes, message or both.
-- [ ] Message history in the commit buffer (`M-p` / `M-n`), including
+- [x] Message history in the commit buffer (`M-p` / `M-n`), including
       messages from commits that were cancelled.
-- [ ] Show the diff being committed beside the message (`C-c C-d`), not only
+- [x] Show the diff being committed beside the message (`C-c C-d`), not only
       through `--verbose`.
-- [ ] Flag an overlong summary line and a missing blank line after it, as
+- [x] Flag an overlong summary line and a missing blank line after it, as
       git-commit's style checks do.
+
+*Done.* The commit menu has Magit 4's groups: Create (`c`), Edit HEAD
+(`e`, `a`, `w`), Edit (`f`, `s`, `A`, `n`, `W`) and Edit and rebase (`F`,
+`S`). Reword is `commit --amend --only --allow-empty`, which leaves the index
+alone. Fixup, which only ever targeted HEAD, now asks for the commit like the
+rest of the Edit group — the one at the cursor when the menu was opened on a
+commit, HEAD when left empty. Squash is `--squash --no-edit`; Augment is the
+same with words of its own, which git puts under the `squash!` line. git
+refuses `--fixup=amend:` with a message from a file, so Alter and Revise
+write the `amend!` message out themselves (`amend! <subject>`, then the
+target's whole message to edit), Revise as an empty commit that leaves what
+is staged alone; `rebase --autosquash` replaces the target's message with it.
+The instant ones refuse a pushed target or a merge after it before anything
+is written, then fold the new commit in with Absorb's autosquash rebase,
+which puts back what was staged and unstaged; the target is kept as a hash,
+since the new commit moves what `HEAD~1` names. The message buffer seeds
+itself per command (`command::Seed`). Magit binds its message keys in
+git-commit-mode, which Helix's global keymap has no counterpart of, so they
+are commands, named in the buffer's help: `:magit-message-previous` / `-next`
+go through the messages of commits that did not go through, then those of
+the last hundred commits, and back to the draft; `:magit-message-diff`
+shows the status at its staged changes, beside the message when Magit is
+docked. Writing a message whose summary is over 68 characters (Magit's
+limit) or whose second line is not blank asks "Commit anyway?"; no keeps the
+message open to fix.
 
 ### Task 2.23: The Push-Remote
 

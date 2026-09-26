@@ -428,6 +428,44 @@ pub fn run(workdir: &Path, mode: Mode) -> Result<Outcome, String> {
     Ok(outcome)
 }
 
+/// Whether the commits made for `target` can be squashed into it now: it
+/// has to be a commit on no remote, with no merge after it for the rebase
+/// to drop. Returns its full hash.
+pub fn check_fold(workdir: &Path, target: &str) -> Result<String, String> {
+    let full = git(
+        workdir,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{target}^{{commit}}"),
+        ],
+    )
+    .map_err(|_| format!("{target} is not a commit"))?
+    .trim()
+    .to_string();
+    if crate::command::is_pushed(workdir, &full) {
+        return Err(format!(
+            "{target} is already pushed; squashing into it would rewrite published history"
+        ));
+    }
+    let merges = git(workdir, &["rev-list", "--merges", &format!("{full}..HEAD")])?;
+    if !merges.trim().is_empty() {
+        return Err(format!(
+            "a merge lies after {target}, which the rebase would drop"
+        ));
+    }
+    Ok(full)
+}
+
+/// Squashes the `fixup!`, `squash!` and `amend!` commits made for `target`
+/// into it now, with an autosquash rebase: the instant fixup and squash.
+pub fn fold_in(workdir: &Path, target: &str) -> Result<(), String> {
+    let full = check_fold(workdir, target)?;
+    let git_dir = crate::status::git_dir(workdir).ok_or("not in a git repository")?;
+    squash(workdir, &git_dir, &full)
+}
+
 /// The autosquash rebase that folds the fixups in, from `oldest`'s parent.
 /// Uncommitted changes are set aside and put back, and what was staged is
 /// staged again.

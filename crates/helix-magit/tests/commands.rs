@@ -445,3 +445,144 @@ fn absorb_refuses_when_nothing_belongs_to_an_unpushed_commit() {
         "f.txt\n"
     );
 }
+
+/// Commits the staged changes with `message`, as the editor does once the
+/// message buffer is written: the plan's arguments, then `-F`.
+fn commit_with(work: &Path, plan: &helix_magit::Plan, message: &str) -> helix_magit::GitOutput {
+    let file = work.join(".git").join("COMMIT_EDITMSG_HELIX");
+    fs::write(&file, message).unwrap();
+    let mut args = plan.args.clone();
+    args.push("-F".into());
+    args.push(file.to_string_lossy().into_owned());
+    GitCommand::new(work, args).run().unwrap()
+}
+
+/// Three unpushed commits on top of the pushed one: a, b and c.
+fn three_commits(work: &Path) {
+    for (name, subject) in [("a.txt", "Add a"), ("b.txt", "Add b"), ("c.txt", "Add c")] {
+        fs::write(work.join(name), format!("{name}\n")).unwrap();
+        git(work, &["add", name]).unwrap();
+        git(work, &["commit", "-m", subject]).unwrap();
+    }
+}
+
+fn subjects(work: &Path) -> String {
+    git(work, &["log", "--format=%s", "origin/main..HEAD"]).unwrap()
+}
+
+#[test]
+fn reword_changes_heads_message_and_leaves_the_index() {
+    let (_dir, work) = fixture_or_skip!();
+    three_commits(&work);
+    fs::write(work.join("staged.txt"), "x\n").unwrap();
+    git(&work, &["add", "staged.txt"]).unwrap();
+
+    let plan = resolve(MagitCommand::CommitReword, &[]).unwrap();
+    let output = commit_with(&work, &plan, "Add c, reworded\n");
+    assert!(output.success, "{}", output.summary());
+
+    assert_eq!(subjects(&work), "Add c, reworded\nAdd b\nAdd a\n");
+    // What was staged is still staged, not committed.
+    assert_eq!(
+        git(&work, &["status", "--porcelain"]).unwrap(),
+        "A  staged.txt\n"
+    );
+    assert!(git(&work, &["show", "HEAD:staged.txt"]).is_none());
+}
+
+#[test]
+fn an_instant_fixup_lands_in_its_commit() {
+    let (_dir, work) = fixture_or_skip!();
+    three_commits(&work);
+    fs::write(work.join("a.txt"), "a.txt fixed\n").unwrap();
+    git(&work, &["add", "a.txt"]).unwrap();
+    // Something else staged and unstaged survives the rebase as it was.
+    fs::write(work.join("c.txt"), "c.txt unstaged\n").unwrap();
+
+    let plan = resolve(MagitCommand::CommitInstantFixup, &[])
+        .unwrap()
+        .answered(&["HEAD~2".into()]);
+    let output = helix_magit::command::run_plan(&work, &plan).unwrap();
+    assert!(output.success, "{}", output.summary());
+
+    assert_eq!(subjects(&work), "Add c\nAdd b\nAdd a\n");
+    let a = git(&work, &["log", "--format=%h", "-1", "--grep=Add a"]).unwrap();
+    assert_eq!(
+        git(&work, &["show", &format!("{}:a.txt", a.trim())]).unwrap(),
+        "a.txt fixed\n"
+    );
+    assert_eq!(
+        git(&work, &["status", "--porcelain"]).unwrap(),
+        " M c.txt\n"
+    );
+}
+
+#[test]
+fn an_instant_fixup_of_a_pushed_commit_is_refused() {
+    let (_dir, work) = fixture_or_skip!();
+    fs::write(work.join("f.txt"), "changed\n").unwrap();
+    git(&work, &["add", "f.txt"]).unwrap();
+    let before = git(&work, &["rev-parse", "HEAD"]).unwrap();
+
+    let plan = resolve(MagitCommand::CommitInstantFixup, &[])
+        .unwrap()
+        .answered(&["HEAD".into()]);
+    let output = helix_magit::command::run_plan(&work, &plan).unwrap();
+    assert!(!output.success);
+    assert!(
+        output.summary().contains("already pushed"),
+        "{}",
+        output.summary()
+    );
+    // Refused before anything was committed.
+    assert_eq!(git(&work, &["rev-parse", "HEAD"]).unwrap(), before);
+}
+
+#[test]
+fn alter_and_revise_replace_a_commits_message_when_squashed_in() {
+    let (_dir, work) = fixture_or_skip!();
+    three_commits(&work);
+
+    // Revise: the message alone, as the buffer offers it, edited.
+    let plan = resolve(MagitCommand::CommitRevise, &[])
+        .unwrap()
+        .answered(&["HEAD~1".into()]);
+    let Requirement::CommitMessage { seed } = &plan.requirement else {
+        panic!("revise composes a message");
+    };
+    let template = helix_magit::command::commit_template_for(&work, seed, false);
+    assert!(
+        template.starts_with("amend! Add b\n\nAdd b\n"),
+        "{template}"
+    );
+    let edited = template.replacen("\n\nAdd b\n", "\n\nAdd b, revised\n", 1);
+    let message = helix_magit::command::strip_comments(&edited);
+    let output = commit_with(&work, &plan, &message);
+    assert!(output.success, "{}", output.summary());
+
+    helix_magit::absorb::fold_in(&work, "HEAD~2").unwrap();
+    assert_eq!(subjects(&work), "Add c\nAdd b, revised\nAdd a\n");
+}
+
+#[test]
+fn an_instant_squash_adds_its_words_to_the_commit() {
+    let (_dir, work) = fixture_or_skip!();
+    three_commits(&work);
+    fs::write(work.join("b.txt"), "b.txt more\n").unwrap();
+    git(&work, &["add", "b.txt"]).unwrap();
+
+    let plan = resolve(MagitCommand::CommitInstantSquash, &[])
+        .unwrap()
+        .answered(&["HEAD~1".into()]);
+    assert_eq!(plan.fold_into.as_deref(), Some("HEAD~1"));
+    // The editor resolves the target before committing, since the new
+    // commit moves what HEAD~1 means.
+    let target = git(&work, &["rev-parse", "HEAD~1"]).unwrap();
+    let output = commit_with(&work, &plan, "And more of b\n");
+    assert!(output.success, "{}", output.summary());
+    helix_magit::absorb::fold_in(&work, target.trim()).unwrap();
+
+    assert_eq!(subjects(&work), "Add c\nAdd b\nAdd a\n");
+    let b = git(&work, &["log", "--format=%B", "-1", "--grep=Add b"]).unwrap();
+    assert_eq!(b.trim_end(), "Add b\n\nAnd more of b");
+}
