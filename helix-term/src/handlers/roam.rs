@@ -46,6 +46,7 @@ fn remember_ids(editor: &mut Editor, id: DocumentId) {
 /// Not gated on the Roam index being enabled: this is Org, not Org-Roam, and
 /// a file saying `#+STARTUP: overview` means it with or without a graph.
 fn fold_on_open(editor: &mut Editor, id: DocumentId) {
+    let pretty = editor.config().roam.pretty;
     let Some(doc) = editor.documents.get_mut(&id) else {
         return;
     };
@@ -55,6 +56,10 @@ fn fold_on_open(editor: &mut Editor, id: DocumentId) {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("org"));
     if is_org {
         crate::roam::apply_startup_folds(doc);
+        if pretty {
+            doc.org_pretty = true;
+            crate::roam::refresh_pretty(doc);
+        }
     }
 }
 
@@ -68,6 +73,9 @@ pub(super) fn register_hooks() {
     register_hook!(move |event: &mut DocumentDidChange<'_>| {
         if event.doc.org_columns_on {
             crate::roam::refresh_columns(event.doc);
+        }
+        if event.doc.org_pretty {
+            crate::roam::refresh_pretty(event.doc);
         }
         Ok(())
     });

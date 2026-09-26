@@ -4,6 +4,7 @@ use std::fmt::Debug;
 use std::ops::Range;
 use std::ptr::NonNull;
 
+use crate::conceal::{Conceal, Conceals};
 use crate::doc_formatter::FormattedGrapheme;
 use crate::fold::{Fold, Folds};
 use crate::syntax::{Highlight, OverlayHighlights};
@@ -284,6 +285,10 @@ pub struct TextAnnotations<'a> {
     /// scanned sequentially: folds are few and sorted, so a binary search
     /// beats carrying a cursor that every reset would have to rewind.
     folds: Option<&'a Folds>,
+    /// Ranges drawn as another grapheme, except inside `revealed`.
+    conceals: Option<&'a Conceals>,
+    /// Text shown as it is despite a conceal: the lines being edited.
+    revealed: Vec<std::ops::Range<usize>>,
 }
 
 impl Debug for TextAnnotations<'_> {
@@ -375,6 +380,24 @@ impl<'a> TextAnnotations<'a> {
     pub fn add_folds(&mut self, folds: &'a Folds) -> &mut Self {
         self.folds = Some(folds);
         self
+    }
+
+    /// Draws each of `conceals` as its replacement, except where it starts
+    /// inside one of `revealed`.
+    pub fn add_conceals(
+        &mut self,
+        conceals: &'a Conceals,
+        revealed: Vec<std::ops::Range<usize>>,
+    ) -> &mut Self {
+        self.conceals = Some(conceals);
+        self.revealed = revealed;
+        self
+    }
+
+    /// The conceal beginning exactly at `char_idx`, unless it is revealed.
+    pub fn conceal_starting_at(&self, char_idx: usize) -> Option<&'a Conceal> {
+        let conceal = self.conceals?.starting_at(char_idx)?;
+        (!crate::conceal::is_revealed(&self.revealed, char_idx)).then_some(conceal)
     }
 
     /// The fold beginning exactly at `char_idx`, which is where its marker goes.

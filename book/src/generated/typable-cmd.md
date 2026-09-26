@@ -147,6 +147,7 @@
 | `:org-clock-report` | Insert or refresh a clock report table. |
 | `:org-export` | Export the buffer next to its file: md, html (the default) or latex. |
 | `:org-babel-execute` | Run the source block at the cursor and write its results (needs workspace trust). |
+| `:org-toggle-pretty` | Draw the buffer's entities (\alpha) and links as written, or as what they stand for. |
 | `:org-columns` | Show or hide the column view of the buffer, from its #+COLUMNS:. |
 | `:roam-dailies-capture` | Add an entry to today's daily note without leaving this buffer. |
 | `:roam-dailies-directory` | Pick a file in the dailies directory. |

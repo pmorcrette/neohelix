@@ -298,3 +298,63 @@ fn two_folds_on_one_buffer_both_collapse() {
     // 1..3 hides "\nb" and 5..7 hides "\nd".
     assert_eq!(folded(text, &[(1, 3), (5, 7)], 0), "0|a…\n2|c…\n4|e\n5| ");
 }
+
+/// Renders `text` with `conceals`, revealing `revealed`, as `folded` does.
+fn concealed(
+    text: &str,
+    conceals: &[(usize, usize, &str)],
+    revealed: Vec<std::ops::Range<usize>>,
+) -> (String, Vec<usize>) {
+    let conceals = crate::conceal::Conceals::new(
+        conceals
+            .iter()
+            .map(|&(start, end, replacement)| crate::conceal::Conceal {
+                start,
+                end,
+                replacement: replacement.to_string(),
+            })
+            .collect(),
+    );
+    let mut annotations = TextAnnotations::default();
+    annotations.add_conceals(&conceals, revealed);
+    let text_fmt = TextFormat::new_test(false);
+    let mut out = String::new();
+    let mut positions = Vec::new();
+    for grapheme in
+        DocumentFormatter::new_at_prev_checkpoint(text.into(), &text_fmt, &annotations, 0)
+    {
+        if grapheme.raw == crate::graphemes::Grapheme::Newline {
+            out.push('|');
+        } else {
+            out.push_str(&grapheme.raw.to_string());
+        }
+        positions.push(grapheme.char_idx);
+    }
+    (out, positions)
+}
+
+#[test]
+fn a_conceal_draws_its_replacement_and_keeps_positions() {
+    // `\alpha` is chars 2..8; `[[x][ab]]` is chars 13..22, drawn as `ab`.
+    let text = "a \\alpha b\n  [[x][ab]]!\n";
+    let (out, positions) = concealed(
+        text,
+        &[(2, 8, "α"), (13, 19, "a"), (19, 22, "b")],
+        Vec::new(),
+    );
+    assert_eq!(out, "a α b|  ab!| ");
+    // The grapheme after `\alpha` is still at char 8, and `!` at 22.
+    assert_eq!(positions[3], 8);
+    assert_eq!(positions[positions.len() - 3], 22);
+}
+
+#[test]
+fn a_revealed_line_is_drawn_as_it_is() {
+    let text = "\\alpha\n\\beta\n";
+    let (out, _) = concealed(
+        text,
+        &[(0, 6, "α"), (7, 12, "β")],
+        std::iter::once(7..13).collect(),
+    );
+    assert_eq!(out, "α|\\beta| ");
+}

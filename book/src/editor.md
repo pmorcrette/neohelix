@@ -275,6 +275,7 @@ the configured directory at startup, and re-indexes a file when it is saved.
 |--|--|---------|
 |`enable` | Whether to index Org files into the graph | `true` |
 |`directory` | Directory to index | the workspace root |
+|`pretty` | Draw Org entities as their characters (`\alpha` as `α`) and links as their descriptions, except on the lines being edited; `:org-toggle-pretty` switches it per buffer | `true` |
 
 Example
 

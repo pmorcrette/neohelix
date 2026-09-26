@@ -3980,6 +3980,38 @@ fn finish_block(
     }
 }
 
+// ── Pretty display ────────────────────────────────────────────────────────
+
+/// Recomputes which entities and links of a document are drawn as what they
+/// stand for.
+pub fn refresh_pretty(doc: &mut helix_view::Document) {
+    let text = doc.text().to_string();
+    doc.org_conceals = helix_core::conceal::Conceals::new(
+        helix_roam::pretty::conceals(&text)
+            .into_iter()
+            .map(|pretty| helix_core::conceal::Conceal {
+                start: pretty.start,
+                end: pretty.end,
+                replacement: pretty.replacement,
+            })
+            .collect(),
+    );
+}
+
+/// Draws the buffer's entities and links as written, or as what they stand
+/// for.
+pub fn toggle_pretty(editor: &mut Editor) {
+    let doc = doc_mut!(editor);
+    doc.org_pretty = !doc.org_pretty;
+    if doc.org_pretty {
+        refresh_pretty(doc);
+        editor.set_status("Entities and links drawn as what they stand for");
+    } else {
+        doc.org_conceals.clear();
+        editor.set_status("Entities and links drawn as written");
+    }
+}
+
 // ── Column view ───────────────────────────────────────────────────────────
 
 /// Recomputes a document's column view from its text, returning the header.

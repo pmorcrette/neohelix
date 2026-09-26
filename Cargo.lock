@@ -1775,6 +1775,7 @@ dependencies = [
  "petgraph",
  "tempfile",
  "tokio",
+ "unicode-segmentation",
  "unicode-width 0.1.12",
  "uuid",
 ]

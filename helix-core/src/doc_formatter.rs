@@ -314,6 +314,17 @@ impl<'t> DocumentFormatter<'t> {
                         lines: lines as u32,
                     },
                 )
+            } else if let Some(conceal) = self.annotations.conceal_starting_at(char_pos) {
+                // Like a fold, but drawn as its replacement and never across
+                // a line break, so there are no lines to carry.
+                self.graphemes = self.text.slice(conceal.end..).graphemes();
+                (
+                    conceal.replacement.as_str().into(),
+                    GraphemeSource::Folded {
+                        codepoints: (conceal.end - conceal.start) as u32,
+                        lines: 0,
+                    },
+                )
             } else if let Some(grapheme) = self.graphemes.next() {
                 let codepoints = grapheme.len_chars() as u32;
 

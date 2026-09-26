@@ -428,10 +428,11 @@ and internal targets exist.
 - [x] `org-id` proper: create an ID on demand for the entry at point, rather
       than requiring the user to type a drawer by hand. Task 1.8's
       `roam-node-insert` needs this underneath it.
-- [ ] Inline preview of images and of link descriptions. Blocked for the same
-      reason as Task 1.14's LaTeX preview: this wants overlays or images that
-      Helix does not have, and the capability has to exist before the feature
-      can.
+- [ ] Inline preview of images. Blocked for the same reason as Task 1.14's
+      LaTeX preview: this wants a terminal graphics protocol Helix does not
+      have, and the capability has to exist before the feature can.
+- [x] Links drawn as their descriptions (Org's `org-link-descriptive`),
+      split out of the item above once conceals existed: see Task 1.14.
 
 ### Task 1.11: Properties, Drawers and Logging
 
@@ -581,9 +582,30 @@ source is reachable again.*
   beside it declares, because the bibliography lives with the paper. Only the
   keys are read from BibTeX — a full parser is a different piece of work.
 
-- [ ] LaTeX fragment preview and pretty entities, both of which need an image
-      or an overlay mechanism Helix does not currently have — worth checking
-      before committing to them.
+- [ ] LaTeX fragment preview, which needs an image mechanism Helix does not
+      currently have.
+- [x] Pretty entities, split out of the item above once checked (below).
+
+  *Done.* Not with a marker per fold, as first planned below, but with
+  *conceals* beside the folds: `helix_core::conceal` holds single-line
+  ranges each drawn as one grapheme, `TextAnnotations::add_conceals` hands
+  them to the formatter, which skips a range and draws its replacement as
+  it draws a fold's marker (so every position past it keeps its index), and
+  the view leaves out the conceals on the lines a selection is on, so the
+  text being edited is always shown as written (Org's `org-appear`, built
+  in). Folds and conceals are separate because folds nest a whole subtree
+  and conceals sit inside it; a fold is skipped first, so a conceal inside
+  it is never reached. `helix_roam::pretty` finds them: 165 names from
+  `org-entities` (Greek, arrows, relations, operators, typography), with
+  `\alpha{}` taking its braces, and links — `[[target][description]]`
+  drawn as the description, `[[target]]` as the target — kept to one
+  grapheme per conceal by folding the opening brackets and target into the
+  description's first grapheme and the closing brackets into its last.
+  Nothing is concealed in blocks, fixed-width lines, `=verbatim=` or
+  `~code~`. On by default (`[editor.roam] pretty`), recomputed on every
+  change, toggled per buffer with `:org-toggle-pretty`. Checked in the
+  editor, including a bug found there: a cursor on a line's newline
+  revealed the next line too, because a selection's end is exclusive.
 
   Checked, and the two answers differ. **Preview is out of reach**: it needs a
   terminal graphics protocol, and Helix has none — the only `kitty` in the

@@ -2524,6 +2524,7 @@ roam_buffer_command!(org_clock_goto, crate::roam::clock_goto);
 roam_buffer_command!(org_clock_report, crate::roam::clock_report);
 roam_buffer_command!(org_babel_execute, crate::roam::babel_execute);
 roam_buffer_command!(org_columns, crate::roam::toggle_columns);
+roam_buffer_command!(org_toggle_pretty, crate::roam::toggle_pretty);
 roam_component_command!(roam_dailies_directory, crate::roam::dailies_picker);
 
 /// `:roam-dailies-capture <entry>`, or a prompt for it.
@@ -5366,6 +5367,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Run the source block at the cursor and write its results (needs workspace trust).",
         fun: org_babel_execute,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-toggle-pretty",
+        aliases: &[],
+        doc: "Draw the buffer's entities (\\alpha) and links as written, or as what they stand for.",
+        fun: org_toggle_pretty,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

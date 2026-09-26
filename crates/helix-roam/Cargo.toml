@@ -20,6 +20,7 @@ petgraph = { version = "0.6", default-features = false, features = ["graphmap", 
 uuid = { version = "1.0", features = ["v4", "v5"] }
 ignore = "0.4"
 parking_lot.workspace = true
+unicode-segmentation.workspace = true
 tokio = { version = "1", features = ["rt"] }
 
 [dev-dependencies]

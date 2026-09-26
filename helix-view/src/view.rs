@@ -474,6 +474,26 @@ impl View {
         // document, and a fold changes what the document looks like.
         text_annotations.add_folds(doc.folds());
 
+        // Conceals, except on the lines a selection is on: what is being
+        // edited is shown as it is written.
+        if !doc.org_conceals.is_empty() {
+            let text = doc.text().slice(..);
+            let revealed = doc
+                .selection(self.id)
+                .iter()
+                .map(|range| {
+                    let first = text.char_to_line(range.from().min(text.len_chars()));
+                    // `to` is exclusive: a cursor on a line's newline
+                    // ends where the next line starts, and that line is not
+                    // being edited.
+                    let last_char = range.to().saturating_sub(1).max(range.from());
+                    let last = text.char_to_line(last_char.min(text.len_chars()));
+                    text.line_to_char(first)..text.line_to_char((last + 1).min(text.len_lines()))
+                })
+                .collect();
+            text_annotations.add_conceals(&doc.org_conceals, revealed);
+        }
+
         if !doc.roam_counts.is_empty() {
             let style = theme.and_then(|t| t.find_highlight("ui.virtual.inlay-hint"));
             text_annotations.add_inline_annotations(&doc.roam_counts, style);

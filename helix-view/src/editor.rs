@@ -740,6 +740,10 @@ pub struct RoamConfig {
     /// `org-enforce-todo-dependencies`, off by default as it is there.
     /// `:ORDERED:` and `:BLOCKER:` apply either way.
     pub todo_dependencies: bool,
+    /// Draw Org entities as their characters (`\alpha` as `α`) and links
+    /// as their descriptions, except on the lines being edited. Org's
+    /// `org-pretty-entities` and `org-link-descriptive` together.
+    pub pretty: bool,
 }
 
 /// A template for a new Org-Roam node.
@@ -767,6 +771,7 @@ impl Default for RoamConfig {
             agenda_files: Vec::new(),
             templates: Vec::new(),
             todo_dependencies: false,
+            pretty: true,
         }
     }
 }

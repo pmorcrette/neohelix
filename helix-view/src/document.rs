@@ -163,6 +163,10 @@ pub struct Document {
     /// every change while `org_columns_on` is set.
     pub org_columns: Vec<helix_core::text_annotations::InlineAnnotation>,
     pub org_columns_on: bool,
+    /// Org entities and links drawn as what they stand for, recomputed on
+    /// every change while `org_pretty` is set.
+    pub org_conceals: helix_core::conceal::Conceals,
+    pub org_pretty: bool,
 
     /// Ranges hidden from the display.
     ///
@@ -788,6 +792,8 @@ impl Document {
             roam_counts: Vec::new(),
             org_columns: Vec::new(),
             org_columns_on: false,
+            org_conceals: Default::default(),
+            org_pretty: false,
             folds: Folds::new(),
             document_highlights: HashMap::new(),
             code_action_hints: HashSet::new(),
@@ -1517,6 +1523,7 @@ impl Document {
         // do, so an edit above a folded section does not leave it hiding the
         // wrong lines.
         self.folds.map(transaction.changes());
+        self.org_conceals.map(transaction.changes());
 
         // Annotations placed at a headline's end move with it, and stay after
         // text typed at that end rather than before it.
