@@ -287,6 +287,26 @@ The graph backs `:roam-node-find` (`<space>nf`) and the backlinks panel opened
 by `:roam-backlinks-toggle` (`<space>nb`). `:roam-reindex` rebuilds it from
 scratch, which is needed after Org files change outside the editor.
 
+### `[editor.integrated-terminal]` Section
+
+Set options for the integrated terminal (`:terminal`, `<space>t`).
+
+| Key | Description | Default |
+|--|--|---------|
+|`scrollback` | Lines kept above the screen to scroll back through, per terminal | `10000` |
+
+In the terminal, `Ctrl-\ Ctrl-n` returns to the editor, and `Shift-PageUp` and
+`Shift-PageDown` scroll back through the output; typing returns to the bottom.
+`Ctrl-\ [` enters copy mode, where the keys move a cursor over the text rather
+than reaching the program: `h` `j` `k` `l`, `w` `b` `e` (and `W` `B` `E` for
+space-separated words), `0` `^` `$`, `H` `M` `L`, `g` and `G` for the top of the
+scrollback and the bottom, `Ctrl-u` `Ctrl-d` and the page keys, with a count
+before a motion. `v`, `V` (or `x`) and `Ctrl-v` select characters, lines or a
+block; `y` copies the selection into the default yank register and leaves copy
+mode. `/` and `?` search forwards and backwards with a regular expression — `^`
+and `$` are not anchored to lines — and `n` and `N` repeat the search. `q` or
+`Esc` leave copy mode.
+
 ### `[editor.magit]` Section
 
 Set options for the Magit client (`<space>m`).

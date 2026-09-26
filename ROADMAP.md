@@ -2014,12 +2014,28 @@ per terminal that nobody chose.
 The crate already ships `selection.rs`, `search.rs` and `vi_mode.rs`. These are
 not to be written, only wired.
 
-- [ ] Scroll through the scrollback, and choose how much of it to keep.
-- [ ] Select text with the keyboard, and copy it into a Helix register so it
+- [x] Scroll through the scrollback, and choose how much of it to keep.
+- [x] Select text with the keyboard, and copy it into a Helix register so it
       can be pasted into a document.
-- [ ] Search the scrollback, which is the crate's `search` module.
-- [ ] Vi-mode navigation of the grid, which the crate implements and which
+- [x] Search the scrollback, which is the crate's `search` module.
+- [x] Vi-mode navigation of the grid, which the crate implements and which
       would fit this fork's keymap better than it fits Alacritty's.
+
+*Done.* The scrollback is `[editor.integrated-terminal] scrollback` (10,000
+lines by default, now a stated choice rather than Alacritty's inherited one,
+documented as a per-terminal memory cost). `Shift-PageUp` and `Shift-PageDown`
+scroll without leaving the shell, and typing returns to the bottom. Copy mode
+is `Ctrl-\ [` (tmux's prefix-and-bracket) and is Alacritty's own vi mode,
+wired rather than written: `helix_pty::copy` drives its cursor motions,
+selections (characters, lines, block, following the cursor), regex search and
+selection text, and has tests against an emulator fed real output. The keys
+are vi's, with Helix's `x` accepted for a line selection, and counts; `y`
+copies into the default yank register, so `p` pastes it into a document. The
+view draws the scrolled-back lines, the selection (`ui.selection`) and the
+current match (`ui.selection.primary`), shows the copy-mode cursor, and says
+`[copy]` and the search in its title bar. Searching skips the match the cursor
+is in and wraps at both ends of the scrollback; Alacritty's regex search does
+not anchor `^` and `$` to lines, which the book says.
 
 ### Task 3.5: Input Beyond xterm Keys
 

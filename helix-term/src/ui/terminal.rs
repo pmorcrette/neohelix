@@ -4,7 +4,7 @@
 //! this view leaves the session running: closing it with the escape sequence
 //! and reopening `:terminal` comes back to the same shell.
 
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::TermMode;
@@ -25,6 +25,19 @@ pub struct TerminalView {
     size: (u16, u16),
     /// Until when the title bar flashes for the bell.
     bell_until: Option<std::time::Instant>,
+    /// Set while in copy mode.
+    copy: Option<CopyMode>,
+}
+
+/// Copy mode's own state; the cursor and the selection are the emulator's.
+#[derive(Debug, Default)]
+struct CopyMode {
+    /// A count typed before a motion, as in `5j`.
+    count: Option<usize>,
+    /// The last search, to repeat with `n` and `N`: pattern and direction.
+    search: Option<(String, bool)>,
+    /// The match the cursor is on, to highlight.
+    found: Option<helix_pty::copy::Match>,
 }
 
 /// How long the title bar flashes when the bell rings: long enough to see,
@@ -39,6 +52,7 @@ impl TerminalView {
             pending_escape: false,
             size: (0, 0),
             bell_until: None,
+            copy: None,
         }
     }
 
@@ -92,6 +106,191 @@ impl TerminalView {
                 helix_event::request_redraw();
             });
         }
+    }
+}
+
+impl TerminalView {
+    fn enter_copy_mode(&mut self, editor: &mut Editor) {
+        if let Some(terminal) = editor.terminal.as_ref() {
+            helix_pty::copy::enter(&mut terminal.term().lock());
+            self.copy = Some(CopyMode::default());
+        }
+    }
+
+    fn leave_copy_mode(&mut self, editor: &mut Editor) {
+        if let Some(terminal) = editor.terminal.as_ref() {
+            helix_pty::copy::leave(&mut terminal.term().lock());
+        }
+        self.copy = None;
+    }
+
+    /// Searches from the copy-mode cursor, remembering the search for `n`
+    /// and `N`.
+    pub fn search(&mut self, editor: &mut Editor, pattern: &str, forward: bool) {
+        let Some(terminal) = editor.terminal.as_ref() else {
+            return;
+        };
+        let Some(copy) = self.copy.as_mut() else {
+            return;
+        };
+        let result = helix_pty::copy::search(&mut terminal.term().lock(), pattern, forward);
+        copy.search = Some((pattern.to_string(), forward));
+        match result {
+            Ok(found) => {
+                if found.is_none() {
+                    editor.set_error(format!("No match for {pattern}"));
+                }
+                copy.found = found;
+            }
+            Err(err) => {
+                copy.found = None;
+                editor.set_error(format!("Invalid pattern: {err}"));
+            }
+        }
+    }
+
+    fn copy_mode_key(&mut self, key: KeyEvent, cx: &mut Context) -> EventResult {
+        use helix_pty::copy::{self, Motion, Selecting};
+
+        let Some(terminal) = cx.editor.terminal.as_ref() else {
+            return EventResult::Consumed(None);
+        };
+        let Some(state) = self.copy.as_mut() else {
+            return EventResult::Consumed(None);
+        };
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        // A count: digits, where a leading 0 is the start of the line.
+        if let KeyCode::Char(digit @ '0'..='9') = key.code {
+            if !ctrl && (digit != '0' || state.count.is_some()) {
+                let digit = digit.to_digit(10).unwrap_or(0) as usize;
+                state.count = Some(state.count.unwrap_or(0) * 10 + digit);
+                return EventResult::Consumed(None);
+            }
+        }
+        let count = state.count.take().unwrap_or(1);
+        let half_page = (terminal.size().screen_lines / 2).max(1);
+        let page = terminal.size().screen_lines.max(1);
+        let motion = match (key.code, ctrl) {
+            (KeyCode::Char('h') | KeyCode::Left, false) => Some((Motion::Left, count)),
+            (KeyCode::Char('j') | KeyCode::Down, false) => Some((Motion::Down, count)),
+            (KeyCode::Char('k') | KeyCode::Up, false) => Some((Motion::Up, count)),
+            (KeyCode::Char('l') | KeyCode::Right, false) => Some((Motion::Right, count)),
+            (KeyCode::Char('w'), false) => Some((Motion::SemanticRight, count)),
+            (KeyCode::Char('b'), false) => Some((Motion::SemanticLeft, count)),
+            (KeyCode::Char('e'), false) => Some((Motion::SemanticRightEnd, count)),
+            (KeyCode::Char('W'), false) => Some((Motion::WordRight, count)),
+            (KeyCode::Char('B'), false) => Some((Motion::WordLeft, count)),
+            (KeyCode::Char('E'), false) => Some((Motion::WordRightEnd, count)),
+            (KeyCode::Char('0') | KeyCode::Home, false) => Some((Motion::First, 1)),
+            (KeyCode::Char('^'), false) => Some((Motion::FirstOccupied, 1)),
+            (KeyCode::Char('$') | KeyCode::End, false) => Some((Motion::Last, 1)),
+            (KeyCode::Char('H'), false) => Some((Motion::High, 1)),
+            (KeyCode::Char('M'), false) => Some((Motion::Middle, 1)),
+            (KeyCode::Char('L'), false) => Some((Motion::Low, 1)),
+            (KeyCode::Char('%'), false) => Some((Motion::Bracket, 1)),
+            (KeyCode::Char('{'), false) => Some((Motion::ParagraphUp, count)),
+            (KeyCode::Char('}'), false) => Some((Motion::ParagraphDown, count)),
+            (KeyCode::Char('u'), true) => Some((Motion::Up, half_page * count)),
+            (KeyCode::Char('d'), true) => Some((Motion::Down, half_page * count)),
+            (KeyCode::PageUp, _) | (KeyCode::Char('b'), true) => Some((Motion::Up, page * count)),
+            (KeyCode::PageDown, _) | (KeyCode::Char('f'), true) => {
+                Some((Motion::Down, page * count))
+            }
+            _ => None,
+        };
+        let mut term = terminal.term().lock();
+        if let Some((motion, times)) = motion {
+            copy::motion(&mut term, motion, times);
+            state.found = None;
+            return EventResult::Consumed(None);
+        }
+        match (key.code, ctrl) {
+            (KeyCode::Char('g'), false) => copy::to_edge(&mut term, true),
+            (KeyCode::Char('G'), false) => copy::to_edge(&mut term, false),
+            (KeyCode::Char('v'), false) => copy::toggle_selection(&mut term, Selecting::Characters),
+            (KeyCode::Char('V') | KeyCode::Char('x'), false) => {
+                copy::toggle_selection(&mut term, Selecting::Lines)
+            }
+            (KeyCode::Char('v'), true) => copy::toggle_selection(&mut term, Selecting::Block),
+            (KeyCode::Char('y'), false) => {
+                let Some(text) = copy::selected_text(&term) else {
+                    drop(term);
+                    cx.editor
+                        .set_error("Nothing selected: v, V or Ctrl-v selects");
+                    return EventResult::Consumed(None);
+                };
+                drop(term);
+                let register = cx.editor.config().default_yank_register;
+                let lines = text.lines().count().max(1);
+                match cx.editor.registers.write(register, vec![text]) {
+                    Ok(()) => cx.editor.set_status(format!(
+                        "Copied {lines} line{} into register {register}",
+                        if lines == 1 { "" } else { "s" }
+                    )),
+                    Err(err) => cx.editor.set_error(err.to_string()),
+                }
+                self.leave_copy_mode(cx.editor);
+            }
+            (KeyCode::Char(slash @ ('/' | '?')), false) => {
+                drop(term);
+                let forward = slash == '/';
+                let prompt = crate::ui::Prompt::new(
+                    if forward {
+                        "search: ".into()
+                    } else {
+                        "reverse search: ".into()
+                    },
+                    None,
+                    |_, _| Vec::new(),
+                    move |cx, input, event| {
+                        if event != crate::ui::PromptEvent::Validate || input.is_empty() {
+                            return;
+                        }
+                        let pattern = input.to_string();
+                        cx.jobs.callback(async move {
+                            Ok(crate::job::Callback::EditorCompositor(Box::new(
+                                move |editor: &mut Editor, compositor: &mut crate::compositor::Compositor| {
+                                    if let Some(view) =
+                                        compositor.find_id::<TerminalView>(TerminalView::ID)
+                                    {
+                                        view.search(editor, &pattern, forward);
+                                    }
+                                },
+                            )))
+                        });
+                    },
+                );
+                return EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                    compositor.push(Box::new(prompt));
+                })));
+            }
+            (KeyCode::Char(next @ ('n' | 'N')), false) => {
+                drop(term);
+                match state.search.clone() {
+                    Some((pattern, forward)) => {
+                        let forward = if next == 'n' { forward } else { !forward };
+                        let remembered = state.search.clone();
+                        self.search(cx.editor, &pattern, forward);
+                        // `N` searches the other way without changing `n`.
+                        if let Some(copy) = self.copy.as_mut() {
+                            copy.search = remembered;
+                        }
+                    }
+                    None => cx.editor.set_error("No search yet: / searches"),
+                }
+            }
+            (KeyCode::Esc, _) | (KeyCode::Char('q'), false) | (KeyCode::Char('c'), true) => {
+                // Esc drops a selection first; with none, it leaves.
+                if term.selection.is_some() && key.code == KeyCode::Esc {
+                    term.selection = None;
+                } else {
+                    drop(term);
+                    self.leave_copy_mode(cx.editor);
+                }
+            }
+            _ => {}
+        }
+        EventResult::Consumed(None)
     }
 }
 
@@ -299,7 +498,16 @@ impl Component for TerminalView {
             .title()
             .filter(|title| !title.trim().is_empty())
             .unwrap_or_else(|| "Terminal".to_string());
-        let hint = " Ctrl-\\ Ctrl-n: back ";
+        let (title, hint) = match &self.copy {
+            Some(copy) => (
+                match &copy.search {
+                    Some((pattern, _)) => format!("[copy] /{pattern}  {title}"),
+                    None => format!("[copy] {title}"),
+                },
+                " v select  y copy  / search  q done ",
+            ),
+            None => (title, " Ctrl-\\ Ctrl-n: back  Ctrl-\\ [: copy "),
+        };
         let hint_width = hint.chars().count() as u16;
         let title_width = area.width.saturating_sub(hint_width + 1);
         surface.set_stringn(
@@ -333,10 +541,20 @@ impl Component for TerminalView {
         let grid = term.grid();
         let rows = grid.screen_lines().min(area.height as usize);
         let columns = grid.columns().min(area.width as usize);
+        // Scrolled back, the screen shows lines above the live ones.
+        let offset = grid.display_offset() as i32;
+        let selection = term
+            .selection
+            .as_ref()
+            .and_then(|selection| selection.to_range(&*term));
+        let found = self.copy.as_ref().and_then(|copy| copy.found.clone());
+        let selected_style = cx.editor.theme.get("ui.selection");
+        let found_style = cx.editor.theme.get("ui.selection.primary");
 
         for row in 0..rows {
             for column in 0..columns {
-                let cell = &grid[Line(row as i32)][Column(column)];
+                let point = Point::new(Line(row as i32 - offset), Column(column));
+                let cell = &grid[point.line][point.column];
                 // The second half of a wide character is not drawn; the
                 // character itself already occupies both columns.
                 if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
@@ -351,6 +569,14 @@ impl Component for TerminalView {
                 // than as a modifier bit.
                 if let Some(underline) = convert_underline(cell.flags) {
                     style = style.underline_style(underline);
+                }
+                if found.as_ref().is_some_and(|found| found.contains(&point)) {
+                    style = style.patch(found_style);
+                } else if selection
+                    .as_ref()
+                    .is_some_and(|range| range.contains(point))
+                {
+                    style = style.patch(selected_style);
                 }
 
                 surface.set_string(
@@ -372,12 +598,20 @@ impl Component for TerminalView {
             return (None, CursorKind::Hidden);
         };
         let term = terminal.term().lock();
-        if !term.mode().contains(TermMode::SHOW_CURSOR) {
+        // In copy mode, the copy-mode cursor; otherwise the program's, when
+        // it shows one.
+        let copying = helix_pty::copy::is_active(&term);
+        if !copying && !term.mode().contains(TermMode::SHOW_CURSOR) {
             return (None, CursorKind::Hidden);
         }
-
-        let Point { line, column } = term.grid().cursor.point;
-        if line.0 < 0 {
+        let point = if copying {
+            term.vi_mode_cursor.point
+        } else {
+            term.grid().cursor.point
+        };
+        let offset = term.grid().display_offset() as i32;
+        let (line, column) = (point.line + offset, point.column);
+        if line.0 < 0 || line.0 >= term.grid().screen_lines() as i32 {
             return (None, CursorKind::Hidden);
         }
 
@@ -410,6 +644,11 @@ impl Component for TerminalView {
             if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
                 return EventResult::Consumed(Some(close));
             }
+            // `Ctrl-\ [`: copy mode, as tmux's prefix and `[`.
+            if key.code == KeyCode::Char('[') && !key.modifiers.contains(KeyModifiers::CONTROL) {
+                self.enter_copy_mode(cx.editor);
+                return EventResult::Consumed(None);
+            }
             // It was not the escape sequence after all, so the shell gets the
             // Ctrl-\ it should have had, followed by this key.
             if let Some(terminal) = cx.editor.terminal.as_ref() {
@@ -417,6 +656,26 @@ impl Component for TerminalView {
             }
         } else if is_escape_prefix(*key) {
             self.pending_escape = true;
+            return EventResult::Consumed(None);
+        } else if self.copy.is_some() {
+            return self.copy_mode_key(*key, cx);
+        }
+
+        // Shift-PageUp and Shift-PageDown scroll back without copy mode, as
+        // in most terminals.
+        if key.modifiers.contains(KeyModifiers::SHIFT)
+            && matches!(key.code, KeyCode::PageUp | KeyCode::PageDown)
+        {
+            if let Some(terminal) = cx.editor.terminal.as_ref() {
+                terminal
+                    .term()
+                    .lock()
+                    .scroll_display(if key.code == KeyCode::PageUp {
+                        Scroll::PageUp
+                    } else {
+                        Scroll::PageDown
+                    });
+            }
             return EventResult::Consumed(None);
         }
 
@@ -434,6 +693,8 @@ impl Component for TerminalView {
 
         if let Some(bytes) = Self::encode(cx.editor, *key) {
             if let Some(terminal) = cx.editor.terminal.as_ref() {
+                // Typing is about what is happening now: back to the bottom.
+                terminal.term().lock().scroll_display(Scroll::Bottom);
                 terminal.write(bytes);
             }
         }

@@ -432,6 +432,8 @@ pub struct Config {
     pub roam: RoamConfig,
     /// The Magit client's settings.
     pub magit: MagitConfig,
+    /// The integrated terminal's settings (`:terminal`, `<space>t`).
+    pub integrated_terminal: IntegratedTerminalConfig,
     /// Whether to render rainbow colors for matching brackets. Defaults to `false`.
     pub rainbow_brackets: bool,
     /// Whether to enable Kitty Keyboard Protocol
@@ -567,6 +569,21 @@ pub struct PendingRebase {
     pub working_directory: PathBuf,
     /// HEAD when the list was made; the list is refused if it moved.
     pub head: Option<String>,
+}
+
+/// The integrated terminal's configuration, `[editor.integrated-terminal]`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct IntegratedTerminalConfig {
+    /// Lines kept above the screen to scroll back through. Each terminal
+    /// holds this many lines in memory once they have been written.
+    pub scrollback: usize,
+}
+
+impl Default for IntegratedTerminalConfig {
+    fn default() -> Self {
+        Self { scrollback: 10_000 }
+    }
 }
 
 /// The Magit client's configuration.
@@ -1430,6 +1447,7 @@ impl Default for Config {
             editor_config: true,
             roam: RoamConfig::default(),
             magit: MagitConfig::default(),
+            integrated_terminal: IntegratedTerminalConfig::default(),
             rainbow_brackets: false,
             kitty_keyboard_protocol: Default::default(),
             buffer_picker: BufferPickerConfig::default(),

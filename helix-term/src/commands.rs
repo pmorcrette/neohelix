@@ -3598,7 +3598,10 @@ pub fn terminal_view(editor: &mut Editor) -> Option<Box<dyn Component>> {
             (area.width, area.height.saturating_sub(1))
         };
 
-        match helix_pty::PtyTerminal::spawn(columns, rows, directory, redraw) {
+        let options = helix_pty::Options {
+            scrollback: editor.config().integrated_terminal.scrollback,
+        };
+        match helix_pty::PtyTerminal::spawn_with(columns, rows, directory, redraw, options) {
             Ok(terminal) => editor.terminal = Some(terminal),
             Err(err) => {
                 editor.set_error(err.to_string());

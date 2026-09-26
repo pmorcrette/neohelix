@@ -30,6 +30,20 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 /// dropping keystrokes is better than growing until memory runs out.
 const WRITE_QUEUE: usize = 1024;
 
+/// How a terminal is set up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Options {
+    /// Lines kept above the screen, to scroll back through.
+    pub scrollback: usize,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        // Alacritty's own default, chosen here rather than inherited.
+        Self { scrollback: 10_000 }
+    }
+}
+
 /// The terminal Helix draws from.
 pub type SharedTerm = Arc<FairMutex<Term<EventProxy>>>;
 
@@ -258,6 +272,23 @@ impl PtyTerminal {
         working_directory: Option<std::path::PathBuf>,
         redraw: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<Self, Error> {
+        Self::spawn_with(
+            columns,
+            screen_lines,
+            working_directory,
+            redraw,
+            Options::default(),
+        )
+    }
+
+    /// [`spawn`](Self::spawn), set up as `options` says.
+    pub fn spawn_with(
+        columns: u16,
+        screen_lines: u16,
+        working_directory: Option<std::path::PathBuf>,
+        redraw: Arc<dyn Fn() + Send + Sync>,
+        options: Options,
+    ) -> Result<Self, Error> {
         let size = TermSize::new(columns as usize, screen_lines as usize);
         let pty_size = PtySize {
             rows: size.screen_lines as u16,
@@ -312,6 +343,7 @@ impl PtyTerminal {
         let config = Config {
             // Programs may copy into the clipboard, never read it.
             osc52: Osc52::OnlyCopy,
+            scrolling_history: options.scrollback,
             ..Config::default()
         };
         let term = Arc::new(FairMutex::new(Term::new(config, &size, proxy)));

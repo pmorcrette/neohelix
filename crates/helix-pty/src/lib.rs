@@ -5,8 +5,9 @@
 //! emulator's grid, and the encoding of keys into the bytes a terminal
 //! expects. `helix-term` draws the grid and feeds it keys.
 
+pub mod copy;
 pub mod keys;
 pub mod terminal;
 
 pub use keys::{encode_key, Key, Modifiers};
-pub use terminal::{default_shell, Clipboard, Error, PtyTerminal, SharedTerm, TermSize};
+pub use terminal::{default_shell, Clipboard, Error, Options, PtyTerminal, SharedTerm, TermSize};
