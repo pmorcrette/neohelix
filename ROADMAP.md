@@ -1973,6 +1973,171 @@ rebase, and a failure puts HEAD and the index back. Pushed commits are never
 candidates, a merge after the oldest target is refused, and both are behind
 the usual confirmation.
 
+### What Is Still Missing Against Magit
+
+A comparison of the fork's menus and views with Magit 4.x, done after
+Task 2.20. The tasks below list everything found missing, the ones that are
+felt every day first. Unlike Tasks 2.5 to 2.20, this list comes from
+recollection of Magit rather than from its source, so check each item's key
+and behaviour against Magit's own definitions before building it. The fork's
+side was checked by searching the code, not by a line-by-line audit, so some
+items may turn out to exist in part; say so in the task when that happens,
+rather than building it twice.
+
+### Task 2.21: Region Selection and Section Navigation
+
+`s`, `u` and `x` act on one line, one hunk or one file; Magit acts on a
+region as readily as on a single section.
+
+- [ ] Select several lines of a hunk and stage, unstage, discard, apply or
+      reverse them together.
+- [ ] Select several files (or hunks) and act on all of them at once.
+- [ ] Stage or unstage a whole section from its heading (`s` on "Unstaged
+      changes"), not only with `S` and `U`.
+- [ ] Visibility levels: `1`-`4` for the section at point and `M-1`-`M-4`
+      for the whole buffer.
+- [ ] Jump to the next or previous sibling section (`M-n` / `M-p`).
+- [ ] Keep each section folded or unfolded across a refresh.
+
+### Task 2.22: Commits That Rewrite History, and the Message Buffer
+
+- [ ] Reword (`c w`): edit HEAD's message without touching its tree.
+- [ ] Squash (`c s`): a `squash!` commit, the counterpart of `Fixup`.
+- [ ] Instant fixup and instant squash (`c F`, `c S`): create the commit and
+      fold it in with an autosquash rebase straight away.
+- [ ] Alter, Augment and Revise (`c A`, `c n`, `c W`): Magit 4's commands for
+      editing an earlier commit's changes, message or both.
+- [ ] Message history in the commit buffer (`M-p` / `M-n`), including
+      messages from commits that were cancelled.
+- [ ] Show the diff being committed beside the message (`C-c C-d`), not only
+      through `--verbose`.
+- [ ] Flag an overlong summary line and a missing blank line after it, as
+      git-commit's style checks do.
+
+### Task 2.23: The Push-Remote
+
+`branch.<name>.pushRemote` can be configured (Task 2.9) but nothing uses it:
+Magit treats the push-remote and the upstream as two separate targets
+everywhere.
+
+- [ ] Push to the push-remote (`P p`), with upstream and elsewhere beside it.
+- [ ] Pull from the push-remote, the upstream or elsewhere (`F p/u/e`).
+- [ ] Rebase onto the push-remote or elsewhere (`r p`, `r e`).
+- [ ] In the status buffer: a line for the push-remote under the upstream's,
+      with its own unpulled and unpushed sections.
+
+### Task 2.24: The Fetch Transient
+
+`f` fetches straight away; in Magit it is a menu.
+
+- [ ] Fetch from the push-remote, the upstream, elsewhere, or all remotes.
+- [ ] Fetch another branch (`f o`) and an explicit refspec (`f r`).
+- [ ] Fetch submodules from the same menu (`f m`).
+- [ ] Arguments: `--prune`, `--tags`, `--force`.
+
+### Task 2.25: Three-Way Views (Ediff)
+
+Conflicts can be edited, taken from one side, or sent to a mergetool, but
+there is no three-way view inside the editor.
+
+- [ ] Resolve a conflict with ours, theirs and the merged result side by side,
+      picking a side hunk by hunk (Magit's `E m` / `E r`).
+- [ ] Stage interactively from HEAD, index and working tree side by side
+      (`E s`).
+- [ ] Compare two revisions of a file, a commit, a stash, and the unstaged or
+      staged changes side by side (`E c`, `E d`, `E z`, `E u`, `E i`).
+
+### Task 2.26: Files at a Revision (Blobs) and the File Dispatch
+
+- [ ] Visit a file as it was at a revision (Magit's `magit-find-file`), and
+      make `RET` in a commit's diff open that version rather than today's.
+- [ ] In such a buffer, move to the previous or next version of the file
+      (`p` / `n`) and show the commit that made it.
+- [ ] File dispatch: rename (`git mv`), delete (`git rm`), untrack
+      (`git rm --cached`), and restore the file from a revision.
+- [ ] File dispatch: trace, the log of a function or a range of lines
+      (`git log -L`).
+
+### Task 2.27: The Remaining Suffixes and Arguments
+
+Menu by menu, what Magit offers that the fork's transients do not.
+
+- [ ] Push: another branch (`o`), matching branches (`m`), a single tag
+      (`T`, which today pushes every tag), `--follow-tags`, push options
+      (`-o`).
+- [ ] Branch: `--recurse-submodules`; shelve and unshelve a branch.
+- [ ] Merge: merge and edit the message (`e`), preview (`p`), absorb — merge
+      then delete the branch (`a`), dissolve — merge the current branch into
+      another (`i`); `--strategy`, `--strategy-option`, `--gpg-sign`.
+- [ ] Rebase: a subset of commits (`s`); modify (`m`), reword (`w`) or remove
+      (`k`) a single commit; edit the todo list of a rebase under way
+      (`--edit-todo`); `--rebase-merges`, `--update-refs`,
+      `--committer-date-is-author-date`, `--ignore-date`, `-X`, `--gpg-sign`.
+- [ ] Rebase todo buffer: insert `exec` and `break` lines; `label`, `reset`,
+      `merge` and `update-ref`, which `--rebase-merges` and `--update-refs`
+      produce.
+- [ ] Cherry-pick: harvest (`h`), donate (`d`), squash (`m`), spin out and
+      spin off from commits (`n`, `s`); `--mainline`, `--edit`, `--signoff`,
+      `--strategy`.
+- [ ] Revert: `--mainline`, `--edit` / `--no-edit`, `--signoff`.
+- [ ] Reset: the index only (`i`), and a file from a revision (`f`).
+- [ ] Stash: keeping the index (`x`); snapshots that leave the changes in
+      place (`Z`, `I`, `W`); only some paths (`P`); a list buffer (`l`);
+      create a branch here (`B`); turn a stash into a patch (`f`).
+- [ ] Tag: annotated and signed tags (`-a`, `-s`, `-u`); prune local and
+      remote tags (`p`); create a release (`r`).
+- [ ] Remote: prune stale branches (`p`) and stale refspecs (`P`); update the
+      default branch (`b`); unshallow (`z`).
+- [ ] Worktree: move one; check out an existing branch as opposed to creating
+      one; visit a worktree.
+- [ ] Submodule: register (`init`), populate, unpopulate (`deinit`), remove;
+      a list buffer.
+- [ ] Bisect: run a script (`git bisect run`); custom terms
+      (`--term-old` / `--term-new`).
+- [ ] Patches: `git request-pull`, `git send-email`, and save the diff on
+      screen as a patch file.
+- [ ] Notes: choose the notes ref (`--ref`); merge notes.
+- [ ] Diff: dwim (`d d`); between two paths (`d p`); a stash (`d t`);
+      `--function-context`, `--color-moved`, rename detection (`-M`), reverse
+      (`-R`), `--no-ext-diff`; switch a range between `..` and `...`; flip the
+      two revisions.
+
+### Task 2.28: The Status, Log and Blame Views
+
+- [ ] Status: tags in the head section (the tag at HEAD and the next one,
+      with distances).
+- [ ] Status: during a rebase, a cherry-pick, a revert or an `am`, list the
+      commits done and still to do, not only a one-line summary.
+- [ ] Status: the bisect log as a section.
+- [ ] Status: sections for files marked assume-unchanged and skip-worktree.
+- [ ] Log: trace (`-L`), pickaxe (`-G`, `-S`), `--no-merges`,
+      `--since` / `--until`, `--reverse`; toggles for the graph and the
+      decorations.
+- [ ] Log: logs of branches (`l b`), of local or all branches (`l L`, `l B`),
+      of related refs (`l h`), of what was merged (`l m`).
+- [ ] Log: a margin menu (`L`) to toggle the margin and choose its style.
+- [ ] Log select: pick a commit in a log for another command to use (the
+      target of a rebase, a fixup), instead of typing a revision.
+- [ ] Blame: reverse blame (`r`), move and copy detection (`-M`, `-C`), and a
+      choice of styles (`c`).
+
+### Task 2.29: Transient Persistence
+
+- [ ] Save a menu's arguments as its defaults (`C-x C-s`), and set them for
+      the session only (`C-x s`).
+- [ ] History of the values typed into options, recalled with `M-p` / `M-n`.
+- [ ] Levels (`C-x l`): show or hide less common commands per menu.
+
+### Task 2.30: Beyond Magit's Core
+
+Separate packages, but part of what people expect around Magit. Decide
+whether the fork wants them before starting, as each is a project of its own.
+
+- [ ] Forge: pull requests and issues from GitHub and GitLab — list, show,
+      check out, create, comment, review.
+- [ ] magit-todos: a status section listing the `TODO`, `FIXME` and similar
+      comments in the repository.
+
 ---
 
 ## Phase 3: Integrated Terminal (`crates/helix-pty`)
