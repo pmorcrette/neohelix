@@ -17,13 +17,19 @@ use tui::buffer::Buffer as Surface;
 
 use crate::compositor::{Component, Context, Event, EventResult};
 
-/// The view showing the running shell.
+/// The view showing the running shell, under a one-line title bar.
 pub struct TerminalView {
     /// Set by `Ctrl-\`, which only means "leave" if `Ctrl-n` follows.
     pending_escape: bool,
     /// Last size the terminal was told about, to avoid resizing every frame.
     size: (u16, u16),
+    /// Until when the title bar flashes for the bell.
+    bell_until: Option<std::time::Instant>,
 }
+
+/// How long the title bar flashes when the bell rings: long enough to see,
+/// short enough not to be mistaken for an error.
+const BELL_FLASH: std::time::Duration = std::time::Duration::from_millis(200);
 
 impl TerminalView {
     pub const ID: &'static str = "terminal";
@@ -32,6 +38,7 @@ impl TerminalView {
         Self {
             pending_escape: false,
             size: (0, 0),
+            bell_until: None,
         }
     }
 
@@ -51,6 +58,40 @@ impl TerminalView {
         };
 
         Some(encode_key(key_code, modifiers, application_cursor))
+    }
+}
+
+impl TerminalView {
+    /// Acts on what the emulator kept for the view: text a program copied
+    /// goes to the clipboard registers, and the bell starts a flash.
+    fn take_notices(&mut self, editor: &mut Editor) {
+        let Some(terminal) = editor.terminal.as_ref() else {
+            return;
+        };
+        let copied = terminal.take_copied();
+        let bell = terminal.take_bell();
+        for (clipboard, text) in copied {
+            let register = match clipboard {
+                helix_pty::Clipboard::Clipboard => '+',
+                helix_pty::Clipboard::Selection => '*',
+            };
+            let length = text.chars().count();
+            match editor.registers.write(register, vec![text]) {
+                Ok(()) => editor.set_status(format!(
+                    "Copied {length} character{} from the terminal",
+                    if length == 1 { "" } else { "s" }
+                )),
+                Err(err) => editor.set_error(format!("Could not copy: {err}")),
+            }
+        }
+        if bell {
+            self.bell_until = Some(std::time::Instant::now() + BELL_FLASH);
+            // One more frame once the flash is over, to draw it away.
+            std::thread::spawn(|| {
+                std::thread::sleep(BELL_FLASH);
+                helix_event::request_redraw();
+            });
+        }
     }
 }
 
@@ -224,9 +265,62 @@ impl Component for TerminalView {
             return;
         }
 
+        if cx.editor.terminal.is_none() {
+            return;
+        }
+        self.take_notices(cx.editor);
+        let theme = &cx.editor.theme;
+        let flashing = self
+            .bell_until
+            .is_some_and(|until| std::time::Instant::now() < until);
+        let bar_style = if flashing {
+            theme.get("warning").add_modifier(Modifier::REVERSED)
+        } else {
+            theme.get("ui.statusline")
+        };
+        let rgb = |color: Option<Color>| match color {
+            Some(Color::Rgb(r, g, b)) => Some((r, g, b)),
+            _ => None,
+        };
+        let (foreground, background) = (
+            rgb(theme.get("ui.text").fg),
+            rgb(theme.get("ui.background").bg),
+        );
         let Some(terminal) = cx.editor.terminal.as_mut() else {
             return;
         };
+        // Programs asking for the default colours get the theme's.
+        terminal.set_default_colors(foreground, background);
+
+        // The title bar: what the program says it is, or what it is.
+        let title_area = Rect::new(area.x, area.y, area.width, 1);
+        surface.set_style(title_area, bar_style);
+        let title = terminal
+            .title()
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_else(|| "Terminal".to_string());
+        let hint = " Ctrl-\\ Ctrl-n: back ";
+        let hint_width = hint.chars().count() as u16;
+        let title_width = area.width.saturating_sub(hint_width + 1);
+        surface.set_stringn(
+            area.x,
+            area.y,
+            &format!(" {title}"),
+            title_width as usize,
+            bar_style,
+        );
+        if area.width > hint_width * 2 {
+            surface.set_string(area.right() - hint_width, area.y, hint, bar_style);
+        }
+        let area = Rect::new(
+            area.x,
+            area.y + 1,
+            area.width,
+            area.height.saturating_sub(1),
+        );
+        if area.height == 0 {
+            return;
+        }
 
         // The pane's size is only known at render time, so this is where the
         // shell learns about it. `resize` ignores a size it already has.
@@ -287,9 +381,10 @@ impl Component for TerminalView {
             return (None, CursorKind::Hidden);
         }
 
+        // Below the title bar.
         (
             Some(helix_core::Position::new(
-                viewport.y as usize + line.0 as usize,
+                viewport.y as usize + 1 + line.0 as usize,
                 viewport.x as usize + column.0,
             )),
             CursorKind::Block,

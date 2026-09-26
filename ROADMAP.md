@@ -1962,25 +1962,47 @@ catch-all arm. Shell exit is covered separately, through the reader's
 end-of-file. The emulation itself is complete, because `Term` implements all 71
 operations of the handler; everything below is the embedder's half.
 
-- [ ] Title and reset-title: the shell and the programs in it say what they are
+- [x] Title and reset-title: the shell and the programs in it say what they are
       doing, and the view shows nothing. This is how a user tells one terminal
       from another and is the cheapest item here.
-- [ ] `ClipboardStore` (OSC 52): a program asking for text to be put on the
+- [x] `ClipboardStore` (OSC 52): a program asking for text to be put on the
       system clipboard, which is how copying works over ssh.
-- [ ] `ClipboardLoad`: the same in reverse, and a decision rather than a task —
+- [x] `ClipboardLoad`: the same in reverse, and a decision rather than a task —
       it lets a program *read* the user's clipboard. The crate has a policy
       setting for this; the fork should choose deliberately rather than inherit
       a default.
-- [ ] `ColorRequest`: programs that ask the terminal for its palette in order
+- [x] `ColorRequest`: programs that ask the terminal for its palette in order
       to pick readable colours. Unanswered, they guess, which is why some
       programs are unreadable on some themes.
-- [ ] `TextAreaSizeRequest`: reports the area in pixels. The view only knows
+- [x] `TextAreaSizeRequest`: reports the area in pixels. The view only knows
       cells, so this needs the cell size in pixels from the frontend, or a
       documented refusal.
-- [ ] `CursorBlinkingChange` and `MouseCursorDirty`, both presentation.
-- [ ] The bell currently only redraws. Decide what it should do — a visible
+- [x] `CursorBlinkingChange` and `MouseCursorDirty`, both presentation.
+- [x] The bell currently only redraws. Decide what it should do — a visible
       flash, a status message, nothing — and make it a choice rather than an
       accident.
+
+*Done.* The view has a one-line title bar showing the title the running
+program set (OSC 0/2; reset falls back to "Terminal") beside the way back,
+`Ctrl-\ Ctrl-n`; the terminal itself is a line shorter for it. Text copied
+with OSC 52 goes to the `+` register (the `*` one for the primary selection)
+with a status message, so it can be pasted into a document. The emulator is
+configured with `Osc52::OnlyCopy` explicitly rather than by default: a program
+can copy, never read the clipboard, so `ClipboardLoad` never arrives, and
+Task 3.7 is where a setting for it would go. Colour requests are answered
+where the answer is known: the 240 fixed palette entries (the xterm cube and
+grey ramp, which every terminal shares) and the default foreground and
+background when the theme gives them as RGB — the view tells the emulator
+each frame. The sixteen named colours are drawn with the host terminal's own
+palette, which cannot be read from here, so those requests stay unanswered and
+the program keeps its guess rather than getting a wrong answer. The text area
+size is reported in cells, with zero for the pixel size, which is how a
+terminal says it does not know. Cursor blinking and the mouse pointer's shape
+are deliberately ignored: the view draws a steady block cursor, and a text
+interface has no pointer to shape. The bell flashes the title bar for 200 ms
+(in the theme's warning colour) instead of only redrawing; the flash itself
+was not caught on screen by the test harness, whose snapshots come after it
+ends.
 
 ### Task 3.4: Scrollback, Selection and Search
 

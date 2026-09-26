@@ -9,4 +9,4 @@ pub mod keys;
 pub mod terminal;
 
 pub use keys::{encode_key, Key, Modifiers};
-pub use terminal::{default_shell, Error, PtyTerminal, SharedTerm, TermSize};
+pub use terminal::{default_shell, Clipboard, Error, PtyTerminal, SharedTerm, TermSize};
