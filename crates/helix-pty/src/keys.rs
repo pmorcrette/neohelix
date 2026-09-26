@@ -188,6 +188,79 @@ fn control_byte(c: char, modifiers: Modifiers) -> Option<u8> {
     }
 }
 
+/// The parts of the Kitty keyboard protocol a program switched on.
+///
+/// Alacritty keeps the protocol's mode stack and answers queries about it;
+/// what is left to the embedder is to encode keys as the modes say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct KittyModes {
+    /// Flag 1: keys that are ambiguous in the legacy encoding — Escape,
+    /// and anything with Ctrl or Alt — are sent as `CSI … u`.
+    pub disambiguate: bool,
+    /// Flag 8: every key is sent as an escape code, plain text included.
+    pub all_as_escape: bool,
+}
+
+/// Encodes a keypress for a program that may have switched the Kitty
+/// keyboard protocol on; without it, as [`encode_key`] does.
+///
+/// Key release events are not reported: Helix does not pass them on.
+pub fn encode_key_with(
+    key: Key,
+    modifiers: Modifiers,
+    application_cursor: bool,
+    kitty: KittyModes,
+) -> Vec<u8> {
+    kitty_sequence(key, modifiers, kitty)
+        .unwrap_or_else(|| encode_key(key, modifiers, application_cursor))
+}
+
+/// The `CSI code ; modifiers u` form of a key, when the active modes call
+/// for it; `None` keeps the legacy encoding, which the protocol also uses for
+/// the cursor, editing and function keys.
+fn kitty_sequence(key: Key, mut modifiers: Modifiers, kitty: KittyModes) -> Option<Vec<u8>> {
+    if !kitty.disambiguate && !kitty.all_as_escape {
+        return None;
+    }
+    let code: u32 = match key {
+        Key::Char(c) => {
+            // The key's own code is the unshifted one.
+            if c.is_ascii_uppercase() {
+                modifiers.shift = true;
+            }
+            let plain_text = !modifiers.ctrl && !modifiers.alt;
+            if plain_text && !kitty.all_as_escape {
+                return None;
+            }
+            c.to_ascii_lowercase() as u32
+        }
+        Key::Escape => 27,
+        Key::Enter | Key::Tab | Key::Backspace => {
+            // Unmodified, these stay as they were, unless every key is to be
+            // an escape code.
+            if modifiers.is_empty() && !kitty.all_as_escape {
+                return None;
+            }
+            match key {
+                Key::Enter => 13,
+                Key::Tab => 9,
+                _ => 127,
+            }
+        }
+        Key::BackTab => {
+            modifiers.shift = true;
+            9
+        }
+        _ => return None,
+    };
+    let mut out = format!("\x1b[{code}").into_bytes();
+    if !modifiers.is_empty() {
+        out.extend_from_slice(format!(";{}", modifiers.parameter()).as_bytes());
+    }
+    out.push(b'u');
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,5 +444,46 @@ mod tests {
             3
         );
         assert_eq!(Modifiers::ctrl().parameter(), 5);
+    }
+
+    #[test]
+    fn the_kitty_protocol_disambiguates_what_legacy_cannot() {
+        let flag1 = KittyModes {
+            disambiguate: true,
+            all_as_escape: false,
+        };
+        let kitty = |key, modifiers| encode_key_with(key, modifiers, false, flag1);
+        // Ctrl-i and Tab are the same byte in the legacy encoding.
+        assert_eq!(encode_key(Key::Char('i'), Modifiers::ctrl(), false), b"\t");
+        assert_eq!(kitty(Key::Char('i'), Modifiers::ctrl()), b"\x1b[105;5u");
+        assert_eq!(kitty(Key::Tab, Modifiers::NONE), b"\t");
+        assert_eq!(kitty(Key::Escape, Modifiers::NONE), b"\x1b[27u");
+        // Plain text and the cursor keys are as before.
+        assert_eq!(kitty(Key::Char('a'), Modifiers::NONE), b"a");
+        assert_eq!(kitty(Key::Up, Modifiers::NONE), b"\x1b[A");
+        let alt_shift = Modifiers {
+            alt: true,
+            shift: true,
+            ..Modifiers::NONE
+        };
+        assert_eq!(kitty(Key::Enter, alt_shift), b"\x1b[13;4u");
+        assert_eq!(kitty(Key::BackTab, Modifiers::NONE), b"\x1b[9;2u");
+    }
+
+    #[test]
+    fn every_key_can_be_an_escape_code() {
+        let all = KittyModes {
+            disambiguate: true,
+            all_as_escape: true,
+        };
+        let kitty = |key| encode_key_with(key, Modifiers::NONE, false, all);
+        assert_eq!(kitty(Key::Char('a')), b"\x1b[97u");
+        assert_eq!(kitty(Key::Char('A')), b"\x1b[97;2u");
+        assert_eq!(kitty(Key::Enter), b"\x1b[13u");
+        // Off, nothing changes.
+        assert_eq!(
+            encode_key_with(Key::Escape, Modifiers::NONE, false, KittyModes::default()),
+            b"\x1b"
+        );
     }
 }

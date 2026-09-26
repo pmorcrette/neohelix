@@ -578,11 +578,18 @@ pub struct IntegratedTerminalConfig {
     /// Lines kept above the screen to scroll back through. Each terminal
     /// holds this many lines in memory once they have been written.
     pub scrollback: usize,
+    /// Let programs in the terminal switch on the Kitty keyboard protocol,
+    /// which tells apart keys the usual encoding confuses, such as `Ctrl-i`
+    /// and `Tab`. Programs that do not ask for it are unaffected.
+    pub kitty_keyboard: bool,
 }
 
 impl Default for IntegratedTerminalConfig {
     fn default() -> Self {
-        Self { scrollback: 10_000 }
+        Self {
+            scrollback: 10_000,
+            kitty_keyboard: true,
+        }
     }
 }
 

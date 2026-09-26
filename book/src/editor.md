@@ -294,6 +294,7 @@ Set options for the integrated terminal (`:terminal`, `<space>t`).
 | Key | Description | Default |
 |--|--|---------|
 |`scrollback` | Lines kept above the screen to scroll back through, per terminal | `10000` |
+|`kitty-keyboard` | Let programs switch on the Kitty keyboard protocol, which tells apart keys such as `Ctrl-i` and `Tab` | `true` |
 
 In the terminal, `Ctrl-\ Ctrl-n` returns to the editor, and `Shift-PageUp` and
 `Shift-PageDown` scroll back through the output; typing returns to the bottom.
@@ -306,6 +307,14 @@ block; `y` copies the selection into the default yank register and leaves copy
 mode. `/` and `?` search forwards and backwards with a regular expression — `^`
 and `$` are not anchored to lines — and `n` and `N` repeat the search. `q` or
 `Esc` leave copy mode.
+
+`Ctrl-\ p` pastes the default yank register into the terminal and `Ctrl-\ P`
+the clipboard; a paste from the terminal Helix runs in goes through as well.
+Pastes are bracketed when the program asks for it, so a shell does not run a
+pasted line by itself. A program that asks for the mouse (`htop`, `tmux`, an
+editor) gets clicks, drags and the wheel; hold `Shift` to keep them from it.
+Otherwise the wheel scrolls back through the output, or, in a full-screen
+program like `less`, sends the arrow keys.
 
 ### `[editor.magit]` Section
 

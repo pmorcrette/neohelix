@@ -2042,14 +2042,33 @@ not anchor `^` and `$` to lines, which the book says.
 `keys.rs` encodes keys the xterm way, including DECCKM. That is the floor, not
 the ceiling.
 
-- [ ] The Kitty keyboard protocol: the handler has push, pop, set and report
+- [x] The Kitty keyboard protocol: the handler has push, pop, set and report
       operations for it and the crate has a config flag. Without it a program
       cannot tell `Ctrl-I` from `Tab`, or see a key release — which Helix
       itself asks for when run inside a terminal.
-- [ ] Mouse reporting: forward clicks, drags and wheel to a program that asked
+- [x] Mouse reporting: forward clicks, drags and wheel to a program that asked
       for them. Until then `htop`, `tmux` and an inner editor are keyboard-only.
-- [ ] Bracketed paste: paste a Helix register into the shell as a paste rather
+- [x] Bracketed paste: paste a Helix register into the shell as a paste rather
       than as typing, so a shell does not run half of it on the first newline.
+
+*Done.* `[editor.integrated-terminal] kitty-keyboard` (on by default) lets
+Alacritty keep the protocol's mode stack and answer its queries; the view
+encodes keys as the active flags say (`helix_pty::encode_key_with`): with
+"disambiguate", Escape and keys with Ctrl or Alt become `CSI code;mods u`, and
+with "report all keys as escape codes" every key does. Key releases, event
+types and alternate keys are not reported: Helix does not receive releases
+from the terminal it runs in, so there are none to pass on. Mouse events go to
+a program that asked for them (`helix_pty::encode_mouse`: clicks, drags,
+motion; SGR, UTF-8 and X10 coordinates), relative to the grid below the title
+bar, unless Shift is held or copy mode is on; otherwise the wheel scrolls back
+three lines a notch, moves the copy-mode cursor, or, in the alternate screen
+with alternate scroll on, sends arrow keys. `Ctrl-\ p` and `Ctrl-\ P` paste
+the default register and the clipboard, and the host terminal's paste event
+goes through too, all via `PtyTerminal::paste`: bracketed when the program set
+mode 2004 (with any bracket markers inside the text removed), newlines sent
+as carriage returns otherwise. Checked in the editor against `cat -v` for
+pastes, a click and `Ctrl-a` under `CSI > 1 u`, and against `seq`/`less` for
+the wheel.
 
 ### Task 3.6: More Than One Terminal
 

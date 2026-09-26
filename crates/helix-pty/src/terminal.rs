@@ -35,12 +35,17 @@ const WRITE_QUEUE: usize = 1024;
 pub struct Options {
     /// Lines kept above the screen, to scroll back through.
     pub scrollback: usize,
+    /// Whether programs may switch the Kitty keyboard protocol on.
+    pub kitty_keyboard: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        // Alacritty's own default, chosen here rather than inherited.
-        Self { scrollback: 10_000 }
+        Self {
+            // Alacritty's own default, chosen here rather than inherited.
+            scrollback: 10_000,
+            kitty_keyboard: true,
+        }
     }
 }
 
@@ -215,6 +220,18 @@ impl EventListener for EventProxy {
     }
 }
 
+/// The bytes of a paste. Inside the brackets, anything that would end them
+/// early is taken out, so pasted text cannot pose as typing; outside, line
+/// ends become carriage returns, as the Enter key sends.
+fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
+    if bracketed {
+        let inner = text.replace("\x1b[201~", "").replace("\x1b[200~", "");
+        format!("\x1b[200~{inner}\x1b[201~").into_bytes()
+    } else {
+        text.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
+    }
+}
+
 /// The index Alacritty uses for the default foreground, then background.
 const FOREGROUND_INDEX: usize = 256;
 const BACKGROUND_INDEX: usize = 257;
@@ -344,6 +361,7 @@ impl PtyTerminal {
             // Programs may copy into the clipboard, never read it.
             osc52: Osc52::OnlyCopy,
             scrolling_history: options.scrollback,
+            kitty_keyboard: options.kitty_keyboard,
             ..Config::default()
         };
         let term = Arc::new(FairMutex::new(Term::new(config, &size, proxy)));
@@ -425,6 +443,19 @@ impl PtyTerminal {
             }
             Err(TrySendError::Disconnected(_)) => false,
         }
+    }
+
+    /// Sends `text` as a paste: marked as one when the program asked for
+    /// bracketed paste, so a shell does not run it line by line as it
+    /// arrives; typed as keys otherwise. Either way it lands at the bottom.
+    pub fn paste(&self, text: &str) -> bool {
+        let bracketed = {
+            let mut term = self.term.lock();
+            term.scroll_display(alacritty_terminal::grid::Scroll::Bottom);
+            term.mode()
+                .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE)
+        };
+        self.write(paste_bytes(text, bracketed))
     }
 
     /// Resizes both the emulator's grid and the pseudo-terminal.
@@ -628,6 +659,16 @@ mod tests {
         let (mut term, _, replies_to) = emulator();
         feed(&mut term, b"\x1b[18t");
         assert_eq!(replies(&replies_to), ["\x1b[8;24;80t"]);
+    }
+
+    #[test]
+    fn a_paste_is_bracketed_when_asked_and_cannot_close_its_brackets() {
+        assert_eq!(
+            paste_bytes("ls\nrm -rf x\n", true),
+            b"\x1b[200~ls\nrm -rf x\n\x1b[201~"
+        );
+        assert_eq!(paste_bytes("a\x1b[201~b", true), b"\x1b[200~ab\x1b[201~");
+        assert_eq!(paste_bytes("one\ntwo\r\n", false), b"one\rtwo\r");
     }
 
     #[test]

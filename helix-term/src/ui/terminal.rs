@@ -9,9 +9,9 @@ use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor};
-use helix_pty::{encode_key, Key, Modifiers};
+use helix_pty::{encode_key_with, Key, KittyModes, Modifiers};
 use helix_view::graphics::{Color, CursorKind, Modifier, Rect, Style, UnderlineStyle};
-use helix_view::input::{KeyCode, KeyEvent, KeyModifiers};
+use helix_view::input::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use helix_view::Editor;
 use tui::buffer::Buffer as Surface;
 
@@ -27,6 +27,8 @@ pub struct TerminalView {
     bell_until: Option<std::time::Instant>,
     /// Set while in copy mode.
     copy: Option<CopyMode>,
+    /// Where the grid was last drawn, to place mouse events on it.
+    grid_area: Rect,
 }
 
 /// Copy mode's own state; the cursor and the selection are the emulator's.
@@ -44,6 +46,9 @@ struct CopyMode {
 /// short enough not to be mistaken for an error.
 const BELL_FLASH: std::time::Duration = std::time::Duration::from_millis(200);
 
+/// Lines a notch of the mouse wheel scrolls.
+const WHEEL_LINES: usize = 3;
+
 impl TerminalView {
     pub const ID: &'static str = "terminal";
 
@@ -53,6 +58,7 @@ impl TerminalView {
             size: (0, 0),
             bell_until: None,
             copy: None,
+            grid_area: Rect::default(),
         }
     }
 
@@ -61,7 +67,14 @@ impl TerminalView {
         let terminal = editor.terminal.as_ref()?;
         // Programs like `vim` and `less` switch DECCKM on and then expect the
         // SS3 form of the arrow keys.
-        let application_cursor = terminal.term().lock().mode().contains(TermMode::APP_CURSOR);
+        let mode = *terminal.term().lock().mode();
+        let application_cursor = mode.contains(TermMode::APP_CURSOR);
+        // A program that switched the Kitty keyboard protocol on gets keys
+        // like `Ctrl-i` apart from `Tab`.
+        let kitty = KittyModes {
+            disambiguate: mode.contains(TermMode::DISAMBIGUATE_ESC_CODES),
+            all_as_escape: mode.contains(TermMode::REPORT_ALL_KEYS_AS_ESC),
+        };
 
         let modifiers = translate_modifiers(key.modifiers);
         // Helix normalises Shift-Tab into Tab with the shift modifier, but a
@@ -71,7 +84,12 @@ impl TerminalView {
             key_code => key_code,
         };
 
-        Some(encode_key(key_code, modifiers, application_cursor))
+        Some(encode_key_with(
+            key_code,
+            modifiers,
+            application_cursor,
+            kitty,
+        ))
     }
 }
 
@@ -110,6 +128,112 @@ impl TerminalView {
 }
 
 impl TerminalView {
+    /// Pastes `text` into the shell, bracketed when the program asked for
+    /// it so that a pasted newline does not run anything by itself.
+    fn paste(&self, editor: &mut Editor, text: &str) {
+        if let Some(terminal) = editor.terminal.as_ref() {
+            terminal.paste(text);
+        }
+    }
+
+    /// Pastes the register's contents, its values one per line.
+    fn paste_register(&self, editor: &mut Editor, register: char) {
+        let text = match editor.registers.read(register, editor) {
+            Some(values) => values.collect::<Vec<_>>().join("\n"),
+            None => String::new(),
+        };
+        if text.is_empty() {
+            editor.set_error(format!("Register {register} is empty"));
+            return;
+        }
+        self.paste(editor, &text);
+    }
+
+    /// A mouse event: the program's when it asked for them, unless Shift is
+    /// held, as terminals let Shift bypass the program; otherwise the wheel
+    /// scrolls back.
+    fn mouse(&mut self, event: &MouseEvent, editor: &mut Editor) {
+        let Some(terminal) = editor.terminal.as_ref() else {
+            return;
+        };
+        let convert_button = |button| match button {
+            helix_view::input::MouseButton::Left => helix_pty::MouseButton::Left,
+            helix_view::input::MouseButton::Middle => helix_pty::MouseButton::Middle,
+            helix_view::input::MouseButton::Right => helix_pty::MouseButton::Right,
+        };
+        let action = match event.kind {
+            MouseEventKind::Down(button) => helix_pty::MouseAction::Press(convert_button(button)),
+            MouseEventKind::Up(button) => helix_pty::MouseAction::Release(convert_button(button)),
+            MouseEventKind::Drag(button) => helix_pty::MouseAction::Drag(convert_button(button)),
+            MouseEventKind::Moved => helix_pty::MouseAction::Move,
+            MouseEventKind::ScrollUp => helix_pty::MouseAction::WheelUp,
+            MouseEventKind::ScrollDown => helix_pty::MouseAction::WheelDown,
+            MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => return,
+        };
+        let mut term = terminal.term().lock();
+        let mode = *term.mode();
+        let modes = helix_pty::MouseModes {
+            click: mode.contains(TermMode::MOUSE_REPORT_CLICK),
+            drag: mode.contains(TermMode::MOUSE_DRAG),
+            motion: mode.contains(TermMode::MOUSE_MOTION),
+            sgr: mode.contains(TermMode::SGR_MOUSE),
+            utf8: mode.contains(TermMode::UTF8_MOUSE),
+        };
+        let area = self.grid_area;
+        let inside = event.column >= area.x
+            && event.column < area.right()
+            && event.row >= area.y
+            && event.row < area.bottom();
+        if self.copy.is_none()
+            && modes.any()
+            && inside
+            && !event.modifiers.contains(KeyModifiers::SHIFT)
+        {
+            let report = helix_pty::MouseReport {
+                action,
+                column: (event.column - area.x) as usize,
+                line: (event.row - area.y) as usize,
+                modifiers: translate_modifiers(event.modifiers),
+            };
+            if let Some(bytes) = helix_pty::encode_mouse(report, modes) {
+                term.scroll_display(Scroll::Bottom);
+                drop(term);
+                terminal.write(bytes);
+            }
+            return;
+        }
+
+        let up = match action {
+            helix_pty::MouseAction::WheelUp => true,
+            helix_pty::MouseAction::WheelDown => false,
+            _ => return,
+        };
+        if self.copy.is_some() {
+            let motion = if up {
+                helix_pty::copy::Motion::Up
+            } else {
+                helix_pty::copy::Motion::Down
+            };
+            helix_pty::copy::motion(&mut term, motion, WHEEL_LINES);
+        } else if mode.contains(TermMode::ALT_SCREEN) && mode.contains(TermMode::ALTERNATE_SCROLL) {
+            // A full-screen program like `less` has no scrollback; the wheel
+            // moves it with the arrow keys instead, as other terminals do.
+            drop(term);
+            let key = if up { Key::Up } else { Key::Down };
+            let application_cursor = mode.contains(TermMode::APP_CURSOR);
+            for _ in 0..WHEEL_LINES {
+                terminal.write(helix_pty::encode_key(
+                    key,
+                    Modifiers::default(),
+                    application_cursor,
+                ));
+            }
+        } else {
+            let lines = WHEEL_LINES as i32;
+            term.scroll_display(Scroll::Delta(if up { lines } else { -lines }));
+        }
+    }
+
     fn enter_copy_mode(&mut self, editor: &mut Editor) {
         if let Some(terminal) = editor.terminal.as_ref() {
             helix_pty::copy::enter(&mut terminal.term().lock());
@@ -506,7 +630,10 @@ impl Component for TerminalView {
                 },
                 " v select  y copy  / search  q done ",
             ),
-            None => (title, " Ctrl-\\ Ctrl-n: back  Ctrl-\\ [: copy "),
+            None => (
+                title,
+                " Ctrl-\\ Ctrl-n: back  Ctrl-\\ [: copy  Ctrl-\\ p: paste ",
+            ),
         };
         let hint_width = hint.chars().count() as u16;
         let title_width = area.width.saturating_sub(hint_width + 1);
@@ -529,6 +656,7 @@ impl Component for TerminalView {
         if area.height == 0 {
             return;
         }
+        self.grid_area = area;
 
         // The pane's size is only known at render time, so this is where the
         // shell learns about it. `resize` ignores a size it already has.
@@ -626,10 +754,20 @@ impl Component for TerminalView {
     }
 
     fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
-        let Event::Key(key) = event else {
+        let key = match event {
+            Event::Key(key) => key,
+            // The terminal's paste: bracketed when the program asked.
+            Event::Paste(text) if self.copy.is_none() => {
+                self.paste(cx.editor, text);
+                return EventResult::Consumed(None);
+            }
+            Event::Mouse(mouse) => {
+                self.mouse(mouse, cx.editor);
+                return EventResult::Consumed(None);
+            }
             // The terminal owns the keyboard; swallow everything else rather
             // than letting a stray event reach the editor underneath.
-            return EventResult::Consumed(None);
+            _ => return EventResult::Consumed(None),
         };
 
         let close: crate::compositor::Callback = Box::new(|compositor, _| {
@@ -648,6 +786,19 @@ impl Component for TerminalView {
             if key.code == KeyCode::Char('[') && !key.modifiers.contains(KeyModifiers::CONTROL) {
                 self.enter_copy_mode(cx.editor);
                 return EventResult::Consumed(None);
+            }
+            // `Ctrl-\ p` pastes the default register, `Ctrl-\ P` the
+            // clipboard.
+            if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
+                let register = match key.code {
+                    KeyCode::Char('p') => Some(cx.editor.config().default_yank_register),
+                    KeyCode::Char('P') => Some('+'),
+                    _ => None,
+                };
+                if let Some(register) = register {
+                    self.paste_register(cx.editor, register);
+                    return EventResult::Consumed(None);
+                }
             }
             // It was not the escape sequence after all, so the shell gets the
             // Ctrl-\ it should have had, followed by this key.
