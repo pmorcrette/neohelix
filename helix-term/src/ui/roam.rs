@@ -172,19 +172,26 @@ fn location_of(node: &Node) -> String {
 
 impl Component for RoamPanel {
     fn render(&mut self, viewport: Rect, surface: &mut Surface, cx: &mut Context) {
-        let width = WIDTH.min(viewport.width.saturating_sub(MIN_DOCUMENT_WIDTH));
-        if width < 12 {
-            // Nothing legible fits; stay out of the way rather than clipping.
-            return;
-        }
-
-        // Sit above the statusline, as the editor view does.
-        let area = viewport.intersection(Rect::new(
-            viewport.width.saturating_sub(width),
-            0,
-            width,
-            viewport.height.saturating_sub(1),
-        ));
+        // Docked, the documents made room for it; otherwise it covers their
+        // right edge.
+        let area = match cx.editor.dock.area_of(Self::ID) {
+            Some(area) => area,
+            None => {
+                let width = WIDTH.min(viewport.width.saturating_sub(MIN_DOCUMENT_WIDTH));
+                if width < 12 {
+                    // Nothing legible fits; stay out of the way rather than
+                    // clipping.
+                    return;
+                }
+                // Sit above the statusline, as the editor view does.
+                viewport.intersection(Rect::new(
+                    viewport.width.saturating_sub(width),
+                    0,
+                    width,
+                    viewport.height.saturating_sub(1),
+                ))
+            }
+        };
 
         let popup_style = cx.editor.theme.get("ui.popup");
         let text_style = cx.editor.theme.get("ui.text");

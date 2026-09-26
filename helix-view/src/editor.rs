@@ -434,6 +434,8 @@ pub struct Config {
     pub magit: MagitConfig,
     /// The integrated terminal's settings (`:terminal`, `<space>t`).
     pub integrated_terminal: IntegratedTerminalConfig,
+    /// Where the fork's views go: beside the documents, or over them.
+    pub dock: DockConfig,
     /// Whether to render rainbow colors for matching brackets. Defaults to `false`.
     pub rainbow_brackets: bool,
     /// Whether to enable Kitty Keyboard Protocol
@@ -599,6 +601,36 @@ pub struct IntegratedTerminalConfig {
     /// Let programs copy into the clipboard registers (OSC 52). Programs can
     /// never read them.
     pub clipboard_copy: bool,
+}
+
+/// `[editor.dock]`: which of the fork's views are docked, and where.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct DockConfig {
+    /// The integrated terminal: `bottom`, `right`, or `none` to cover the
+    /// documents.
+    pub terminal: crate::dock::Placement,
+    /// Magit's views: the status, the log, the blame.
+    pub magit: crate::dock::Placement,
+    /// The Org-Roam backlinks panel. When Magit has the same side, the panel
+    /// covers the documents' edge instead.
+    pub backlinks: crate::dock::Placement,
+    /// The right pane's width, in percent of the screen's.
+    pub right_size: u16,
+    /// The bottom pane's height, in percent of the documents' area.
+    pub bottom_size: u16,
+}
+
+impl Default for DockConfig {
+    fn default() -> Self {
+        Self {
+            terminal: crate::dock::Placement::Bottom,
+            magit: crate::dock::Placement::Right,
+            backlinks: crate::dock::Placement::Right,
+            right_size: 40,
+            bottom_size: 40,
+        }
+    }
 }
 
 /// The integrated terminal's cursor shape.
@@ -1513,6 +1545,7 @@ impl Default for Config {
             roam: RoamConfig::default(),
             magit: MagitConfig::default(),
             integrated_terminal: IntegratedTerminalConfig::default(),
+            dock: DockConfig::default(),
             rainbow_brackets: false,
             kitty_keyboard_protocol: Default::default(),
             buffer_picker: BufferPickerConfig::default(),
@@ -1673,6 +1706,10 @@ pub struct Editor {
     /// its shell exits or it is closed.
     pub terminals: crate::terminals::Terminals,
 
+    /// The panes docked beside the documents this frame, and which of them
+    /// has the keyboard.
+    pub dock: crate::dock::Dock,
+
     /// The Org-Roam knowledge graph, shared with the background indexer.
     ///
     /// Indexing runs on a blocking thread and takes the write lock only to
@@ -1805,6 +1842,7 @@ impl Editor {
             workspace_trust,
             roam: Arc::default(),
             terminals: Default::default(),
+            dock: Default::default(),
             roam_pinned: None,
             roam_unlinked: None,
             org_src_edits: HashMap::new(),

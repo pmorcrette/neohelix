@@ -94,6 +94,18 @@ impl TerminalView {
     }
 }
 
+/// Shows `view`, the terminal view, in place of any already open, with the
+/// keys.
+pub fn show(
+    compositor: &mut crate::compositor::Compositor,
+    editor: &mut Editor,
+    view: Box<dyn Component>,
+) {
+    compositor.remove(TerminalView::ID);
+    compositor.push(view);
+    editor.dock.focus(Some(TerminalView::ID));
+}
+
 /// What a terminal is called: the name it was given, or else the title its
 /// program set, or else what runs in it.
 pub fn label(entry: &helix_view::terminals::Entry<helix_pty::PtyTerminal>) -> String {
@@ -677,13 +689,18 @@ fn convert_flags(flags: Flags) -> Modifier {
 
 impl Component for TerminalView {
     fn render(&mut self, viewport: Rect, surface: &mut Surface, cx: &mut Context) {
-        // Leave the statusline alone so the editor's mode stays visible.
-        let area = viewport.intersection(Rect::new(
-            0,
-            0,
-            viewport.width,
-            viewport.height.saturating_sub(1),
-        ));
+        // Docked, in the room the documents made; otherwise over them,
+        // leaving the statusline alone so the editor's mode stays visible.
+        let docked = cx.editor.dock.area_of(Self::ID);
+        let focused = cx.editor.dock.has_keys(Self::ID);
+        let area = docked.unwrap_or_else(|| {
+            viewport.intersection(Rect::new(
+                0,
+                0,
+                viewport.width,
+                viewport.height.saturating_sub(1),
+            ))
+        });
         if area.width == 0 || area.height == 0 {
             return;
         }
@@ -698,8 +715,11 @@ impl Component for TerminalView {
             .is_some_and(|until| std::time::Instant::now() < until);
         let bar_style = if flashing {
             theme.get("warning").add_modifier(Modifier::REVERSED)
-        } else {
+        } else if focused {
             theme.get("ui.statusline")
+        } else {
+            // Docked without the keys, as an unfocused split's statusline.
+            theme.get("ui.statusline.inactive")
         };
         let rgb = |color: Option<Color>| match color {
             Some(Color::Rgb(r, g, b)) => Some((r, g, b)),
@@ -765,13 +785,23 @@ impl Component for TerminalView {
                 },
                 " v select  y copy  / search  q done ",
             ),
+            None if docked.is_some() && !focused => (String::new(), " Ctrl-w p or click: focus "),
+            None if docked.is_some() => (
+                String::new(),
+                " Ctrl-\\ Ctrl-n: editor  q: hide  [: copy  p: paste  c: new  w: list ",
+            ),
             None => (
                 String::new(),
                 " Ctrl-\\ Ctrl-n: back  [: copy  p: paste  c: new  w: list ",
             ),
         };
         let hint_width = hint.chars().count() as u16;
-        let title_end = area.right().saturating_sub(hint_width + 1);
+        let show_hint = area.width >= hint_width + 24 || self.confirm_close;
+        let title_end = if show_hint {
+            area.right().saturating_sub(hint_width + 1)
+        } else {
+            area.right()
+        };
         let (mut x, _) = surface.set_stringn(
             area.x,
             area.y,
@@ -796,7 +826,7 @@ impl Component for TerminalView {
                     .0;
             }
         }
-        if area.width > hint_width * 2 || self.confirm_close {
+        if show_hint {
             let hint_x = area.right().saturating_sub(hint_width).max(area.x);
             surface.set_stringn(hint_x, area.y, hint, area.width as usize, bar_style);
         }
@@ -875,6 +905,11 @@ impl Component for TerminalView {
         let Some(terminal) = editor.terminals.current() else {
             return (None, CursorKind::Hidden);
         };
+        // Docked without the keys, the documents' cursor is the one shown.
+        if !editor.dock.has_keys(Self::ID) {
+            return (None, CursorKind::Hidden);
+        }
+        let _ = viewport;
         let term = terminal.term().lock();
         // In copy mode, the copy-mode cursor; otherwise the program's, when
         // it shows one.
@@ -902,17 +937,24 @@ impl Component for TerminalView {
             CursorShape::Hidden => return (None, CursorKind::Hidden),
         };
 
-        // Below the title bar.
+        // On the grid, below the title bar.
         (
             Some(helix_core::Position::new(
-                viewport.y as usize + 1 + line.0 as usize,
-                viewport.x as usize + column.0,
+                self.grid_area.y as usize + line.0 as usize,
+                self.grid_area.x as usize + column.0,
             )),
             kind,
         )
     }
 
     fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
+        // Docked, the terminal takes the keys only while focused; a click on
+        // it focuses it, and a click on the documents gives them the keys.
+        if let Some(result) = crate::ui::dock::route(Self::ID, event, cx.editor, false) {
+            return result;
+        }
+        let docked = cx.editor.dock.area_of(Self::ID);
+
         let key = match event {
             Event::Key(key) => key,
             // The terminal's paste: bracketed when the program asked.
@@ -953,6 +995,25 @@ impl Component for TerminalView {
         if self.pending_escape {
             self.pending_escape = false;
             if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                // Docked, the terminal stays in view and only the keys go
+                // back to the documents.
+                if docked.is_some() {
+                    if self.copy.is_some() {
+                        self.leave_copy_mode(cx.editor);
+                    }
+                    cx.editor.dock.focus(None);
+                    cx.editor.set_status(
+                        "Ctrl-w p or <space>t comes back to the terminal; Ctrl-\\ q hides it",
+                    );
+                    return EventResult::Consumed(None);
+                }
+                return EventResult::Consumed(Some(close));
+            }
+            // `Ctrl-\ q`: hide the terminal; its shells keep running.
+            if key.code == KeyCode::Char('q') && key.modifiers.is_empty() {
+                if self.copy.is_some() {
+                    self.leave_copy_mode(cx.editor);
+                }
                 return EventResult::Consumed(Some(close));
             }
             // `Ctrl-\ [`: copy mode, as tmux's prefix and `[`.

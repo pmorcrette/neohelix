@@ -305,7 +305,8 @@ Set options for the integrated terminal (`:terminal`, `<space>t`).
 Settings apply to terminals started after they change; a running terminal
 keeps the ones it was started with.
 
-In the terminal, `Ctrl-\ Ctrl-n` returns to the editor, and `Shift-PageUp` and
+In the terminal, `Ctrl-\ Ctrl-n` returns to the editor (docked, the terminal
+stays in view and `Ctrl-\ q` hides it; see `[editor.dock]`), and `Shift-PageUp` and
 `Shift-PageDown` scroll back through the output; typing returns to the bottom.
 `Ctrl-\ [` enters copy mode, where the keys move a cursor over the text rather
 than reaching the program: `h` `j` `k` `l`, `w` `b` `e` (and `W` `B` `E` for
@@ -337,6 +338,29 @@ one shown (also `:terminal-rename`) and `Ctrl-\ &` closes it after asking
 `:terminal-new [directory]` starts another. A new terminal starts in the
 directory of the document focused at the time; a running one keeps its own,
 as its shell does.
+
+### `[editor.dock]` Section
+
+Where the fork's views go. Docked, a view takes a side of the screen and the
+documents make room for it; with `none`, it covers the documents while open.
+
+| Key | Description | Default |
+|--|--|---------|
+|`magit` | Magit's status, log and blame: `right`, `bottom` or `none` | `"right"` |
+|`terminal` | The integrated terminal | `"bottom"` |
+|`backlinks` | The Org-Roam backlinks panel; when Magit has the same side, the panel covers the documents' edge instead | `"right"` |
+|`right-size` | The right pane's width, in percent of the screen's | `40` |
+|`bottom-size` | The bottom pane's height, in percent of the documents' area | `40` |
+
+A pane that opens takes the keys. `Ctrl-w p` (or `<space>w p`) moves them from
+the documents to each docked pane that takes keys in turn, and back; a click
+on a pane or on a document does the same. In Magit's views `Esc` gives the
+keys back to the documents and `q` closes; in the terminal `Ctrl-\ Ctrl-n`
+gives them back and `Ctrl-\ q` hides it, its shells still running. Docked,
+Magit stays open when it opens something in the editor — a file visited, the
+commit message, a rebase's todo-list — and gives it the keys. A pane is only
+docked when it leaves the documents at least 30 columns and 6 lines;
+otherwise it covers them as with `none`.
 
 ### `[editor.magit]` Section
 

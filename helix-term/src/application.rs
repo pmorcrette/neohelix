@@ -277,6 +277,7 @@ impl Application {
             self.terminal.clear().expect("Cannot clear the terminal");
             self.compositor.full_redraw = false;
         }
+        crate::ui::dock::update(&self.compositor, &mut self.editor);
 
         let mut cx = crate::compositor::Context {
             editor: &mut self.editor,

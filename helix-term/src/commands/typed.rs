@@ -2199,7 +2199,7 @@ fn terminal(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> an
         let call: job::Callback = Callback::EditorCompositor(Box::new(
             |editor: &mut Editor, compositor: &mut Compositor| {
                 if let Some(view) = super::terminal_view(editor) {
-                    compositor.push(view);
+                    crate::ui::terminal::show(compositor, editor, view);
                 }
             },
         ));
@@ -2235,7 +2235,7 @@ fn terminal_new(
         let call: job::Callback = Callback::EditorCompositor(Box::new(
             move |editor: &mut Editor, compositor: &mut Compositor| {
                 if let Some(view) = super::new_terminal_view(editor, directory) {
-                    compositor.push(view);
+                    crate::ui::terminal::show(compositor, editor, view);
                 }
             },
         ));

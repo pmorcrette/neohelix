@@ -2202,3 +2202,42 @@ takes from upstream untouched. `tree.rs` and `ui/editor.rs` are both actively
 maintained upstream, so this trades a native-feeling UI for a permanent merge
 cost — worth deciding explicitly before starting, and worth keeping the diff as
 narrow as the list above allows.
+
+*Decided: docking instead of tree nodes.* The list above is left unchecked on
+purpose: it describes the approach that was weighed and not taken, since it
+would make `tree.rs` and `ui/editor.rs` diverge from upstream for good. What
+was built gives the three views room beside the documents without the tree
+knowing about them:
+
+- [x] `helix_view::dock::Dock` lays out a right side (full height) and a bottom
+      side (under the documents) and returns what is left; the one change to
+      an upstream file is `EditorView::render` passing the documents that
+      smaller area before resizing the tree (six lines). `tree.rs`,
+      `compositor.rs` and the window commands are untouched.
+- [x] Each frame, `ui::dock::update` tells the dock which dockable views are
+      open and where `[editor.dock]` puts them (`magit`, `terminal`,
+      `backlinks`, `right-size`, `bottom-size`); Magit's status, log and blame
+      share one pane. A pane that does not leave the documents 30 columns and
+      6 lines is not docked and covers them as before; `none` keeps the old
+      overlay for a view.
+- [x] Focus: a pane that opens takes the keys; `Ctrl-w p` / `<space>w p`
+      (free in upstream's window mode) cycles documents → Magit → terminal;
+      a click moves the keys to what was clicked. Without the keys, a pane
+      lets them fall through to the documents and hides its cursor; the
+      terminal's title bar greys out. `Esc` in Magit and `Ctrl-\ Ctrl-n` in
+      the terminal give the keys back without closing; `q` and `Ctrl-\ q`
+      close.
+- [x] Magit steps aside rather than closing when docked: visiting a file,
+      writing the commit message, editing a rebase todo-list, the mergetool
+      and the process buffer leave the status open beside them.
+- [x] Checked in the editor: the terminal docked at the bottom with the
+      backlinks on the right and a document between; typing into the
+      document while the terminal is shown, `Ctrl-w p` back into it, clicks
+      both ways; Magit's status docked on the right, `Esc` then editing,
+      `Ctrl-w p` then `q`, visiting a file from a hunk; `terminal = "none"`
+      still covering the screen and closing with `Ctrl-\ Ctrl-n`.
+
+What this does not give, and a tree node would: the window commands
+(`Ctrl-w h/j/k/l`, `rotate`, `swap`, `only`) do not see the panes, a pane
+cannot be split or moved by them, and the documents' own statuslines do not
+dim while a pane has the keys.

@@ -2,6 +2,7 @@ pub mod blame_view;
 mod completion;
 pub mod confirm;
 pub mod diff_view;
+pub mod dock;
 mod document;
 pub(crate) mod editor;
 mod info;

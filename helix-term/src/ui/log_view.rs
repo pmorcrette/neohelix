@@ -223,12 +223,19 @@ pub fn range_prompt(workdir: PathBuf, filter: LogFilter) -> crate::ui::Prompt {
 
 impl Component for LogView {
     fn render(&mut self, viewport: Rect, surface: &mut Surface, cx: &mut Context) {
-        let area = viewport.intersection(Rect::new(
-            0,
-            0,
-            viewport.width,
-            viewport.height.saturating_sub(1),
-        ));
+        // Docked, in Magit's pane; otherwise over the documents.
+        let area = cx
+            .editor
+            .dock
+            .area_of(crate::ui::dock::MAGIT)
+            .unwrap_or_else(|| {
+                viewport.intersection(Rect::new(
+                    0,
+                    0,
+                    viewport.width,
+                    viewport.height.saturating_sub(1),
+                ))
+            });
         let theme = &cx.editor.theme;
         let popup_style = theme.get("ui.popup");
         surface.clear_with(area, popup_style);
@@ -358,6 +365,12 @@ impl Component for LogView {
     }
 
     fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
+        // Docked, the keys are Magit's only while it has the focus; `Esc`
+        // gives them back to the documents and `q` still closes.
+        if let Some(result) = crate::ui::dock::route(crate::ui::dock::MAGIT, event, cx.editor, true)
+        {
+            return result;
+        }
         let Event::Key(key) = event else {
             return EventResult::Consumed(None);
         };

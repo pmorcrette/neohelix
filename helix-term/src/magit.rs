@@ -28,8 +28,8 @@ pub fn execute(compositor: &mut Compositor, cx: &mut Context, plan: Plan, workdi
         }
         Requirement::Ask(asks) => ask_next(compositor, cx.editor, plan, workdir, asks, Vec::new()),
         Requirement::CommitMessage { amend } => {
-            // The views cover the editor; the message must be seen.
-            close_views(compositor);
+            // The message must be seen.
+            step_aside(compositor, cx.editor);
             compose(cx, plan, workdir, amend)
         }
         Requirement::TodoList => start_rebase(compositor, cx, plan, workdir),
@@ -130,8 +130,8 @@ fn capture_todo(cx: &mut Context, plan: Plan, workdir: PathBuf) {
                 {
                     return editor.set_error(format!("could not open the todo-list: {err}"));
                 }
-                // The views cover the editor; the list must be seen.
-                close_views(compositor);
+                // The list must be seen.
+                step_aside(compositor, editor);
                 editor.pending_rebase = Some(helix_view::editor::PendingRebase {
                     todo_path,
                     args: plan.args,
@@ -954,6 +954,17 @@ pub fn show_process(editor: &mut Editor) {
 
 /// Closes the status, log and commit views, which cover the whole editor,
 /// before something in the editor itself has to be seen.
+/// Makes room for something in the editor: docked, Magit's pane stays and
+/// only gives the keys to the documents; otherwise its views close, since
+/// they cover the editor.
+pub fn step_aside(compositor: &mut Compositor, editor: &mut Editor) {
+    if editor.dock.is_docked(crate::ui::dock::MAGIT) {
+        editor.dock.focus(None);
+    } else {
+        close_views(compositor);
+    }
+}
+
 pub fn close_views(compositor: &mut Compositor) {
     compositor.remove(crate::ui::blame_view::BlameView::ID);
     compositor.remove(DiffView::REFS_ID);
@@ -1285,14 +1296,14 @@ pub fn mergetool(
     let Some(view) = crate::commands::new_terminal_view(editor, Some(workdir.to_path_buf())) else {
         return;
     };
-    close_views(compositor);
+    step_aside(compositor, editor);
     let quote = |text: &str| format!("'{}'", text.replace('\'', r"'\''"));
     let line = format!("git mergetool -- {}\r", quote(path));
     if let Some(entry) = editor.terminals.current_entry_mut() {
         entry.name = Some(format!("mergetool {path}"));
         entry.terminal.write(line.into_bytes());
     }
-    compositor.push(view);
+    crate::ui::terminal::show(compositor, editor, view);
 }
 
 /// Stops an interactive rebase at the commit that last changed `line` (from

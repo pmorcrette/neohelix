@@ -552,6 +552,7 @@ impl MappableCommand {
         magit_file, "Open the Magit menu for the current file",
         terminal, "Open the integrated terminal",
         terminal_list, "List the integrated terminals",
+        focus_dock, "Move the keys between the documents and the docked panes",
         symbol_picker, "Open symbol picker",
         syntax_symbol_picker, "Open symbol picker from syntax information",
         lsp_or_syntax_symbol_picker, "Open symbol picker from LSP or syntax information",
@@ -3707,9 +3708,10 @@ pub fn terminal_picker(editor: &mut Editor) -> Option<Box<dyn Component>> {
                         .find_id::<ui::terminal::TerminalView>(ui::terminal::TerminalView::ID)
                     {
                         view.select(editor, number);
+                        editor.dock.focus(Some(ui::terminal::TerminalView::ID));
                     } else if editor.terminals.select(number) {
                         if let Some(view) = terminal_view(editor) {
-                            compositor.push(view);
+                            ui::terminal::show(compositor, editor, view);
                         }
                     }
                 },
@@ -3720,6 +3722,19 @@ pub fn terminal_picker(editor: &mut Editor) -> Option<Box<dyn Component>> {
     Some(Box::new(overlaid(picker)))
 }
 
+/// Moves the keys from the documents to each docked pane that takes them
+/// (Magit, the terminal) in turn, and back; the panes that only show
+/// something, like the backlinks, are passed over.
+fn focus_dock(cx: &mut Context) {
+    let before = cx.editor.dock.focused();
+    if before.is_none() && cx.editor.dock.cycle_focus().is_none() {
+        cx.editor
+            .set_status("No docked pane takes the keys: <space>t opens the terminal");
+    } else if before.is_some() {
+        cx.editor.dock.cycle_focus();
+    }
+}
+
 fn terminal_list(cx: &mut Context) {
     if let Some(picker) = terminal_picker(cx.editor) {
         cx.push_layer(picker);
@@ -3728,7 +3743,10 @@ fn terminal_list(cx: &mut Context) {
 
 fn terminal(cx: &mut Context) {
     if let Some(view) = terminal_view(cx.editor) {
-        cx.push_layer(view);
+        cx.callback
+            .push(Box::new(|compositor: &mut Compositor, cx| {
+                ui::terminal::show(compositor, cx.editor, view)
+            }));
     }
 }
 

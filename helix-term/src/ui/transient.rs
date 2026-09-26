@@ -371,7 +371,7 @@ impl TransientOverlay {
                 let workdir = self.workdir.clone();
                 EventResult::Consumed(Some(Box::new(move |compositor, cx| {
                     compositor.remove(TransientOverlay::ID);
-                    crate::magit::close_views(compositor);
+                    crate::magit::step_aside(compositor, cx.editor);
                     let path = std::path::PathBuf::from(path);
                     match command {
                         MagitCommand::ConflictEdit => {
@@ -502,7 +502,7 @@ impl TransientOverlay {
             }
             MagitCommand::ShowProcess => EventResult::Consumed(Some(Box::new(|compositor, cx| {
                 compositor.remove(TransientOverlay::ID);
-                crate::magit::close_views(compositor);
+                crate::magit::step_aside(compositor, cx.editor);
                 crate::magit::show_process(cx.editor);
             }))),
             MagitCommand::LogCurrent | MagitCommand::LogAll => {
