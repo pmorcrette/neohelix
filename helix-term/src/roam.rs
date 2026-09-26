@@ -2285,6 +2285,61 @@ pub fn table_previous_cell(editor: &mut Editor) {
     table_move_cell(editor, false);
 }
 
+/// Reports a recalculation, with how many fields failed.
+fn recalculated(editor: &mut Editor, what: String, result: Result<(String, usize), String>) {
+    match result {
+        Ok((after, 0)) => apply_to_buffer(editor, what, after),
+        Ok((after, errors)) => {
+            apply_to_buffer(editor, what, after);
+            editor.set_error(format!(
+                "{errors} field{} could not be computed (#ERROR)",
+                if errors == 1 { "" } else { "s" }
+            ));
+        }
+        Err(error) => editor.set_error(error),
+    }
+}
+
+/// Recalculates the table at the cursor from its `#+TBLFM:` line.
+pub fn table_recalculate(editor: &mut Editor) {
+    let (text, line) = text_and_line(editor);
+    let result = helix_roam::formula::recalculate(&text, line);
+    let what = match &result {
+        Ok(done) if done.formulas == 1 => "Applied 1 formula".to_string(),
+        Ok(done) => format!("Applied {} formulas", done.formulas),
+        Err(_) => String::new(),
+    };
+    recalculated(editor, what, result.map(|done| (done.text, done.errors)));
+}
+
+/// Recalculates the table at the cursor until it stops changing.
+pub fn table_iterate(editor: &mut Editor) {
+    let (text, line) = text_and_line(editor);
+    let result = helix_roam::formula::iterate(&text, line);
+    recalculated(
+        editor,
+        "The table has settled".to_string(),
+        result.map(|done| (done.text, done.errors)),
+    );
+}
+
+/// Recalculates every table in the buffer that has formulas.
+pub fn table_recalculate_all(editor: &mut Editor) {
+    let (text, _) = text_and_line(editor);
+    match helix_roam::formula::recalculate_all(&text) {
+        Ok((_, 0, _)) => editor.set_error("No table in the buffer has a #+TBLFM: line"),
+        Ok((after, tables, errors)) => recalculated(
+            editor,
+            format!(
+                "Recalculated {tables} table{}",
+                if tables == 1 { "" } else { "s" }
+            ),
+            Ok((after, errors)),
+        ),
+        Err(error) => editor.set_error(error),
+    }
+}
+
 // ── Subtree clipboard, sorting and dynamic blocks ─────────────────────────
 
 /// Copies the subtree at the cursor into the editor's Org clipboard.

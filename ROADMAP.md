@@ -151,8 +151,29 @@ commands that make Org feel like Org rather than like a text file with stars.
       (`[2/5]`, `[40%]`) on the parent.
 - [x] Tables: re-align on edit, move between cells and rows, insert and delete
       rows and columns.
-- [ ] Table formulas are a language of their own and are deliberately not in
+- [x] Table formulas are a language of their own and were deliberately not in
       this task; decide separately whether the fork wants them at all.
+
+  *Decided: a subset.* `helix_roam::formula` reads the `#+TBLFM:` line
+  under a table: column formulas (`$4=$2*$3`) over every row below the
+  first separator, field formulas and ranges of fields (`@>$4=…`,
+  `@3$3..@>$3=…`), which go after and so win. References are Org's: `@3$2`,
+  relative `@-1`/`$+1`, `@<`/`@>>`/`$>`, hlines `@I`, `@-I`, `@I+1`, and
+  ranges between any two of them, separators skipped. Arithmetic with `^`
+  and Calc's `%`; `vsum`, `vmean`, `vmedian`, `vmin`, `vmax`, `vcount`,
+  `vprod`, `vsdev`, `min`, `max`, `abs`, `round`, `floor`, `ceil`, `sqrt`,
+  `exp`, `ln`, `log10`; modes `;%.2f`, `;%d`, `;%.3e`, `;f2`, `;N`. As in
+  Org, empty fields drop out of ranges and are zero on their own; a field
+  that cannot be computed gets `#ERROR`. Results print as Org's Calc
+  settings do (integers as integers, otherwise eight significant digits),
+  except that Calc's trailing dot on a whole float (`3.`) is dropped.
+  `:org-table-recalculate` uses the `#+TBLFM:` line the cursor is on, or
+  the table's first; `:org-table-iterate` repeats until nothing changes
+  (ten passes at most); `:org-table-recalculate-buffer-tables` does every
+  table. Left out, and reported as such rather than half evaluated: Emacs
+  Lisp formulas, Calc's symbolic algebra, `if` and comparisons, dates and
+  durations, named columns and `#+CONSTANTS`, the marking first column,
+  and rewriting references when a row or column is inserted.
 
 ### Task 1.7: The Agenda
 

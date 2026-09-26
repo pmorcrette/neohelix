@@ -176,6 +176,9 @@
 | `:org-table-delete-column` | Remove the table column at the cursor. |
 | `:org-table-next-cell` | Realign, then move to the next table cell. |
 | `:org-table-previous-cell` | Realign, then move to the previous table cell. |
+| `:org-table-recalculate`, `:org-table-recalc` | Recalculate the Org table at the cursor from its #+TBLFM: line. |
+| `:org-table-iterate` | Recalculate the Org table at the cursor until it stops changing. |
+| `:org-table-recalculate-buffer-tables`, `:org-table-recalc-all` | Recalculate every Org table in the buffer that has a #+TBLFM: line. |
 | `:org-archive-subtree`, `:org-archive` | Move the subtree at the cursor to the file's archive. |
 | `:org-set-priority` | Set the priority on the headline at the cursor. |
 | `:org-schedule` | Set SCHEDULED: on the entry at the cursor. |

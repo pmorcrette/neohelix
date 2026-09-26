@@ -18,6 +18,7 @@ pub mod date;
 pub mod dependencies;
 pub mod dynamic;
 pub mod export;
+pub mod formula;
 mod graph;
 pub mod habit;
 pub mod hyperlink;

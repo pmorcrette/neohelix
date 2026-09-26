@@ -159,6 +159,9 @@
 | `org_table_delete_column` | Remove the table column at the cursor |  |
 | `org_table_next_cell` | Move to the next table cell |  |
 | `org_table_previous_cell` | Move to the previous table cell |  |
+| `org_table_recalculate` | Recalculate the Org table at the cursor from its formulas |  |
+| `org_table_iterate` | Recalculate the Org table at the cursor until it settles |  |
+| `org_table_recalculate_all` | Recalculate every Org table with formulas in the buffer |  |
 | `fold` | Fold the innermost foldable range at the cursor | normal: `` Zf ``, `` zf ``, select: `` Zf ``, `` zf `` |
 | `narrow_to_selection` | Hide every line outside the selection |  |
 | `cycle_fold` | Step the range at the cursor through folded, children, open | normal: `` Z<tab> ``, `` z<tab> ``, select: `` Z<tab> ``, `` z<tab> `` |

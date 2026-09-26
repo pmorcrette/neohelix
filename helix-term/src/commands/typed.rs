@@ -2470,6 +2470,12 @@ roam_buffer_command!(org_table_insert_column, crate::roam::table_insert_column);
 roam_buffer_command!(org_table_delete_column, crate::roam::table_delete_column);
 roam_buffer_command!(org_table_next_cell, crate::roam::table_next_cell);
 roam_buffer_command!(org_table_previous_cell, crate::roam::table_previous_cell);
+roam_buffer_command!(org_table_recalculate, crate::roam::table_recalculate);
+roam_buffer_command!(org_table_iterate, crate::roam::table_iterate);
+roam_buffer_command!(
+    org_table_recalculate_all,
+    crate::roam::table_recalculate_all
+);
 fold_command!(fold, crate::commands::fold);
 fold_command!(unfold, crate::commands::unfold);
 fold_command!(toggle_fold, crate::commands::toggle_fold);
@@ -5686,6 +5692,39 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Realign, then move to the previous table cell.",
         fun: org_table_previous_cell,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-recalculate",
+        aliases: &["org-table-recalc"],
+        doc: "Recalculate the Org table at the cursor from its #+TBLFM: line.",
+        fun: org_table_recalculate,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-iterate",
+        aliases: &[],
+        doc: "Recalculate the Org table at the cursor until it stops changing.",
+        fun: org_table_iterate,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-recalculate-buffer-tables",
+        aliases: &["org-table-recalc-all"],
+        doc: "Recalculate every Org table in the buffer that has a #+TBLFM: line.",
+        fun: org_table_recalculate_all,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

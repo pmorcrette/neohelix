@@ -462,6 +462,9 @@ impl MappableCommand {
         org_table_delete_column, "Remove the table column at the cursor",
         org_table_next_cell, "Move to the next table cell",
         org_table_previous_cell, "Move to the previous table cell",
+        org_table_recalculate, "Recalculate the Org table at the cursor from its formulas",
+        org_table_iterate, "Recalculate the Org table at the cursor until it settles",
+        org_table_recalculate_all, "Recalculate every Org table with formulas in the buffer",
         fold, "Fold the innermost foldable range at the cursor",
         narrow_to_selection, "Hide every line outside the selection",
         cycle_fold, "Step the range at the cursor through folded, children, open",
@@ -4302,6 +4305,18 @@ fn org_table_next_cell(cx: &mut Context) {
 
 fn org_table_previous_cell(cx: &mut Context) {
     crate::roam::table_previous_cell(cx.editor);
+}
+
+fn org_table_recalculate(cx: &mut Context) {
+    crate::roam::table_recalculate(cx.editor);
+}
+
+fn org_table_iterate(cx: &mut Context) {
+    crate::roam::table_iterate(cx.editor);
+}
+
+fn org_table_recalculate_all(cx: &mut Context) {
+    crate::roam::table_recalculate_all(cx.editor);
 }
 
 fn org_archive_subtree(cx: &mut Context) {
