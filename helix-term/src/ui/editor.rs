@@ -1634,6 +1634,12 @@ impl Component for EditorView {
             editor_area = editor_area.clip_top(1);
         }
 
+        // Docked panes take their side first; the documents get the rest.
+        let editor_area =
+            cx.editor
+                .dock
+                .layout(editor_area, config.dock.right_size, config.dock.bottom_size);
+
         // if the terminal size suddenly changed, we need to trigger a resize
         cx.editor.resize(editor_area);
 

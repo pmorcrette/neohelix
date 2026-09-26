@@ -266,6 +266,137 @@ Example
 start-position = "previous"
 ```
 
+### `[editor.roam]` Section
+
+Set options for the Org-Roam knowledge graph. Helix indexes the `.org` files in
+the configured directory at startup, and re-indexes a file when it is saved.
+
+| Key | Description | Default |
+|--|--|---------|
+|`enable` | Whether to index Org files into the graph | `true` |
+|`directory` | Directory to index | the workspace root |
+|`pretty` | Draw Org entities as their characters (`\alpha` as `α`) and links as their descriptions, except on the lines being edited; `:org-toggle-pretty` switches it per buffer | `true` |
+
+Example
+
+```toml
+[editor.roam]
+directory = "~/org"
+```
+
+The graph backs `:roam-node-find` (`<space>nf`) and the backlinks panel opened
+by `:roam-backlinks-toggle` (`<space>nb`). `:roam-reindex` rebuilds it from
+scratch, which is needed after Org files change outside the editor.
+
+### `[editor.integrated-terminal]` Section
+
+Set options for the integrated terminal (`:terminal`, `<space>t`).
+
+| Key | Description | Default |
+|--|--|---------|
+|`scrollback` | Lines kept above the screen to scroll back through, per terminal | `10000` |
+|`kitty-keyboard` | Let programs switch on the Kitty keyboard protocol, which tells apart keys such as `Ctrl-i` and `Tab` | `true` |
+|`shell` | The program to run and its arguments, such as `["fish", "--login"]`; empty runs `$SHELL` | `[]` |
+|`term` | What `TERM` tells programs the terminal is. The emulator implements `xterm-256color`; claiming another terminal can make programs send sequences it does not understand | `"xterm-256color"` |
+|`environment` | Environment variables for the shell, such as `{ EDITOR = "hx" }`, set after `TERM`; an empty value removes the variable | `{}` |
+|`cursor-shape` | The cursor's shape until a program asks for another: `block`, `underline` or `bar`. Copy mode's cursor is always a block | `"block"` |
+|`word-separators` | The characters that end a word for copy mode's `w`, `b` and `e` | ``",│`\|:\"' ()[]{}<>\t"`` |
+|`clipboard-copy` | Let programs copy into the clipboard registers (OSC 52). Programs can never read them | `true` |
+
+Settings apply to terminals started after they change; a running terminal
+keeps the ones it was started with.
+
+In the terminal, `Ctrl-\ Ctrl-n` returns to the editor (docked, the terminal
+stays in view and `Ctrl-\ q` hides it; see `[editor.dock]`), and `Shift-PageUp` and
+`Shift-PageDown` scroll back through the output; typing returns to the bottom.
+`Ctrl-\ [` enters copy mode, where the keys move a cursor over the text rather
+than reaching the program: `h` `j` `k` `l`, `w` `b` `e` (and `W` `B` `E` for
+space-separated words), `0` `^` `$`, `H` `M` `L`, `g` and `G` for the top of the
+scrollback and the bottom, `Ctrl-u` `Ctrl-d` and the page keys, with a count
+before a motion. `v`, `V` (or `x`) and `Ctrl-v` select characters, lines or a
+block; `y` copies the selection into the default yank register and leaves copy
+mode. `/` and `?` search forwards and backwards with a regular expression — `^`
+and `$` are not anchored to lines — and `n` and `N` repeat the search. `q` or
+`Esc` leave copy mode.
+
+`Ctrl-\ p` pastes the default yank register into the terminal and `Ctrl-\ P`
+the clipboard; a paste from the terminal Helix runs in goes through as well.
+Pastes are bracketed when the program asks for it, so a shell does not run a
+pasted line by itself. A program that asks for the mouse (`htop`, `tmux`, an
+editor) gets clicks, drags and the wheel; hold `Shift` to keep them from it.
+Otherwise the wheel scrolls back through the output, or, in a full-screen
+program like `less`, sends the arrow keys.
+
+Several terminals can run at once; the title bar shows them as tabs, each by
+the name it was given or the title its program set, with `!` on one whose bell
+rang while another was shown. With tmux's keys for its windows, `Ctrl-\ c`
+starts another terminal in the current document's directory, `Ctrl-\ w`
+lists them (also `<space>T` and `:terminal-list`: what runs in each and in
+which directory), `Ctrl-\ 1` to `Ctrl-\ 9` show one by its number,
+`Ctrl-\ (` and `Ctrl-\ )` the previous and the next, `Ctrl-\ ,` names the
+one shown (also `:terminal-rename`) and `Ctrl-\ &` closes it after asking
+(also `:terminal-close`). `:terminal` comes back to the terminal shown last;
+`:terminal-new [directory]` starts another. A new terminal starts in the
+directory of the document focused at the time; a running one keeps its own,
+as its shell does.
+
+### `[editor.dock]` Section
+
+Where the fork's views go. Docked, a view takes a side of the screen and the
+documents make room for it; with `none`, it covers the documents while open.
+
+| Key | Description | Default |
+|--|--|---------|
+|`magit` | Magit's status, log and blame: `right`, `bottom` or `none` | `"right"` |
+|`terminal` | The integrated terminal | `"bottom"` |
+|`backlinks` | The Org-Roam backlinks panel; when Magit has the same side, the panel covers the documents' edge instead | `"right"` |
+|`right-size` | The right pane's width, in percent of the screen's | `40` |
+|`bottom-size` | The bottom pane's height, in percent of the documents' area | `40` |
+
+A pane that opens takes the keys. `Ctrl-w p` (or `<space>w p`) moves them from
+the documents to each docked pane that takes keys in turn, and back; a click
+on a pane or on a document does the same. In Magit's views `Esc` gives the
+keys back to the documents and `q` closes; in the terminal `Ctrl-\ Ctrl-n`
+gives them back and `Ctrl-\ q` hides it, its shells still running. Docked,
+Magit stays open when it opens something in the editor — a file visited, the
+commit message, a rebase's todo-list — and gives it the keys. A pane is only
+docked when it leaves the documents at least 30 columns and 6 lines;
+otherwise it covers them as with `none`.
+
+### `[editor.magit]` Section
+
+Set options for the Magit client (`<space>m`).
+
+| Key | Description | Default |
+|--|--|---------|
+|`wip` | Save uncommitted work to hidden work-in-progress refs (`refs/wip/…`) after writing a file in a repository, and before a command that can lose it | `false` |
+|`repository-directories` | Where the repository list (`R` in the Magit menu) looks for repositories; `~` is expanded | the current working directory |
+|`repository-depth` | How many directory levels below each of those directories the list searches | `2` |
+
+Example
+
+```toml
+[editor.magit]
+wip = true
+```
+
+The saves are commits on `refs/wip/wtree/<branch>` (the working tree's tracked
+files) and `refs/wip/index/<branch>` (the index); nothing else in the
+repository changes. They are listed by `w` and `W` in the log menu (`l`), and a
+save's files are put back with the reset menu's `w`.
+
+The repository list shows each repository's branch, its upstream, how many
+commits it is ahead (`↑`) and behind (`↓`), and `*` when it has uncommitted
+changes. `RET` opens a repository's status; a menu key opens that menu on the
+repository under the cursor. The search stops at a repository, so one inside
+another's working tree is not listed, and hidden directories are skipped.
+
+```toml
+[editor.magit]
+repository-directories = ["~/src", "~/work"]
+repository-depth = 2
+```
+
 ### `[editor.auto-pairs]` Section
 
 Enables automatic insertion of pairs to parentheses, brackets, etc. Can be a

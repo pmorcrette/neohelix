@@ -121,6 +121,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "T" => goto_prev_test,
             "p" => goto_prev_paragraph,
             "x" => goto_prev_xml_element,
+            "m" => goto_prev_conflict,
             "space" => add_newline_above,
         },
         "]" => { "Right bracket"
@@ -136,6 +137,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "T" => goto_next_test,
             "p" => goto_next_paragraph,
             "x" => goto_next_xml_element,
+            "m" => goto_next_conflict,
             "space" => add_newline_below,
         },
 
@@ -199,6 +201,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "F" => goto_file_vsplit,
             "C-q" | "q" => wclose,
             "C-o" | "o" => wonly,
+            "C-p" | "p" => focus_dock,
             "C-h" | "h" | "left" => jump_view_left,
             "C-j" | "j" | "down" => jump_view_down,
             "C-k" | "k" | "up" => jump_view_up,
@@ -235,6 +238,14 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "D" => workspace_diagnostics_picker,
             "g" => changed_file_picker,
             "a" => code_action,
+            "m" => magit,
+            "M" => magit_file,
+            "t" => terminal,
+            "T" => terminal_list,
+            "n" => { "Notes (Org-Roam)"
+                "f" => roam_node_find,
+                "b" => roam_backlinks_toggle,
+            },
             "'" => last_picker,
             "G" => { "Debug (experimental)" sticky=true
                 "l" => dap_launch,
@@ -266,6 +277,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
                 "F" => goto_file_vsplit,
                 "C-q" | "q" => wclose,
                 "C-o" | "o" => wonly,
+            "C-p" | "p" => focus_dock,
                 "C-h" | "h" | "left" => jump_view_left,
                 "C-j" | "j" | "down" => jump_view_down,
                 "C-k" | "k" | "up" => jump_view_up,
@@ -309,6 +321,19 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "?" => rsearch,
             "n" => search_next,
             "N" => search_prev,
+
+            // Folding, on the keys Vim puts it on. `zc` and `zm` are taken by
+            // upstream's view commands, so closing is `zf` and closing every
+            // fold is `zM`; nothing upstream binds is moved. `z` then tab is
+            // Org's visibility cycling, which cannot have tab itself: upstream
+            // binds it to jump_forward.
+            "a" => toggle_fold,
+            "f" => fold,
+            "o" => unfold,
+            "M" => fold_all,
+            "R" => unfold_all,
+            "tab" => cycle_fold,
+            "S-tab" => cycle_fold_all,
         },
         "Z" => { "View" sticky=true
             "z" | "c" => align_view_center,
@@ -326,6 +351,19 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "?" => rsearch,
             "n" => search_next,
             "N" => search_prev,
+
+            // Folding, on the keys Vim puts it on. `zc` and `zm` are taken by
+            // upstream's view commands, so closing is `zf` and closing every
+            // fold is `zM`; nothing upstream binds is moved. `z` then tab is
+            // Org's visibility cycling, which cannot have tab itself: upstream
+            // binds it to jump_forward.
+            "a" => toggle_fold,
+            "f" => fold,
+            "o" => unfold,
+            "M" => fold_all,
+            "R" => unfold_all,
+            "tab" => cycle_fold,
+            "S-tab" => cycle_fold_all,
         },
 
         "\"" => select_register,

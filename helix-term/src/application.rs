@@ -141,6 +141,10 @@ impl Application {
 
         let jobs = Jobs::new();
 
+        // A URL handed over by a browser is what the editor was started for,
+        // so it opens after any files and ends up in front.
+        let org_protocol = args.org_protocol.clone();
+
         if args.load_tutor {
             let path = helix_loader::runtime_file(Path::new("tutor"));
             editor.open(&path, Action::VerticalSplit)?;
@@ -204,6 +208,10 @@ impl Application {
                             })
                             .collect();
                         doc.set_selection(view_id, selection);
+                        let scrolloff = editor.config().scrolloff;
+                        let view = view!(editor, view_id);
+                        let doc = doc_mut!(editor, &doc_id);
+                        view.ensure_cursor_in_view(doc, scrolloff);
                     }
                 }
 
@@ -244,6 +252,12 @@ impl Application {
         ])
         .context("build signal handler")?;
 
+        if let Some(url) = org_protocol {
+            crate::roam::handle_protocol(&mut editor, &url);
+        }
+
+        crate::roam::start_initial_index(&editor);
+
         let app = Self {
             compositor,
             terminal,
@@ -263,6 +277,7 @@ impl Application {
             self.terminal.clear().expect("Cannot clear the terminal");
             self.compositor.full_redraw = false;
         }
+        crate::ui::dock::update(&self.compositor, &mut self.editor);
 
         let mut cx = crate::compositor::Context {
             editor: &mut self.editor,
@@ -616,6 +631,21 @@ impl Application {
         );
 
         doc.set_last_saved_revision(doc_save_event.revision, doc_save_event.save_time);
+
+        crate::roam::reindex_saved_file(
+            &self.editor,
+            &doc_save_event.path,
+            doc_save_event.text.to_string(),
+        );
+
+        crate::magit::commit_if_written(&mut self.editor, &doc_save_event.path);
+        crate::magit::rebase_if_written(&mut self.editor, &doc_save_event.path);
+        crate::magit::wip_after_save(&self.editor, &doc_save_event.path);
+        crate::roam::sync_src_edit(
+            &mut self.editor,
+            &doc_save_event.path,
+            doc_save_event.text.to_string(),
+        );
 
         let lines = doc_save_event.text.len_lines();
         let size = doc_save_event.text.len_bytes();
@@ -1360,6 +1390,10 @@ impl Application {
         }
 
         self.editor.close_language_servers(None).await;
+
+        // `:q` closes a view, not its buffer, so a block's editing file is
+        // usually still open at exit and nothing else would remove it.
+        crate::roam::forget_all_src_edits(&mut self.editor);
 
         errs
     }

@@ -200,6 +200,36 @@ mod tests {
     }
 
     #[test]
+    fn the_integrated_terminal_is_configured_in_the_editor_section() {
+        let config = Config::load_test(
+            r#"
+            [editor.integrated-terminal]
+            shell = ["fish", "--login"]
+            term = "xterm-kitty"
+            cursor-shape = "bar"
+            word-separators = " /"
+            clipboard-copy = false
+            environment = { EDITOR = "hx", PAGER = "" }
+            "#,
+        );
+        let options = config.editor.integrated_terminal.options();
+        assert_eq!(options.shell, ["fish", "--login"]);
+        assert_eq!(options.term, "xterm-kitty");
+        assert_eq!(options.cursor_shape, helix_pty::CursorShape::Beam);
+        assert_eq!(options.word_separators, " /");
+        assert!(!options.clipboard_copy);
+        assert_eq!(
+            options.environment,
+            [
+                ("EDITOR".to_string(), "hx".to_string()),
+                ("PAGER".to_string(), String::new())
+            ]
+        );
+        // What is left out keeps its default.
+        assert_eq!(options.scrollback, 10_000);
+    }
+
+    #[test]
     fn keys_resolve_to_correct_defaults() {
         // From serde default
         let default_keys = Config::load_test("").keys;

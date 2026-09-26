@@ -23,6 +23,7 @@ mod document_colors;
 mod document_highlight;
 mod document_links;
 mod prompt;
+mod roam;
 mod signature_help;
 mod snippet;
 mod workspace_trust;
@@ -63,6 +64,7 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
     document_colors::register_hooks(&handlers);
     document_links::register_hooks(&handlers);
     prompt::register_hooks(&handlers);
+    roam::register_hooks();
     workspace_trust::register_hooks(&handlers);
     handlers
 }

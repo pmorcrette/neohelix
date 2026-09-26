@@ -409,6 +409,153 @@ impl MappableCommand {
         code_action, "Perform code action",
         buffer_picker, "Open buffer picker",
         jumplist_picker, "Open jumplist picker",
+        roam_node_find, "Find Org-Roam node",
+        roam_backlinks_toggle, "Toggle Org-Roam backlinks panel",
+        roam_promote_buffer, "Promote the buffer to a single Org-Roam node",
+        roam_demote_buffer, "Demote the Org-Roam file node to a heading",
+        roam_extract_subtree, "Extract the subtree at the cursor into its own node",
+        roam_replace_links, "Replace legacy roam: links with id: links",
+        roam_refile, "Refile the subtree at the cursor into another Org-Roam node",
+        org_follow_link, "Follow the Org link under the cursor",
+        org_goto_next_link, "Move to the next Org link",
+        org_goto_previous_link, "Move to the previous Org link",
+        org_store_link, "Store a link to the cursor's location",
+        org_insert_link, "Insert the stored Org link",
+        org_create_id, "Give the entry at the cursor an :ID:",
+        roam_node_insert, "Insert a link to an Org-Roam node, creating it if needed",
+        roam_random_node, "Open a random Org-Roam node",
+        roam_ref_find, "Find an Org-Roam node by one of its refs",
+        roam_alias_add, "Add an alias to the node at the cursor",
+        roam_alias_remove, "Remove an alias from the node at the cursor",
+        roam_rename_node, "Rename the node at the cursor and the links naming it",
+        roam_unlinked_references, "List where this node is named without a link",
+        roam_capture, "Create an Org-Roam node from a template",
+        org_insert_heading, "Insert a heading after the current subtree",
+        org_promote, "Promote the headline at the cursor",
+        org_demote, "Demote the headline at the cursor",
+        org_promote_subtree, "Promote the subtree at the cursor",
+        org_demote_subtree, "Demote the subtree at the cursor",
+        org_move_subtree_up, "Move the subtree above its sibling",
+        org_move_subtree_down, "Move the subtree below its sibling",
+        org_todo, "Cycle the TODO state forward",
+        org_todo_previous, "Cycle the TODO state backward",
+        org_priority_up, "Raise the priority towards [#A]",
+        org_priority_down, "Lower the priority",
+        org_agenda_day, "Show today's agenda",
+        org_agenda_restrict, "Restrict the agenda to the current file",
+        org_agenda_unrestrict, "Lift the agenda restriction",
+        org_agenda_scope, "Say which files the agenda reads",
+        org_agenda_week, "Show the week's agenda",
+        org_todo_list, "List every unfinished task",
+        org_todo_filtered, "List unfinished tasks matching a keyword, tag or priority",
+        org_insert_item, "Insert a list item after the one at the cursor",
+        org_renumber_list, "Renumber the ordered list at the cursor",
+        org_demote_item, "Move the list item in a level",
+        org_promote_item, "Move the list item out a level",
+        org_toggle_checkbox, "Tick or untick the checkbox at the cursor",
+        org_update_cookies, "Bring every statistics cookie up to date",
+        org_table_align, "Realign the Org table at the cursor",
+        org_table_insert_row, "Insert a table row below the cursor",
+        org_table_insert_separator, "Insert a table separator below the cursor",
+        org_table_delete_row, "Remove the table row at the cursor",
+        org_table_insert_column, "Insert a table column at the cursor",
+        org_table_delete_column, "Remove the table column at the cursor",
+        org_table_next_cell, "Move to the next table cell",
+        org_table_previous_cell, "Move to the previous table cell",
+        org_table_recalculate, "Recalculate the Org table at the cursor from its formulas",
+        org_table_iterate, "Recalculate the Org table at the cursor until it settles",
+        org_table_recalculate_all, "Recalculate every Org table with formulas in the buffer",
+        fold, "Fold the innermost foldable range at the cursor",
+        narrow_to_selection, "Hide every line outside the selection",
+        cycle_fold, "Step the range at the cursor through folded, children, open",
+        cycle_fold_all, "Step the buffer through overview, contents, everything",
+        unfold, "Open the fold at the cursor",
+        toggle_fold, "Close the fold at the cursor, or open it",
+        fold_all, "Fold everything the language marks as foldable",
+        unfold_all, "Open every fold in the buffer",
+        roam_index, "Look through everything the index holds",
+        roam_state, "Report the fork's Org-Roam state for a bug report",
+        roam_backlink_counts, "Show each headline's backlink count beside it",
+        roam_pin_node, "Pin the Roam panel to the node at the cursor",
+        roam_unpin_node, "Let the Roam panel follow the cursor again",
+        roam_diagnose, "Report what the index believes about the node at the cursor",
+        org_emphasis, "Toggle an emphasis marker on the selection",
+        org_insert_block, "Insert a structure block, wrapping the selection",
+        org_footnote_new, "Add a footnote and go to where its text goes",
+        org_footnote_goto, "Jump between a footnote's reference and definition",
+        org_footnote_renumber, "Renumber the numeric footnotes in reference order",
+        org_cite_insert, "Insert a citation, completing over the bibliography",
+        org_cite_follow, "Open the bibliography at the cited entry",
+        org_next_heading, "Move to the next heading",
+        org_previous_heading, "Move to the previous heading",
+        org_next_sibling_heading, "Move to the next heading at the same level",
+        org_previous_sibling_heading, "Move to the previous heading at the same level",
+        org_parent_heading, "Move to the parent heading",
+        org_goto_heading, "Jump to a heading in this buffer by name",
+        org_outline_path, "Show the outline path of the entry at the cursor",
+        org_sparse_tree, "Hide everything but the entries matching a filter",
+        org_narrow, "Hide everything outside the subtree at the cursor",
+        org_widen, "Bring back everything a narrowing or sparse tree hid",
+        org_startup_visibility, "Fold the buffer the way its #+STARTUP: says it opens",
+        org_src_next, "Move to the next source block",
+        org_src_previous, "Move to the previous source block",
+        org_src_result, "Jump between a source block and its #+RESULTS:",
+        org_edit_src, "Edit the source block at the cursor in a buffer of its own",
+        org_tangle, "Write every block with a :tangle target to its file",
+        org_clock_in, "Start a clock on the entry at the cursor, stopping any other",
+        org_clock_out, "Stop the running clock",
+        org_clock_cancel, "Discard the running clock",
+        org_clock_goto, "Jump to the entry with the running clock",
+        org_clock_report, "Insert or refresh a clock report table",
+        org_export_markdown, "Export the buffer to Markdown next to its file",
+        org_export_html, "Export the buffer to HTML next to its file",
+        org_export_latex, "Export the buffer to LaTeX next to its file",
+        org_babel_execute, "Run the source block at the cursor and write its results (needs workspace trust)",
+        org_columns, "Show or hide the column view of the buffer, from its #+COLUMNS:",
+        org_attach, "Copy a file into the attachment directory of the entry",
+        org_attach_open, "Pick one of the files attached to the entry",
+        org_inline_task, "Insert an inline task below the cursor",
+        org_copy_visible, "Yank only the visible text of the selections, or of the buffer",
+        roam_dailies_capture, "Add an entry to today's daily note without leaving this buffer",
+        roam_dailies_directory, "Pick a file in the dailies directory",
+        org_encrypt_entry, "Encrypt the body of the entry at the cursor with gpg",
+        org_encrypt_entries, "Encrypt every :crypt: entry of the buffer that is in clear",
+        org_decrypt_entry, "Decrypt the entry at the cursor",
+        roam_graph, "Draw the whole Org-Roam graph with Graphviz",
+        roam_graph_neighbourhood, "Draw the nodes within two links of the node at the cursor",
+        org_copy_subtree, "Copy the subtree at the cursor",
+        org_cut_subtree, "Cut the subtree at the cursor",
+        org_paste_subtree, "Paste the copied subtree at the cursor's level",
+        org_clone_subtree, "Clone the subtree at the cursor, shifting its dates",
+        org_sort_entries, "Sort the children of the entry at the cursor",
+        org_sort_list, "Sort the list items at the cursor",
+        org_sort_table, "Sort the table rows by the cursor's column",
+        org_dblock_update, "Regenerate the dynamic block at the cursor",
+        org_dblock_update_all, "Regenerate every dynamic block in the buffer",
+        org_archive_subtree, "Move the subtree at the cursor to the file's archive",
+        org_set_priority, "Set the priority on the headline at the cursor",
+        org_schedule, "Set SCHEDULED: on the entry at the cursor",
+        org_deadline, "Set DEADLINE: on the entry at the cursor",
+        org_set_property, "Set a property on the entry at the cursor",
+        org_remove_property, "Remove a property from the entry at the cursor",
+        org_set_effort, "Set the effort estimate on the entry at the cursor",
+        org_increment_effort, "Step the effort estimate to the next value",
+        org_insert_drawer, "Insert a drawer under the entry at the cursor",
+        org_add_note, "Record a dated note in the entry's logbook",
+        org_log_state, "Record a TODO state change in the entry's logbook",
+        roam_dailies_today, "Open today's daily note",
+        roam_dailies_date, "Open the daily note for a date",
+        roam_dailies_next, "Open the next daily note",
+        roam_dailies_previous, "Open the previous daily note",
+        roam_tag_add, "Add a tag to the node at the cursor",
+        roam_tag_remove, "Remove a tag from the node at the cursor",
+        roam_ref_add, "Add a ref to the node at the cursor",
+        roam_ref_remove, "Remove a ref from the node at the cursor",
+        magit, "Open the Magit transient menu",
+        magit_file, "Open the Magit menu for the current file",
+        terminal, "Open the integrated terminal",
+        terminal_list, "List the integrated terminals",
+        focus_dock, "Move the keys between the documents and the docked panes",
         symbol_picker, "Open symbol picker",
         syntax_symbol_picker, "Open symbol picker from syntax information",
         lsp_or_syntax_symbol_picker, "Open symbol picker from LSP or syntax information",
@@ -578,6 +725,8 @@ impl MappableCommand {
         goto_prev_test, "Goto previous test",
         goto_next_xml_element, "Goto next (X)HTML element",
         goto_prev_xml_element, "Goto previous (X)HTML element",
+        goto_next_conflict, "Goto next merge conflict",
+        goto_prev_conflict, "Goto previous merge conflict",
         goto_next_entry, "Goto next pairing",
         goto_prev_entry, "Goto previous pairing",
         goto_next_paragraph, "Goto next paragraph",
@@ -3270,6 +3419,8 @@ struct PathStyleConfig {
     directory_style: Style,
     number_style: Style,
     colon_style: Style,
+    /// A habit's day by how due it was: not yet, due, last day, overdue.
+    habit_styles: [Style; 4],
 }
 
 impl PathStyleConfig {
@@ -3278,7 +3429,37 @@ impl PathStyleConfig {
             directory_style: theme.get("ui.text.directory"),
             number_style: theme.get("constant.numeric.integer"),
             colon_style: theme.get("punctuation"),
+            // Org's blue, green, yellow and red, from the theme's own.
+            habit_styles: [
+                theme.get("hint"),
+                theme.get("diff.plus"),
+                theme.get("warning"),
+                theme.get("error"),
+            ],
         }
+    }
+
+    /// A habit's consistency graph: one character a day, coloured by how
+    /// due it was, `*` where it was done and `!` for today.
+    fn habit<'a>(&self, cells: &[helix_roam::habit::Cell]) -> Cell<'a> {
+        use helix_roam::habit::Due;
+        let spans: Vec<Span> = cells
+            .iter()
+            .map(|cell| {
+                let style = self.habit_styles[match cell.due {
+                    Due::NotYet => 0,
+                    Due::Due => 1,
+                    Due::LastDay => 2,
+                    Due::Overdue => 3,
+                }];
+                let glyph = match cell.glyph() {
+                    ' ' => '·',
+                    glyph => glyph,
+                };
+                Span::styled(glyph.to_string(), style)
+            })
+            .collect();
+        Cell::from(Spans::from(spans))
     }
 
     fn stylize<'a>(&self, path: Option<&'a Path>, line: Option<usize>) -> Cell<'a> {
@@ -3389,6 +3570,1771 @@ fn buffer_picker(cx: &mut Context) {
         Some((meta.id.into(), lines))
     });
     cx.push_layer(Box::new(overlaid(picker)));
+}
+
+/// Starts a shell in a new terminal, which the view shows from then on.
+/// It starts in `directory`, or else in the focused document's directory,
+/// which is where a shell opened from an editor is expected to land.
+///
+/// Returns the terminal's number, or `None` once the error is reported.
+pub fn spawn_terminal(editor: &mut Editor, directory: Option<PathBuf>) -> Option<usize> {
+    let directory = directory
+        .or_else(|| {
+            doc!(editor)
+                .path()
+                .and_then(|path| path.parent())
+                .map(Path::to_path_buf)
+        })
+        .or_else(|| Some(helix_stdx::env::current_working_dir()));
+
+    // The reader thread calls this whenever output arrives; Helix's event
+    // loop wakes and redraws.
+    let redraw = std::sync::Arc::new(helix_event::request_redraw);
+
+    let (columns, rows) = {
+        let area = editor.tree.area();
+        (area.width, area.height.saturating_sub(1))
+    };
+
+    let options = editor.config().integrated_terminal.options();
+    match helix_pty::PtyTerminal::spawn_with(columns, rows, directory, redraw, options) {
+        Ok(terminal) => Some(editor.terminals.add(terminal)),
+        Err(err) => {
+            editor.set_error(err.to_string());
+            None
+        }
+    }
+}
+
+/// Opens the integrated terminal on the terminal shown last, starting a
+/// shell if none is running.
+///
+/// The shells live in the editor rather than in the view, so closing the
+/// view with `Ctrl-\ Ctrl-n` and reopening comes back to the same session.
+pub fn terminal_view(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    editor
+        .terminals
+        .remove_where(|entry| entry.terminal.has_exited());
+    if editor.terminals.is_empty() {
+        spawn_terminal(editor, None)?;
+    }
+    editor.set_status("Terminal: Ctrl-\\ Ctrl-n returns to the editor");
+    Some(Box::new(ui::terminal::TerminalView::new()))
+}
+
+/// Opens the integrated terminal on a new shell, even when others run.
+pub fn new_terminal_view(
+    editor: &mut Editor,
+    directory: Option<PathBuf>,
+) -> Option<Box<dyn Component>> {
+    editor
+        .terminals
+        .remove_where(|entry| entry.terminal.has_exited());
+    let number = spawn_terminal(editor, directory)?;
+    editor.set_status(format!(
+        "Terminal {number}: Ctrl-\\ Ctrl-n returns to the editor"
+    ));
+    Some(Box::new(ui::terminal::TerminalView::new()))
+}
+
+/// Lists the terminals; the one picked is shown in the terminal view.
+pub fn terminal_picker(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    editor
+        .terminals
+        .remove_where(|entry| entry.terminal.has_exited());
+    if editor.terminals.is_empty() {
+        editor.set_status("No terminal is running: :terminal starts one");
+        return None;
+    }
+
+    struct TerminalMeta {
+        number: usize,
+        label: String,
+        running: String,
+        directory: String,
+        flags: &'static str,
+    }
+
+    let current = editor.terminals.current_entry().map(|entry| entry.number);
+    let items: Vec<TerminalMeta> = editor
+        .terminals
+        .entries()
+        .iter()
+        .map(|entry| {
+            let foreground = entry.terminal.foreground();
+            TerminalMeta {
+                number: entry.number,
+                label: ui::terminal::label(entry),
+                running: foreground
+                    .as_ref()
+                    .map(|found| found.command.clone())
+                    .unwrap_or_default(),
+                directory: foreground
+                    .and_then(|found| found.directory)
+                    .map(|directory| {
+                        helix_stdx::path::fold_home_dir(&directory)
+                            .display()
+                            .to_string()
+                    })
+                    .unwrap_or_default(),
+                flags: match (Some(entry.number) == current, entry.alert) {
+                    (true, _) => "*",
+                    (false, true) => "!",
+                    (false, false) => "",
+                },
+            }
+        })
+        .collect();
+    let initial_cursor = items
+        .iter()
+        .position(|item| Some(item.number) == current)
+        .unwrap_or(0);
+
+    let columns = [
+        PickerColumn::new("#", |meta: &TerminalMeta, _| meta.number.to_string().into()),
+        PickerColumn::new("flags", |meta: &TerminalMeta, _| meta.flags.into()),
+        PickerColumn::new("running", |meta: &TerminalMeta, _| {
+            meta.running.as_str().into()
+        }),
+        PickerColumn::new("directory", |meta: &TerminalMeta, _| {
+            meta.directory.as_str().into()
+        }),
+        // Last: a shell's title often repeats a long directory.
+        PickerColumn::new("name", |meta: &TerminalMeta, _| meta.label.as_str().into()),
+    ];
+    let picker = Picker::new(columns, 4, items, (), |cx, meta, _action| {
+        let number = meta.number;
+        cx.jobs.callback(async move {
+            Ok(job::Callback::EditorCompositor(Box::new(
+                move |editor: &mut Editor, compositor: &mut Compositor| {
+                    if let Some(view) = compositor
+                        .find_id::<ui::terminal::TerminalView>(ui::terminal::TerminalView::ID)
+                    {
+                        view.select(editor, number);
+                        editor.dock.focus(Some(ui::terminal::TerminalView::ID));
+                    } else if editor.terminals.select(number) {
+                        if let Some(view) = terminal_view(editor) {
+                            ui::terminal::show(compositor, editor, view);
+                        }
+                    }
+                },
+            )))
+        });
+    })
+    .with_initial_cursor(initial_cursor as u32);
+    Some(Box::new(overlaid(picker)))
+}
+
+/// Moves the keys from the documents to each docked pane that takes them
+/// (Magit, the terminal) in turn, and back; the panes that only show
+/// something, like the backlinks, are passed over.
+fn focus_dock(cx: &mut Context) {
+    let before = cx.editor.dock.focused();
+    if before.is_none() && cx.editor.dock.cycle_focus().is_none() {
+        cx.editor
+            .set_status("No docked pane takes the keys: <space>t opens the terminal");
+    } else if before.is_some() {
+        cx.editor.dock.cycle_focus();
+    }
+}
+
+fn terminal_list(cx: &mut Context) {
+    if let Some(picker) = terminal_picker(cx.editor) {
+        cx.push_layer(picker);
+    }
+}
+
+fn terminal(cx: &mut Context) {
+    if let Some(view) = terminal_view(cx.editor) {
+        cx.callback
+            .push(Box::new(|compositor: &mut Compositor, cx| {
+                ui::terminal::show(compositor, cx.editor, view)
+            }));
+    }
+}
+
+/// Builds the Magit transient overlay, or reports why the repository could
+/// not be opened.
+///
+/// Shared by the `magit` static command and `:magit`, which reach the
+/// compositor by different routes.
+pub fn magit_overlay(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    // Prefer the focused document's repository, so a buffer opened from
+    // elsewhere shows its own repository rather than the editor's cwd.
+    let from = doc!(editor)
+        .path()
+        .and_then(|path| path.parent())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(helix_stdx::env::current_working_dir);
+
+    match helix_magit::Repository::discover(&from) {
+        Ok(repository) => Some(Box::new(ui::transient::TransientOverlay::new(
+            helix_magit::transient::main_menu(),
+            repository.head_description(),
+            repository.workdir().to_path_buf(),
+        ))),
+        // No repository: what can start one.
+        Err(_) => Some(Box::new(ui::transient::TransientOverlay::new(
+            helix_magit::transient::setup_menu(),
+            from.display().to_string(),
+            from,
+        ))),
+    }
+}
+
+/// The file dispatch: the menu for the current buffer's file. Shared by
+/// `magit_file` and `:magit-file`.
+pub fn magit_file_overlay(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    let (view, doc) = current_ref!(editor);
+    let Some(path) = doc.path().map(Path::to_path_buf) else {
+        editor.set_error("This buffer has no file");
+        return None;
+    };
+    let text = doc.text().slice(..);
+    let line = text.char_to_line(doc.selection(view.id).primary().cursor(text));
+    let repository = match helix_magit::Repository::discover(path.parent().unwrap_or(&path)) {
+        Ok(repository) => repository,
+        Err(err) => {
+            editor.set_error(err.to_string());
+            return None;
+        }
+    };
+    let Some(relative) = ui::blame_view::relative_to(repository.workdir(), &path) else {
+        editor.set_error("The file is outside its repository's working tree");
+        return None;
+    };
+    Some(Box::new(
+        ui::transient::TransientOverlay::new(
+            helix_magit::transient::file_menu(),
+            relative.display().to_string(),
+            repository.workdir().to_path_buf(),
+        )
+        .with_target(relative.display().to_string(), helix_magit::AskKind::Path)
+        .with_line(line),
+    ))
+}
+
+fn magit_file(cx: &mut Context) {
+    if let Some(overlay) = magit_file_overlay(cx.editor) {
+        cx.push_layer(overlay);
+    }
+}
+
+fn magit(cx: &mut Context) {
+    if let Some(overlay) = magit_overlay(cx.editor) {
+        cx.push_layer(overlay);
+    }
+}
+
+/// Builds the Org-Roam node picker, or reports why there is nothing to pick.
+///
+/// Shared by the `roam_node_find` static command and the `:roam-node-find`
+/// typable command, which reach the compositor by different routes.
+pub fn roam_node_picker(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    struct RoamNodeMeta {
+        title: String,
+        tags: String,
+        aliases: String,
+        path: PathBuf,
+        line: usize,
+    }
+
+    // Snapshot the graph rather than holding its lock: the background indexer
+    // must stay free to re-index while the picker is open.
+    let nodes: Vec<RoamNodeMeta> = {
+        let graph = editor.roam.read();
+        graph
+            .nodes()
+            .map(|node| RoamNodeMeta {
+                title: node.title.clone(),
+                tags: node.tags.join(" "),
+                aliases: node.aliases.join(", "),
+                path: node.file_path.clone(),
+                line: node.line,
+            })
+            .collect()
+    };
+
+    if nodes.is_empty() {
+        editor.set_status("No Org-Roam nodes indexed. Check `editor.roam.directory`.");
+        return None;
+    }
+
+    let columns = [
+        ui::PickerColumn::new("title", |item: &RoamNodeMeta, _: &PathStyleConfig| {
+            item.title.as_str().into()
+        }),
+        ui::PickerColumn::new("tags", |item: &RoamNodeMeta, _: &PathStyleConfig| {
+            item.tags.as_str().into()
+        }),
+        ui::PickerColumn::new("aliases", |item: &RoamNodeMeta, _: &PathStyleConfig| {
+            item.aliases.as_str().into()
+        }),
+        ui::PickerColumn::new("path", |item: &RoamNodeMeta, config: &PathStyleConfig| {
+            config.stylize(Some(item.path.as_path()), Some(item.line))
+        }),
+    ];
+
+    let picker = Picker::new(
+        columns,
+        0, // title
+        nodes,
+        PathStyleConfig::new(&editor.theme),
+        |cx, meta, action| {
+            let doc = match cx.editor.open(&meta.path, action) {
+                Ok(id) => doc_mut!(cx.editor, &id),
+                Err(err) => {
+                    cx.editor.set_error(format!(
+                        "Failed to open '{}': {}",
+                        meta.path.display(),
+                        err
+                    ));
+                    return;
+                }
+            };
+
+            let text = doc.text();
+            // The file may have changed on disk since it was indexed.
+            if meta.line >= text.len_lines() {
+                cx.editor
+                    .set_error("The node's line no longer exists; re-index the directory.");
+                return;
+            }
+
+            let pos = text.line_to_char(meta.line);
+            let view = view_mut!(cx.editor);
+            doc.set_selection(view.id, Selection::point(pos));
+            if action.align_view(view, doc.id()) {
+                align_view(doc, view, Align::Center);
+            }
+        },
+    )
+    .with_preview(|_editor, meta| Some((meta.path.as_path().into(), Some((meta.line, meta.line)))));
+
+    Some(Box::new(overlaid(picker)))
+}
+
+fn roam_node_find(cx: &mut Context) {
+    if let Some(picker) = roam_node_picker(cx.editor) {
+        cx.push_layer(picker);
+    }
+}
+
+/// Shows or hides the backlinks panel, returning whether it is now shown.
+pub fn toggle_roam_backlinks(compositor: &mut crate::compositor::Compositor) -> bool {
+    if compositor.remove(ui::roam::RoamPanel::ID).is_none() {
+        compositor.push(Box::new(ui::roam::RoamPanel));
+        true
+    } else {
+        false
+    }
+}
+
+/// Turns a file whose whole content is one heading into a file-level node.
+fn roam_promote_buffer(cx: &mut Context) {
+    crate::roam::promote_buffer(cx.editor);
+}
+
+/// Turns a file-level node into a single heading holding the file.
+fn roam_demote_buffer(cx: &mut Context) {
+    crate::roam::demote_buffer(cx.editor);
+}
+
+/// Extracts the subtree at the cursor into a node of its own.
+fn roam_extract_subtree(cx: &mut Context) {
+    crate::roam::extract_subtree(cx.editor);
+}
+
+/// Rewrites this buffer's legacy `roam:` links as `id:` links.
+fn roam_replace_links(cx: &mut Context) {
+    crate::roam::replace_roam_links(cx.editor);
+}
+
+/// Picks a node and refiles the subtree at the cursor into it.
+pub fn roam_refile_picker(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    let targets = crate::roam::refile_targets(editor);
+    if targets.is_empty() {
+        editor.set_status("No Org-Roam nodes indexed. Check `editor.roam.directory`.");
+        return None;
+    }
+
+    let columns = [
+        ui::PickerColumn::new(
+            "title",
+            |item: &crate::roam::RefileTarget, _: &PathStyleConfig| item.title.as_str().into(),
+        ),
+        ui::PickerColumn::new(
+            "path",
+            |item: &crate::roam::RefileTarget, config: &PathStyleConfig| {
+                config.stylize(Some(item.path.as_path()), None)
+            },
+        ),
+    ];
+
+    let picker = Picker::new(
+        columns,
+        0, // title
+        targets,
+        PathStyleConfig::new(&editor.theme),
+        |cx, target, _action| {
+            crate::roam::refile_into(cx.editor, &target.path, target.id);
+        },
+    );
+
+    Some(Box::new(overlaid(picker)))
+}
+
+/// Opens the refile picker.
+fn roam_refile(cx: &mut Context) {
+    if let Some(picker) = roam_refile_picker(cx.editor) {
+        cx.push_layer(picker);
+    }
+}
+
+/// Follows the Org link under the cursor.
+fn org_follow_link(cx: &mut Context) {
+    crate::roam::follow_link(cx.editor);
+}
+
+/// Moves to the next Org link in the buffer.
+fn org_goto_next_link(cx: &mut Context) {
+    crate::roam::goto_next_link(cx.editor);
+}
+
+/// Moves to the previous Org link in the buffer.
+fn org_goto_previous_link(cx: &mut Context) {
+    crate::roam::goto_previous_link(cx.editor);
+}
+
+/// Stores a link to the cursor's location.
+fn org_store_link(cx: &mut Context) {
+    crate::roam::store_link(cx.editor);
+}
+
+/// Inserts the stored link at the cursor.
+fn org_insert_link(cx: &mut Context) {
+    crate::roam::insert_stored_link(cx.editor);
+}
+
+/// Gives the entry at the cursor an `:ID:`.
+fn org_create_id(cx: &mut Context) {
+    crate::roam::create_id(cx.editor);
+}
+
+/// Picks a node by one of its `:ROAM_REFS:` keys and opens it.
+pub fn roam_ref_picker(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    struct RefMeta {
+        key: String,
+        title: String,
+        path: PathBuf,
+        line: usize,
+    }
+
+    let refs: Vec<RefMeta> = {
+        let graph = editor.roam.read();
+        let collected = graph
+            .refs()
+            .map(|(key, node)| RefMeta {
+                key: key.to_string(),
+                title: node.title.clone(),
+                path: node.file_path.clone(),
+                line: node.line,
+            })
+            .collect();
+        collected
+    };
+
+    if refs.is_empty() {
+        editor.set_status("No :ROAM_REFS: indexed.");
+        return None;
+    }
+
+    let columns = [
+        ui::PickerColumn::new("ref", |item: &RefMeta, _: &PathStyleConfig| {
+            item.key.as_str().into()
+        }),
+        ui::PickerColumn::new("title", |item: &RefMeta, _: &PathStyleConfig| {
+            item.title.as_str().into()
+        }),
+        ui::PickerColumn::new("path", |item: &RefMeta, config: &PathStyleConfig| {
+            config.stylize(Some(item.path.as_path()), Some(item.line))
+        }),
+    ];
+
+    let picker = Picker::new(
+        columns,
+        0, // ref
+        refs,
+        PathStyleConfig::new(&editor.theme),
+        |cx, meta, action| {
+            if let Err(err) = cx.editor.open(&meta.path, action) {
+                cx.editor
+                    .set_error(format!("Failed to open '{}': {}", meta.path.display(), err));
+                return;
+            }
+            let doc = doc!(cx.editor);
+            if meta.line < doc.text().len_lines() {
+                let pos = doc.text().line_to_char(meta.line);
+                let view_id = view!(cx.editor).id;
+                doc_mut!(cx.editor).set_selection(view_id, Selection::point(pos));
+            }
+        },
+    );
+
+    Some(Box::new(overlaid(picker)))
+}
+
+/// Opens the ref picker.
+fn roam_ref_find(cx: &mut Context) {
+    if let Some(picker) = roam_ref_picker(cx.editor) {
+        cx.push_layer(picker);
+    }
+}
+
+/// Asks for a node title, then inserts a link to it.
+///
+/// A prompt rather than a picker, because a title that matches nothing is not
+/// a failed search: it is a node to create, which is how notes get written.
+fn roam_node_insert(cx: &mut Context) {
+    let prompt = roam_node_insert_prompt(cx.editor);
+    cx.push_layer(prompt);
+}
+
+/// Builds the node prompt, so the static and typable commands share it.
+///
+/// A prompt rather than a picker, because a title that matches nothing is not
+/// a failed search: it is a node to create, which is how notes get written.
+pub fn roam_node_insert_prompt(editor: &Editor) -> Box<dyn Component> {
+    let titles = crate::roam::node_titles(editor);
+
+    Box::new(ui::Prompt::new(
+        "Node: ".into(),
+        None,
+        move |_editor, input| {
+            let input = input.to_lowercase();
+            titles
+                .iter()
+                .filter(|title| title.to_lowercase().contains(&input))
+                .take(50)
+                .map(|title| (0.., title.clone().into()))
+                .collect()
+        },
+        |cx, input, event| {
+            if event == PromptEvent::Validate {
+                crate::roam::insert_node_link(cx.editor, input);
+            }
+        },
+    ))
+}
+
+/// Opens a node chosen at random.
+fn roam_random_node(cx: &mut Context) {
+    crate::roam::random_node(cx.editor);
+}
+
+/// Asks for a value and edits the node-at-point's drawer with it.
+/// Builds a prompt that edits the node-at-point's drawer with what is typed.
+pub fn property_prompt(label: &'static str, apply: fn(&mut Editor, &str)) -> Box<dyn Component> {
+    Box::new(ui::Prompt::new(
+        label.into(),
+        None,
+        |_editor, _input| Vec::new(),
+        move |cx, input, event| {
+            if event == PromptEvent::Validate {
+                apply(cx.editor, input);
+            }
+        },
+    ))
+}
+
+fn prompt_for_property(cx: &mut Context, label: &'static str, apply: fn(&mut Editor, &str)) {
+    let prompt = property_prompt(label, apply);
+    cx.push_layer(prompt);
+}
+
+fn roam_alias_add(cx: &mut Context) {
+    prompt_for_property(cx, "Alias: ", crate::roam::alias_add);
+}
+
+fn roam_alias_remove(cx: &mut Context) {
+    prompt_for_property(cx, "Remove alias: ", crate::roam::alias_remove);
+}
+
+fn org_insert_heading(cx: &mut Context) {
+    crate::roam::insert_heading(cx.editor);
+}
+
+fn org_promote(cx: &mut Context) {
+    crate::roam::promote_heading(cx.editor);
+}
+
+fn org_demote(cx: &mut Context) {
+    crate::roam::demote_heading(cx.editor);
+}
+
+fn org_promote_subtree(cx: &mut Context) {
+    crate::roam::promote_subtree(cx.editor);
+}
+
+fn org_demote_subtree(cx: &mut Context) {
+    crate::roam::demote_subtree(cx.editor);
+}
+
+fn org_move_subtree_up(cx: &mut Context) {
+    crate::roam::move_subtree_up(cx.editor);
+}
+
+fn org_move_subtree_down(cx: &mut Context) {
+    crate::roam::move_subtree_down(cx.editor);
+}
+
+fn org_todo(cx: &mut Context) {
+    crate::roam::todo_next(cx.editor);
+}
+
+fn org_todo_previous(cx: &mut Context) {
+    crate::roam::todo_previous(cx.editor);
+}
+
+fn org_priority_up(cx: &mut Context) {
+    crate::roam::priority_up(cx.editor);
+}
+
+fn org_priority_down(cx: &mut Context) {
+    crate::roam::priority_down(cx.editor);
+}
+
+/// Asks for a tag, completing over the ones the graph already knows.
+pub fn org_tag_prompt(editor: &Editor, add: bool) -> Box<dyn Component> {
+    let tags = crate::roam::known_tags(editor);
+    let label = if add { "Tag: " } else { "Remove tag: " };
+
+    Box::new(ui::Prompt::new(
+        label.into(),
+        None,
+        move |_editor, input| {
+            let input = input.to_lowercase();
+            tags.iter()
+                .filter(|tag| tag.to_lowercase().starts_with(&input))
+                .map(|tag| (0.., tag.clone().into()))
+                .collect()
+        },
+        move |cx, input, event| {
+            if event == PromptEvent::Validate {
+                if add {
+                    crate::roam::tag_add(cx.editor, input);
+                } else {
+                    crate::roam::tag_remove(cx.editor, input);
+                }
+            }
+        },
+    ))
+}
+
+fn org_insert_item(cx: &mut Context) {
+    crate::roam::list_insert_item(cx.editor);
+}
+
+fn org_renumber_list(cx: &mut Context) {
+    crate::roam::list_renumber(cx.editor);
+}
+
+fn org_demote_item(cx: &mut Context) {
+    crate::roam::list_demote_item(cx.editor);
+}
+
+fn org_promote_item(cx: &mut Context) {
+    crate::roam::list_promote_item(cx.editor);
+}
+
+fn org_toggle_checkbox(cx: &mut Context) {
+    crate::roam::toggle_checkbox(cx.editor);
+}
+
+fn org_update_cookies(cx: &mut Context) {
+    crate::roam::update_cookies(cx.editor);
+}
+
+fn org_table_align(cx: &mut Context) {
+    crate::roam::table_align(cx.editor);
+}
+
+fn org_copy_subtree(cx: &mut Context) {
+    crate::roam::copy_subtree(cx.editor);
+}
+
+fn org_cut_subtree(cx: &mut Context) {
+    crate::roam::cut_subtree(cx.editor);
+}
+
+fn org_paste_subtree(cx: &mut Context) {
+    crate::roam::paste_subtree(cx.editor);
+}
+
+fn org_dblock_update(cx: &mut Context) {
+    crate::roam::dblock_update(cx.editor);
+}
+
+fn org_dblock_update_all(cx: &mut Context) {
+    crate::roam::dblock_update_all(cx.editor);
+}
+
+fn org_table_insert_row(cx: &mut Context) {
+    crate::roam::table_insert_row(cx.editor);
+}
+
+fn org_table_insert_separator(cx: &mut Context) {
+    crate::roam::table_insert_separator(cx.editor);
+}
+
+fn org_table_delete_row(cx: &mut Context) {
+    crate::roam::table_delete_row(cx.editor);
+}
+
+fn org_table_insert_column(cx: &mut Context) {
+    crate::roam::table_insert_column(cx.editor);
+}
+
+fn org_table_delete_column(cx: &mut Context) {
+    crate::roam::table_delete_column(cx.editor);
+}
+
+fn org_table_next_cell(cx: &mut Context) {
+    crate::roam::table_next_cell(cx.editor);
+}
+
+fn org_table_previous_cell(cx: &mut Context) {
+    crate::roam::table_previous_cell(cx.editor);
+}
+
+fn org_table_recalculate(cx: &mut Context) {
+    crate::roam::table_recalculate(cx.editor);
+}
+
+fn org_table_iterate(cx: &mut Context) {
+    crate::roam::table_iterate(cx.editor);
+}
+
+fn org_table_recalculate_all(cx: &mut Context) {
+    crate::roam::table_recalculate_all(cx.editor);
+}
+
+fn org_archive_subtree(cx: &mut Context) {
+    crate::roam::archive_subtree(cx.editor);
+}
+
+fn org_set_priority(cx: &mut Context) {
+    prompt_for_property(
+        cx,
+        "Priority (A-C, empty clears): ",
+        crate::roam::set_priority,
+    );
+}
+
+fn org_schedule(cx: &mut Context) {
+    prompt_for_property(
+        cx,
+        "Scheduled (today, +3, 2026-09-18): ",
+        crate::roam::schedule,
+    );
+}
+
+fn org_deadline(cx: &mut Context) {
+    prompt_for_property(
+        cx,
+        "Deadline (today, +3, 2026-09-18): ",
+        crate::roam::deadline,
+    );
+}
+
+/// Asks for `KEY VALUE`, completing over the keys the file already uses.
+pub fn org_set_property_prompt(editor: &Editor) -> Box<dyn Component> {
+    let keys = crate::roam::property_keys(editor);
+
+    Box::new(ui::Prompt::new(
+        "Property (KEY VALUE): ".into(),
+        None,
+        move |_editor, input| {
+            // Complete the key only, and only while it is still being typed.
+            if input.contains(char::is_whitespace) {
+                return Vec::new();
+            }
+            let input = input.to_uppercase();
+            keys.iter()
+                .filter(|key| key.starts_with(&input))
+                .map(|key| (0.., format!("{key} ").into()))
+                .collect()
+        },
+        |cx, input, event| {
+            if event == PromptEvent::Validate {
+                crate::roam::set_property(cx.editor, input);
+            }
+        },
+    ))
+}
+
+/// Asks for a sort key, completing over the ones that exist.
+///
+/// A leading `-` reverses, so the completion offers both spellings rather
+/// than making the reversed form something the user has to know about.
+pub fn org_sort_prompt(apply: fn(&mut Editor, &str)) -> Box<dyn Component> {
+    Box::new(ui::Prompt::new(
+        "Sort by (- to reverse): ".into(),
+        None,
+        |_editor, input| {
+            let (dash, typed) = match input.strip_prefix('-') {
+                Some(rest) => ("-", rest),
+                None => ("", input),
+            };
+
+            helix_roam::SortKey::names()
+                .iter()
+                .filter(|name| name.starts_with(typed))
+                .map(|name| (0.., format!("{dash}{name}").into()))
+                .collect()
+        },
+        move |cx, input, event| {
+            if event == PromptEvent::Validate {
+                apply(cx.editor, input);
+            }
+        },
+    ))
+}
+
+fn org_sort_entries(cx: &mut Context) {
+    let prompt = org_sort_prompt(crate::roam::sort_entries);
+    cx.push_layer(prompt);
+}
+
+fn org_sort_list(cx: &mut Context) {
+    let prompt = org_sort_prompt(crate::roam::sort_list);
+    cx.push_layer(prompt);
+}
+
+fn org_sort_table(cx: &mut Context) {
+    let prompt = org_sort_prompt(crate::roam::sort_table);
+    cx.push_layer(prompt);
+}
+
+fn org_clone_subtree(cx: &mut Context) {
+    prompt_for_property(cx, "Clone (N, or N +1w): ", crate::roam::clone_subtree);
+}
+
+fn org_set_property(cx: &mut Context) {
+    let prompt = org_set_property_prompt(cx.editor);
+    cx.push_layer(prompt);
+}
+
+fn org_remove_property(cx: &mut Context) {
+    prompt_for_property(cx, "Remove property: ", crate::roam::remove_property);
+}
+
+fn org_set_effort(cx: &mut Context) {
+    prompt_for_property(cx, "Effort: ", crate::roam::set_effort);
+}
+
+fn org_increment_effort(cx: &mut Context) {
+    crate::roam::increment_effort(cx.editor);
+}
+
+fn org_insert_drawer(cx: &mut Context) {
+    prompt_for_property(cx, "Drawer: ", crate::roam::insert_drawer);
+}
+
+fn org_add_note(cx: &mut Context) {
+    prompt_for_property(cx, "Note: ", crate::roam::add_note);
+}
+
+fn org_log_state(cx: &mut Context) {
+    prompt_for_property(cx, "State (OLD -> NEW): ", crate::roam::log_state_change);
+}
+
+/// Shows what is due, over `days` days from today.
+pub fn org_agenda_picker(editor: &mut Editor, days: i64) -> Option<Box<dyn Component>> {
+    let lines = crate::roam::agenda_lines(editor, days);
+    if lines.is_empty() {
+        editor.set_status("Nothing on the agenda");
+        return None;
+    }
+    Some(agenda_view(
+        editor,
+        lines,
+        "when",
+        Box::new(move |editor| crate::roam::agenda_lines(editor, days)),
+    ))
+}
+
+/// Shows everything unfinished, dated or not.
+pub fn org_todo_list_picker(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    org_filtered_todo_picker(editor, &helix_roam::agenda::TodoFilter::default())
+}
+
+/// Shows the unfinished nodes matching a filter.
+pub fn org_filtered_todo_picker(
+    editor: &mut Editor,
+    filter: &helix_roam::agenda::TodoFilter,
+) -> Option<Box<dyn Component>> {
+    let lines = crate::roam::filtered_todo_lines(editor, filter);
+    if lines.is_empty() {
+        editor.set_status("Nothing to do");
+        return None;
+    }
+    let filter = filter.clone();
+    Some(agenda_view(
+        editor,
+        lines,
+        "state",
+        Box::new(move |editor| crate::roam::filtered_todo_lines(editor, &filter)),
+    ))
+}
+
+/// Rebuilds an agenda's lines from the index, after an action changed it.
+type AgendaLines = Box<dyn Fn(&Editor) -> Vec<crate::roam::AgendaLine>>;
+
+/// An agenda view: the picker, and keys that act on the selected entry
+/// without leaving it, as Org's agenda buffer does.
+///
+/// The picker is upstream's and consumes its own keys, so the actions are
+/// taken before it sees the event, on Alt keys it does not use: `Alt-t` and
+/// `Alt-T` step the state, `Alt-s` and `Alt-d` schedule and set a deadline,
+/// `Alt-+` and `Alt--` move the priority, `Alt-i` clocks in. After each,
+/// the view is rebuilt from the index, on the same entry.
+pub struct AgendaView {
+    picker: ui::overlay::Overlay<Picker<crate::roam::AgendaLine, PathStyleConfig>>,
+    lines: AgendaLines,
+    first: &'static str,
+}
+
+impl AgendaView {
+    fn selected(&self) -> Option<(PathBuf, usize)> {
+        self.picker
+            .content
+            .selection()
+            .map(|line| (line.path.clone(), line.line))
+    }
+
+    /// Rebuilds the view, keeping the cursor on `keep` if it is still there.
+    fn refresh(&mut self, editor: &Editor, keep: Option<(PathBuf, usize)>) {
+        let lines = (self.lines)(editor);
+        let cursor = keep
+            .and_then(|(path, line)| {
+                lines
+                    .iter()
+                    .position(|item| item.path == path && item.line == line)
+            })
+            .unwrap_or(0);
+        self.picker =
+            overlaid(agenda_picker(editor, lines, self.first).with_initial_cursor(cursor as u32));
+    }
+
+    fn act(&mut self, editor: &mut Editor, action: crate::roam::AgendaAction) {
+        let Some((path, line)) = self.selected() else {
+            return;
+        };
+        match crate::roam::agenda_act(editor, &path, line, action) {
+            Ok(said) => editor.set_status(said),
+            Err(err) => editor.set_error(err),
+        }
+        self.refresh(editor, Some((path, line)));
+    }
+}
+
+impl Component for AgendaView {
+    fn handle_event(
+        &mut self,
+        event: &compositor::Event,
+        cx: &mut compositor::Context,
+    ) -> compositor::EventResult {
+        use crate::roam::AgendaAction;
+
+        if let compositor::Event::Key(key) = event {
+            let action = match *key {
+                crate::alt!('t') => Some(AgendaAction::State(true)),
+                crate::alt!('T') => Some(AgendaAction::State(false)),
+                crate::alt!('+') => Some(AgendaAction::Priority(true)),
+                crate::alt!('-') => Some(AgendaAction::Priority(false)),
+                crate::alt!('i') => Some(AgendaAction::ClockIn),
+                _ => None,
+            };
+            if let Some(action) = action {
+                self.act(cx.editor, action);
+                return compositor::EventResult::Consumed(None);
+            }
+
+            let schedule = match *key {
+                crate::alt!('s') => Some(true),
+                crate::alt!('d') => Some(false),
+                _ => None,
+            };
+            if let (Some(schedule), Some((path, line))) = (schedule, self.selected()) {
+                let label = if schedule {
+                    "Scheduled (today, +3, 2026-09-18): "
+                } else {
+                    "Deadline (today, +3, 2026-09-18): "
+                };
+                let prompt = Prompt::new(
+                    label.into(),
+                    None,
+                    ui::completers::none,
+                    move |cx, input, event| {
+                        if event != PromptEvent::Validate {
+                            return;
+                        }
+                        let action = if schedule {
+                            AgendaAction::Schedule(input.to_string())
+                        } else {
+                            AgendaAction::Deadline(input.to_string())
+                        };
+                        match crate::roam::agenda_act(cx.editor, &path, line, action) {
+                            Ok(said) => cx.editor.set_status(said),
+                            Err(err) => cx.editor.set_error(err),
+                        }
+                        let keep = (path.clone(), line);
+                        job::dispatch_blocking(move |editor, compositor| {
+                            if let Some(view) = compositor.find::<AgendaView>() {
+                                view.refresh(editor, Some(keep));
+                            }
+                        });
+                    },
+                );
+                return compositor::EventResult::Consumed(Some(Box::new(
+                    move |compositor: &mut Compositor, _| compositor.push(Box::new(prompt)),
+                )));
+            }
+        }
+        self.picker.handle_event(event, cx)
+    }
+
+    fn render(
+        &mut self,
+        area: helix_view::graphics::Rect,
+        surface: &mut tui::buffer::Buffer,
+        cx: &mut compositor::Context,
+    ) {
+        self.picker.render(area, surface, cx);
+    }
+
+    fn cursor(
+        &self,
+        area: helix_view::graphics::Rect,
+        editor: &Editor,
+    ) -> (
+        Option<helix_core::Position>,
+        helix_view::graphics::CursorKind,
+    ) {
+        self.picker.cursor(area, editor)
+    }
+}
+
+/// An agenda view over `lines`, rebuilt with `rebuild` after an action.
+fn agenda_view(
+    editor: &mut Editor,
+    lines: Vec<crate::roam::AgendaLine>,
+    first: &'static str,
+    rebuild: AgendaLines,
+) -> Box<dyn Component> {
+    editor.set_status(
+        "Alt-t state · Alt-s schedule · Alt-d deadline · Alt-+/- priority · Alt-i clock in",
+    );
+    Box::new(AgendaView {
+        picker: overlaid(agenda_picker(editor, lines, first)),
+        lines: rebuild,
+        first,
+    })
+}
+
+/// The picker both views share: a column of context, then the entry.
+fn agenda_picker(
+    editor: &Editor,
+    lines: Vec<crate::roam::AgendaLine>,
+    first: &'static str,
+) -> Picker<crate::roam::AgendaLine, PathStyleConfig> {
+    let columns = [
+        ui::PickerColumn::new(
+            first,
+            |item: &crate::roam::AgendaLine, _: &PathStyleConfig| item.when.as_str().into(),
+        ),
+        ui::PickerColumn::new(
+            "entry",
+            |item: &crate::roam::AgendaLine, _: &PathStyleConfig| item.what.as_str().into(),
+        ),
+        ui::PickerColumn::new(
+            "habit",
+            |item: &crate::roam::AgendaLine, config: &PathStyleConfig| config.habit(&item.habit),
+        ),
+        ui::PickerColumn::new(
+            "path",
+            |item: &crate::roam::AgendaLine, config: &PathStyleConfig| {
+                config.stylize(Some(item.path.as_path()), Some(item.line))
+            },
+        ),
+    ];
+
+    let picker = Picker::new(
+        columns,
+        1, // the entry itself is what a search is for
+        lines,
+        PathStyleConfig::new(&editor.theme),
+        |cx, item, action| {
+            if let Err(err) = cx.editor.open(&item.path, action) {
+                cx.editor
+                    .set_error(format!("Failed to open '{}': {}", item.path.display(), err));
+                return;
+            }
+            let doc = doc!(cx.editor);
+            if item.line < doc.text().len_lines() {
+                let pos = doc.text().line_to_char(item.line);
+                let view_id = view!(cx.editor).id;
+                doc_mut!(cx.editor).set_selection(view_id, Selection::point(pos));
+            }
+        },
+    );
+
+    picker
+}
+
+/// Picks a heading in the current buffer by name.
+///
+/// The buffer rather than the graph: this is for finding your way around the
+/// file you are in, including its headings that carry no `:ID:` and so are
+/// not nodes at all.
+pub fn org_heading_picker(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    let headings = crate::roam::buffer_headings(editor);
+    if headings.is_empty() {
+        editor.set_status("This buffer has no headings");
+        return None;
+    }
+
+    let columns = [
+        ui::PickerColumn::new("heading", |item: &(usize, String), _: &PathStyleConfig| {
+            item.1.as_str().into()
+        }),
+        ui::PickerColumn::new("line", |item: &(usize, String), _: &PathStyleConfig| {
+            (item.0 + 1).to_string().into()
+        }),
+    ];
+
+    let picker = Picker::new(
+        columns,
+        0,
+        headings,
+        PathStyleConfig::new(&editor.theme),
+        |cx, item, _action| crate::roam::goto_heading_line(cx.editor, item.0),
+    );
+
+    Some(Box::new(overlaid(picker)))
+}
+
+/// Asks what a sparse tree should keep.
+pub fn org_sparse_tree_prompt() -> Box<dyn Component> {
+    property_prompt("Keep (TODO, :tag:, #A, /text): ", crate::roam::sparse_tree)
+}
+
+fn org_goto_heading(cx: &mut Context) {
+    if let Some(picker) = org_heading_picker(cx.editor) {
+        cx.push_layer(picker);
+    }
+}
+
+fn org_sparse_tree(cx: &mut Context) {
+    let prompt = org_sparse_tree_prompt();
+    cx.push_layer(prompt);
+}
+
+fn org_next_heading(cx: &mut Context) {
+    crate::roam::goto_next_heading(cx.editor);
+}
+
+fn org_previous_heading(cx: &mut Context) {
+    crate::roam::goto_previous_heading(cx.editor);
+}
+
+fn org_next_sibling_heading(cx: &mut Context) {
+    crate::roam::goto_next_sibling_heading(cx.editor);
+}
+
+fn org_previous_sibling_heading(cx: &mut Context) {
+    crate::roam::goto_previous_sibling_heading(cx.editor);
+}
+
+fn org_parent_heading(cx: &mut Context) {
+    crate::roam::goto_parent_heading(cx.editor);
+}
+
+fn org_outline_path(cx: &mut Context) {
+    crate::roam::show_outline_path(cx.editor);
+}
+
+fn org_narrow(cx: &mut Context) {
+    crate::roam::narrow_to_subtree(cx.editor);
+}
+
+fn org_widen(cx: &mut Context) {
+    crate::roam::widen(cx.editor);
+}
+
+fn org_startup_visibility(cx: &mut Context) {
+    crate::roam::startup_visibility(cx.editor);
+}
+
+fn org_src_next(cx: &mut Context) {
+    crate::roam::src_next(cx.editor);
+}
+
+fn org_src_previous(cx: &mut Context) {
+    crate::roam::src_previous(cx.editor);
+}
+
+fn org_src_result(cx: &mut Context) {
+    crate::roam::src_result(cx.editor);
+}
+
+fn org_edit_src(cx: &mut Context) {
+    crate::roam::edit_src(cx.editor);
+}
+
+fn org_tangle(cx: &mut Context) {
+    crate::roam::tangle(cx.editor);
+}
+
+fn org_clock_in(cx: &mut Context) {
+    crate::roam::clock_in(cx.editor);
+}
+
+fn org_clock_out(cx: &mut Context) {
+    crate::roam::clock_out(cx.editor);
+}
+
+fn org_clock_cancel(cx: &mut Context) {
+    crate::roam::clock_cancel(cx.editor);
+}
+
+fn org_clock_goto(cx: &mut Context) {
+    crate::roam::clock_goto(cx.editor);
+}
+
+fn org_clock_report(cx: &mut Context) {
+    crate::roam::clock_report(cx.editor);
+}
+
+fn org_export_markdown(cx: &mut Context) {
+    crate::roam::export_markdown(cx.editor);
+}
+
+fn org_export_html(cx: &mut Context) {
+    crate::roam::export_html(cx.editor);
+}
+
+fn org_export_latex(cx: &mut Context) {
+    crate::roam::export_latex(cx.editor);
+}
+
+fn org_babel_execute(cx: &mut Context) {
+    crate::roam::babel_execute(cx.editor);
+}
+
+fn org_columns(cx: &mut Context) {
+    crate::roam::toggle_columns(cx.editor);
+}
+
+fn org_attach(cx: &mut Context) {
+    let prompt = ui::Prompt::new(
+        "Attach: ".into(),
+        None,
+        ui::completers::filename,
+        |cx, input, event| {
+            if event == PromptEvent::Validate {
+                crate::roam::attach(cx.editor, input);
+            }
+        },
+    );
+    cx.push_layer(Box::new(prompt));
+}
+
+fn org_encrypt_entry(cx: &mut Context) {
+    crate::roam::encrypt_entry(cx.editor);
+}
+
+fn org_encrypt_entries(cx: &mut Context) {
+    crate::roam::encrypt_entries(cx.editor);
+}
+
+fn org_decrypt_entry(cx: &mut Context) {
+    crate::roam::decrypt_entry(cx.editor);
+}
+
+/// Yanks what the screen shows of each selection, leaving folded text out:
+/// a folded outline copies as the outline. A selection of one character
+/// means the whole buffer, which is the usual thing to share.
+///
+/// This is Org's `org-copy-visible`.
+fn org_copy_visible(cx: &mut Context) {
+    org_copy_visible_into(cx.editor, cx.register.unwrap_or('"'));
+}
+
+pub fn org_copy_visible_into(editor: &mut Editor, register: char) {
+    let (view, doc) = current!(editor);
+    let text = doc.text().slice(..);
+
+    let mut values = Vec::new();
+    let mut hidden_lines = 0;
+    for range in doc.selection(view.id).iter() {
+        let span = if range.len() <= 1 {
+            0..text.len_chars()
+        } else {
+            range.from()..range.to()
+        };
+        let visible = helix_core::fold::visible_text(text, span.clone(), doc.folds());
+        let all_lines = text.slice(span).chars().filter(|c| *c == '\n').count();
+        hidden_lines += all_lines.saturating_sub(visible.matches('\n').count());
+        values.push(visible);
+    }
+
+    let lines: usize = values.iter().map(|value| value.lines().count()).sum();
+    match editor.registers.write(register, values) {
+        Ok(()) => editor.set_status(format!(
+            "Yanked {lines} visible line{} to [{register}], leaving out {hidden_lines} hidden",
+            if lines == 1 { "" } else { "s" }
+        )),
+        Err(err) => editor.set_error(err.to_string()),
+    }
+}
+
+fn roam_dailies_capture(cx: &mut Context) {
+    prompt_for_property(cx, "Today: ", crate::roam::daily_capture);
+}
+
+fn roam_dailies_directory(cx: &mut Context) {
+    if let Some(picker) = crate::roam::dailies_picker(cx.editor) {
+        cx.push_layer(picker);
+    }
+}
+
+fn org_inline_task(cx: &mut Context) {
+    prompt_for_property(cx, "Inline task: ", crate::roam::insert_inline_task);
+}
+
+fn roam_graph(cx: &mut Context) {
+    crate::roam::graph(cx.editor, None);
+}
+
+fn roam_graph_neighbourhood(cx: &mut Context) {
+    crate::roam::graph(cx.editor, Some(cx.count.map_or(2, |count| count.get())));
+}
+
+fn org_attach_open(cx: &mut Context) {
+    if let Some(picker) = crate::roam::attachment_picker(cx.editor) {
+        cx.push_layer(picker);
+    }
+}
+
+/// Asks which emphasis to toggle, completing over the six.
+pub fn org_emphasis_prompt() -> Box<dyn Component> {
+    Box::new(ui::Prompt::new(
+        "Emphasis: ".into(),
+        None,
+        |_editor, input| {
+            helix_roam::markup::Emphasis::names()
+                .iter()
+                .filter(|name| name.starts_with(input))
+                .map(|name| (0.., (*name).into()))
+                .collect()
+        },
+        |cx, input, event| {
+            if event == PromptEvent::Validate {
+                crate::roam::toggle_emphasis(cx.editor, input);
+            }
+        },
+    ))
+}
+
+/// Asks which block to insert, completing over the ones Org defines.
+pub fn org_block_prompt() -> Box<dyn Component> {
+    Box::new(ui::Prompt::new(
+        "Block (name, or `src rust`): ".into(),
+        None,
+        |_editor, input| {
+            // Complete the name only, and only while it is still being typed:
+            // past the first space the user is writing the argument.
+            if input.contains(char::is_whitespace) {
+                return Vec::new();
+            }
+            helix_roam::markup::block_names()
+                .iter()
+                .filter(|name| name.starts_with(input))
+                .map(|name| (0.., (*name).into()))
+                .collect()
+        },
+        |cx, input, event| {
+            if event == PromptEvent::Validate {
+                crate::roam::insert_block(cx.editor, input);
+            }
+        },
+    ))
+}
+
+/// Asks for a citation key, completing over the bibliographies and the graph.
+pub fn org_cite_prompt(editor: &Editor) -> Box<dyn Component> {
+    let keys = crate::roam::citation_keys(editor);
+
+    Box::new(ui::Prompt::new(
+        "Cite: ".into(),
+        None,
+        move |_editor, input| {
+            let input = input.to_lowercase();
+            keys.iter()
+                .filter(|key| key.to_lowercase().starts_with(&input))
+                .map(|key| (0.., key.to_string().into()))
+                .collect()
+        },
+        |cx, input, event| {
+            if event == PromptEvent::Validate {
+                crate::roam::insert_citation(cx.editor, input);
+            }
+        },
+    ))
+}
+
+fn org_emphasis(cx: &mut Context) {
+    let prompt = org_emphasis_prompt();
+    cx.push_layer(prompt);
+}
+
+fn org_insert_block(cx: &mut Context) {
+    let prompt = org_block_prompt();
+    cx.push_layer(prompt);
+}
+
+fn org_cite_insert(cx: &mut Context) {
+    let prompt = org_cite_prompt(cx.editor);
+    cx.push_layer(prompt);
+}
+
+fn org_cite_follow(cx: &mut Context) {
+    crate::roam::follow_citation(cx.editor);
+}
+
+fn org_footnote_new(cx: &mut Context) {
+    crate::roam::footnote_new(cx.editor);
+}
+
+fn org_footnote_goto(cx: &mut Context) {
+    crate::roam::footnote_goto(cx.editor);
+}
+
+fn org_footnote_renumber(cx: &mut Context) {
+    crate::roam::footnote_renumber(cx.editor);
+}
+
+/// Looks through everything the index holds.
+pub fn roam_index_picker(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    let rows = crate::roam::index_rows(editor);
+    if rows.is_empty() {
+        editor.set_status("The index is empty; run :roam-reindex");
+        return None;
+    }
+
+    let columns = [
+        ui::PickerColumn::new(
+            "kind",
+            |item: &crate::roam::IndexRow, _: &PathStyleConfig| item.kind.into(),
+        ),
+        ui::PickerColumn::new(
+            "what",
+            |item: &crate::roam::IndexRow, _: &PathStyleConfig| item.what.as_str().into(),
+        ),
+        ui::PickerColumn::new(
+            "where",
+            |item: &crate::roam::IndexRow, _: &PathStyleConfig| item.location.as_str().into(),
+        ),
+    ];
+
+    let picker = Picker::new(
+        columns,
+        1,
+        rows,
+        PathStyleConfig::new(&editor.theme),
+        |cx, item, action| {
+            if let Err(err) = cx.editor.open(&item.path, action) {
+                cx.editor
+                    .set_error(format!("Failed to open '{}': {}", item.path.display(), err));
+                return;
+            }
+            let doc = doc!(cx.editor);
+            if item.line < doc.text().len_lines() {
+                let pos = doc.text().line_to_char(item.line);
+                let view_id = view!(cx.editor).id;
+                doc_mut!(cx.editor).set_selection(view_id, Selection::point(pos));
+            }
+        },
+    );
+
+    Some(Box::new(overlaid(picker)))
+}
+
+fn roam_index(cx: &mut Context) {
+    if let Some(picker) = roam_index_picker(cx.editor) {
+        cx.push_layer(picker);
+    }
+}
+
+fn roam_state(cx: &mut Context) {
+    crate::roam::report_state(cx.editor);
+}
+
+fn roam_backlink_counts(cx: &mut Context) {
+    crate::roam::toggle_backlink_counts(cx.editor);
+}
+
+fn roam_pin_node(cx: &mut Context) {
+    crate::roam::pin_node(cx.editor);
+}
+
+fn roam_unpin_node(cx: &mut Context) {
+    crate::roam::unpin_node(cx.editor);
+}
+
+fn roam_diagnose(cx: &mut Context) {
+    crate::roam::diagnose_node(cx.editor);
+}
+
+fn org_agenda_restrict(cx: &mut Context) {
+    crate::roam::agenda_restrict_to_file(cx.editor);
+}
+
+fn org_agenda_unrestrict(cx: &mut Context) {
+    crate::roam::agenda_restrict_clear(cx.editor);
+}
+
+/// Says which files the agenda is reading, so a surprising agenda can be
+/// explained rather than guessed at.
+fn org_agenda_scope(cx: &mut Context) {
+    let scope = crate::roam::agenda_scope(cx.editor);
+    cx.editor.set_status(format!("Agenda reads {scope}"));
+}
+
+fn org_agenda_day(cx: &mut Context) {
+    if let Some(picker) = org_agenda_picker(cx.editor, 1) {
+        cx.push_layer(picker);
+    }
+}
+
+fn org_agenda_week(cx: &mut Context) {
+    if let Some(picker) = org_agenda_picker(cx.editor, 7) {
+        cx.push_layer(picker);
+    }
+}
+
+/// Asks how to narrow the list, then shows it.
+pub fn org_todo_filter_prompt() -> Box<dyn Component> {
+    Box::new(ui::Prompt::new(
+        "Filter (WAITING :work: #A): ".into(),
+        None,
+        |_editor, _input| Vec::new(),
+        |cx, input, event| {
+            if event != PromptEvent::Validate {
+                return;
+            }
+            let filter = helix_roam::agenda::TodoFilter::parse(input);
+            cx.jobs.callback(async move {
+                let call: job::Callback = job::Callback::EditorCompositor(Box::new(
+                    move |editor: &mut Editor, compositor: &mut Compositor| {
+                        if let Some(picker) = org_filtered_todo_picker(editor, &filter) {
+                            compositor.push(picker);
+                        }
+                    },
+                ));
+                Ok(call)
+            });
+        },
+    ))
+}
+
+fn org_todo_filtered(cx: &mut Context) {
+    let prompt = org_todo_filter_prompt();
+    cx.push_layer(prompt);
+}
+
+fn org_todo_list(cx: &mut Context) {
+    if let Some(picker) = org_todo_list_picker(cx.editor) {
+        cx.push_layer(picker);
+    }
+}
+
+/// Creates a node from a template.
+///
+/// The template is chosen first and the title asked for second, because the
+/// template decides what the title will be used for.
+pub fn roam_capture_picker(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    let templates = crate::roam::capture_templates(editor);
+
+    // One template is not a choice; go straight to the title.
+    if let [only] = templates.as_slice() {
+        return Some(capture_title_prompt(only.clone()));
+    }
+
+    let columns = [
+        ui::PickerColumn::new(
+            "key",
+            |item: &helix_roam::capture::Template, _: &PathStyleConfig| item.key.as_str().into(),
+        ),
+        ui::PickerColumn::new(
+            "template",
+            |item: &helix_roam::capture::Template, _: &PathStyleConfig| {
+                item.description.as_str().into()
+            },
+        ),
+    ];
+
+    let picker = Picker::new(
+        columns,
+        1, // description
+        templates,
+        PathStyleConfig::new(&editor.theme),
+        |cx, template, _action| {
+            // Only the template crosses the job boundary: a component is not
+            // `Send`, so the prompt is built on the other side.
+            let template = template.clone();
+            cx.jobs.callback(async move {
+                let call: job::Callback = job::Callback::EditorCompositor(Box::new(
+                    move |_editor: &mut Editor, compositor: &mut Compositor| {
+                        compositor.push(capture_title_prompt(template));
+                    },
+                ));
+                Ok(call)
+            });
+        },
+    );
+
+    Some(Box::new(overlaid(picker)))
+}
+
+/// Asks for the title a captured node will have.
+fn capture_title_prompt(template: helix_roam::capture::Template) -> Box<dyn Component> {
+    Box::new(ui::Prompt::new(
+        "Title: ".into(),
+        None,
+        |_editor, _input| Vec::new(),
+        move |cx, input, event| {
+            if event == PromptEvent::Validate {
+                crate::roam::capture_node(cx.editor, &template, input);
+            }
+        },
+    ))
+}
+
+/// Opens the capture flow.
+fn roam_capture(cx: &mut Context) {
+    if let Some(component) = roam_capture_picker(cx.editor) {
+        cx.push_layer(component);
+    }
+}
+
+/// Lists the places the node at the cursor is named without being linked.
+pub fn roam_unlinked_picker(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    let found = crate::roam::unlinked_references(editor);
+    // The panel shows them too, and this scan is what pays for them: it reads
+    // every file in the notes directory, so it happens on demand and the
+    // result is kept rather than recomputed per frame.
+    crate::roam::cache_unlinked(editor, &found);
+
+    if found.is_empty() {
+        return None;
+    }
+
+    let columns = [
+        ui::PickerColumn::new(
+            "text",
+            |item: &crate::roam::Unlinked, _: &PathStyleConfig| item.text.as_str().into(),
+        ),
+        ui::PickerColumn::new(
+            "path",
+            |item: &crate::roam::Unlinked, config: &PathStyleConfig| {
+                config.stylize(Some(item.path.as_path()), Some(item.line))
+            },
+        ),
+    ];
+
+    let picker = Picker::new(
+        columns,
+        0, // text
+        found,
+        PathStyleConfig::new(&editor.theme),
+        |cx, item, action| {
+            if let Err(err) = cx.editor.open(&item.path, action) {
+                cx.editor
+                    .set_error(format!("Failed to open '{}': {}", item.path.display(), err));
+                return;
+            }
+            let doc = doc!(cx.editor);
+            if item.line < doc.text().len_lines() {
+                let pos = doc.text().line_to_char(item.line);
+                let view_id = view!(cx.editor).id;
+                doc_mut!(cx.editor).set_selection(view_id, Selection::point(pos));
+            }
+        },
+    );
+
+    Some(Box::new(overlaid(picker)))
+}
+
+/// Opens the unlinked-references picker.
+fn roam_unlinked_references(cx: &mut Context) {
+    if let Some(picker) = roam_unlinked_picker(cx.editor) {
+        cx.push_layer(picker);
+    }
+}
+
+/// Asks for a new title and renames the node at the cursor.
+fn roam_rename_node(cx: &mut Context) {
+    let prompt = property_prompt("New title: ", crate::roam::rename_node);
+    cx.push_layer(prompt);
+}
+
+/// Opens today's daily note.
+fn roam_dailies_today(cx: &mut Context) {
+    crate::roam::daily_today(cx.editor);
+}
+
+/// Opens the next daily note that exists.
+fn roam_dailies_next(cx: &mut Context) {
+    crate::roam::daily_step(cx.editor, true);
+}
+
+/// Opens the previous daily note that exists.
+fn roam_dailies_previous(cx: &mut Context) {
+    crate::roam::daily_step(cx.editor, false);
+}
+
+/// Asks for a date and opens that daily note.
+fn roam_dailies_date(cx: &mut Context) {
+    let prompt = property_prompt("Date (YYYY-MM-DD): ", crate::roam::daily_on);
+    cx.push_layer(prompt);
+}
+
+fn roam_tag_add(cx: &mut Context) {
+    let prompt = org_tag_prompt(cx.editor, true);
+    cx.push_layer(prompt);
+}
+
+fn roam_tag_remove(cx: &mut Context) {
+    let prompt = org_tag_prompt(cx.editor, false);
+    cx.push_layer(prompt);
+}
+
+fn roam_ref_add(cx: &mut Context) {
+    prompt_for_property(cx, "Ref: ", crate::roam::ref_add);
+}
+
+fn roam_ref_remove(cx: &mut Context) {
+    prompt_for_property(cx, "Remove ref: ", crate::roam::ref_remove);
+}
+
+/// Shows or hides the backlinks panel for the focused document.
+fn roam_backlinks_toggle(cx: &mut Context) {
+    cx.callback.push(Box::new(|compositor, _cx| {
+        toggle_roam_backlinks(compositor);
+    }));
 }
 
 fn jumplist_picker(cx: &mut Context) {
@@ -6235,6 +8181,14 @@ fn goto_prev_test(cx: &mut Context) {
     goto_ts_object_impl(cx, "test", Direction::Backward)
 }
 
+fn goto_next_conflict(cx: &mut Context) {
+    crate::magit::goto_conflict(cx.editor, true);
+}
+
+fn goto_prev_conflict(cx: &mut Context) {
+    crate::magit::goto_conflict(cx.editor, false);
+}
+
 fn goto_next_xml_element(cx: &mut Context) {
     goto_ts_object_impl(cx, "xml-element", Direction::Forward)
 }
@@ -7225,4 +9179,238 @@ fn lsp_or_syntax_workspace_symbol_picker(cx: &mut Context) {
     } else {
         syntax_workspace_symbol_picker(cx);
     }
+}
+
+// ── Folding ───────────────────────────────────────────────────────────────
+
+/// The fold the cursor would open or close, from the language's `folds.scm`.
+fn foldable_at_cursor(cx: &mut Context) -> Option<helix_core::fold::Fold> {
+    let loader = cx.editor.syn_loader.load();
+    let (view, doc) = current_ref!(cx.editor);
+    let text = doc.text().slice(..);
+    let cursor = doc.selection(view.id).primary().cursor(text);
+
+    helix_core::fold::foldable_at(text, doc.syntax()?, &loader, cursor)
+}
+
+/// Moves any cursor that a fold just hid onto the fold's marker.
+///
+/// A cursor inside folded text is a cursor nobody can see, and the next
+/// keystroke would edit a line that is not on screen.
+pub(crate) fn reveal_cursors(editor: &mut Editor) {
+    let (view, doc) = current!(editor);
+    let text = doc.text().slice(..);
+    let folds = doc.folds().clone();
+
+    let selection = doc.selection(view.id).clone().transform(|range| {
+        match folds
+            .at(range.cursor(text))
+            .filter(|fold| fold.hides(range.cursor(text)))
+        {
+            Some(fold) => helix_core::Range::point(fold.start),
+            None => range,
+        }
+    });
+    doc.set_selection(view.id, selection);
+}
+
+/// Folds the smallest foldable range at the cursor.
+fn fold(cx: &mut Context) {
+    let Some(fold) = foldable_at_cursor(cx) else {
+        cx.editor.set_error("Nothing to fold here");
+        return;
+    };
+
+    doc_mut!(cx.editor).folds_mut().insert(fold);
+    reveal_cursors(cx.editor);
+}
+
+/// Removes the fold the cursor's line owns, reporting whether there was one.
+fn remove_fold_at_cursor(editor: &mut Editor) -> bool {
+    let (view, doc) = current!(editor);
+    let text = doc.text().clone();
+    let cursor = doc.selection(view.id).primary().cursor(text.slice(..));
+
+    doc.folds_mut()
+        .remove_on_line(text.slice(..), cursor)
+        .is_some()
+}
+
+/// Opens the fold at the cursor.
+fn unfold(cx: &mut Context) {
+    if !remove_fold_at_cursor(cx.editor) {
+        cx.editor.set_error("No fold here");
+    }
+}
+
+/// Closes the fold at the cursor, or opens it if it is already closed.
+fn toggle_fold(cx: &mut Context) {
+    if !remove_fold_at_cursor(cx.editor) {
+        fold(cx);
+    }
+}
+
+/// Folds every range the language marks as foldable.
+fn fold_all(cx: &mut Context) {
+    let loader = cx.editor.syn_loader.load();
+    let (_, doc) = current_ref!(cx.editor);
+    let text = doc.text().slice(..);
+
+    let Some(syntax) = doc.syntax() else {
+        cx.editor.set_error("No syntax tree for this file");
+        return;
+    };
+    // Only the outermost: `insert` lets a later fold replace the one that
+    // contains it, so handing it every nested range would fold the file to
+    // its leaves — the opposite of what folding everything means.
+    let foldable = helix_core::fold::outermost(helix_core::fold::foldable(text, syntax, &loader));
+    if foldable.is_empty() {
+        cx.editor.set_error("Nothing to fold in this file");
+        return;
+    }
+
+    let doc = doc_mut!(cx.editor);
+    doc.folds_mut().clear();
+    for fold in foldable {
+        doc.folds_mut().insert(fold);
+    }
+    reveal_cursors(cx.editor);
+}
+
+/// Opens every fold in the buffer.
+fn unfold_all(cx: &mut Context) {
+    doc_mut!(cx.editor).folds_mut().clear();
+}
+
+/// Hides every line outside the selection.
+///
+/// This is how narrowing reaches a block or an element without a command per
+/// kind: select one — `A-o` climbs the syntax tree until it holds what you
+/// mean — and narrow to what is selected. Whole lines, because a narrowing
+/// that cut a line in half would show a fragment and call it the element.
+fn narrow_to_selection(cx: &mut Context) {
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text();
+    let range = doc.selection(view.id).primary();
+
+    let first = text.char_to_line(range.from());
+    // `to()` is one past the selection, so on a range ending at a line break
+    // it names the line below. The line of the last character actually held
+    // is what the narrowing has to keep.
+    let last = text.char_to_line(range.to().saturating_sub(1).max(range.from()));
+    let lines = text.len_lines();
+    let len = text.len_chars();
+
+    let mut folds = Vec::new();
+    if first > 0 {
+        // Stop before the newline that ends the line above, so the first line
+        // kept starts on a line of its own rather than beside the marker.
+        folds.push(helix_core::fold::Fold::new(0, text.line_to_char(first) - 1));
+    }
+    if last + 1 < lines {
+        folds.push(helix_core::fold::Fold::new(
+            text.line_to_char(last + 1),
+            len,
+        ));
+    }
+
+    if folds.is_empty() {
+        cx.editor
+            .set_status("The selection is already the whole buffer");
+        return;
+    }
+
+    let doc = doc_mut!(cx.editor);
+    doc.folds_mut().clear();
+    for fold in folds {
+        doc.folds_mut().insert(fold);
+    }
+    cx.editor.set_status("Narrowed to the selection");
+}
+
+/// Every foldable range in the focused document, from its `folds.scm`.
+fn foldable_in_document(editor: &Editor) -> Vec<helix_core::fold::Fold> {
+    let loader = editor.syn_loader.load();
+    let (_, doc) = current_ref!(editor);
+
+    match doc.syntax() {
+        Some(syntax) => helix_core::fold::foldable(doc.text().slice(..), syntax, &loader),
+        None => Vec::new(),
+    }
+}
+
+/// Steps the range at the cursor through folded, children, open.
+///
+/// This is Org's `TAB` on a headline. The state is read back from the folds
+/// rather than remembered: a stored cycle position goes stale the moment an
+/// edit or another fold command changes what is closed.
+fn cycle_fold(cx: &mut Context) {
+    use helix_core::fold::{children_folds, cycle_state, Cycle};
+
+    let all = foldable_in_document(cx.editor);
+    let Some(parent) = foldable_at_cursor(cx) else {
+        cx.editor.set_error("Nothing to fold here");
+        return;
+    };
+
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().clone();
+    let cursor = doc.selection(view.id).primary().cursor(text.slice(..));
+    let state = cycle_state(doc.folds(), text.slice(..), &all, parent);
+
+    match state {
+        Cycle::Open => {
+            doc.folds_mut().insert(parent);
+        }
+        Cycle::Folded => {
+            doc.folds_mut().remove_at(cursor.max(parent.start));
+            for fold in children_folds(text.slice(..), &all, parent) {
+                doc.folds_mut().insert(fold);
+            }
+        }
+        Cycle::Children => {
+            // Opening means dropping every fold the range contains, not only
+            // the ones this cycle put there: a child folded by hand belongs to
+            // the range too.
+            let inside: Vec<_> = doc
+                .folds()
+                .iter()
+                .copied()
+                .filter(|fold| fold.start >= parent.start && fold.end <= parent.end)
+                .collect();
+            for fold in inside {
+                doc.folds_mut().remove_at(fold.start);
+            }
+        }
+    }
+
+    reveal_cursors(cx.editor);
+}
+
+/// Steps the whole buffer through overview, contents, everything.
+///
+/// This is Org's `S-TAB`.
+fn cycle_fold_all(cx: &mut Context) {
+    use helix_core::fold::{contents_folds, outermost, visibility, Visibility};
+
+    let all = foldable_in_document(cx.editor);
+    if all.is_empty() {
+        cx.editor.set_error("Nothing to fold in this file");
+        return;
+    }
+
+    let (_, doc) = current!(cx.editor);
+    let text = doc.text().clone();
+    let next = match visibility(doc.folds(), &all) {
+        Visibility::ShowAll => outermost(all.iter().copied()),
+        Visibility::Overview => contents_folds(text.slice(..), &all),
+        Visibility::Contents => Vec::new(),
+    };
+
+    doc.folds_mut().clear();
+    for fold in next {
+        doc.folds_mut().insert(fold);
+    }
+
+    reveal_cursors(cx.editor);
 }

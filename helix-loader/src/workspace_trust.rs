@@ -62,6 +62,11 @@ pub enum TrustQuery {
     LocalConfig,
     /// Query whether git integration can trust the .git/config
     Git,
+    /// Query whether code written in the workspace's files may be run, as an
+    /// Org source block is by Babel. Never implied by the `servers` level:
+    /// a language server is a binary the user installed, but a block is code
+    /// someone wrote into a file, which is what local config is too.
+    CodeExecution,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -613,6 +618,27 @@ mod test {
         write_file(&workspace.join(".helix").join("languages.toml"), "");
         let h3 = compute_workspace_hash(workspace).expect("has files");
         assert_ne!(h2, h3);
+    }
+
+    #[test]
+    fn running_code_needs_an_explicit_grant_where_servers_do_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path();
+
+        let trust = WorkspaceTrust::new(Config::default());
+        assert!(trust.query(workspace, TrustQuery::Lsp).is_trusted());
+        assert_eq!(
+            trust.query(workspace, TrustQuery::CodeExecution),
+            TrustStatus::Untrusted
+        );
+
+        let insecure = WorkspaceTrust::new(Config {
+            level: ImplicitTrustLevel::Insecure,
+            ..Config::default()
+        });
+        assert!(insecure
+            .query(workspace, TrustQuery::CodeExecution)
+            .is_trusted());
     }
 
     #[test]

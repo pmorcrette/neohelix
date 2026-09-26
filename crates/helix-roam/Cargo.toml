@@ -1,0 +1,29 @@
+[package]
+name = "helix-roam"
+description = "In-memory Org-Roam v2 knowledge graph for Helix"
+include = ["src/**/*", "README.md"]
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+categories.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+# Pinned to the same version helix-core uses: width definitions change
+# between releases, and a table aligned by one and rendered by the other
+# would drift.
+unicode-width = "=0.1.12"
+petgraph = { version = "0.6", default-features = false, features = ["graphmap", "stable_graph"] }
+uuid = { version = "1.0", features = ["v4", "v5"] }
+ignore = "0.4"
+parking_lot.workspace = true
+unicode-segmentation.workspace = true
+tokio = { version = "1", features = ["rt"] }
+
+[dev-dependencies]
+unicode-width = "=0.1.12"
+tempfile.workspace = true
+tokio = { version = "1", features = ["rt", "macros"] }

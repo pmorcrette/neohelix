@@ -36,6 +36,7 @@ use std::time::SystemTime;
 use helix_core::{
     editor_config::EditorConfig,
     encoding,
+    fold::Folds,
     history::{History, State, UndoKind},
     indent::{auto_detect_indent_style, IndentStyle},
     line_ending::auto_detect_line_ending,
@@ -151,6 +152,29 @@ pub struct Document {
     pub(crate) inlay_hints: HashMap<ViewId, DocumentInlayHints>,
     /// Jump label overlays for each view.
     pub(crate) jump_labels: HashMap<ViewId, Vec<Overlay>>,
+
+    /// Backlink counts drawn beside the headlines that have them.
+    ///
+    /// Stored rather than computed while rendering, like the inlay hints
+    /// above: the annotations are built from a `&Document`, and the graph
+    /// lives on the editor. A command fills these; a re-index refreshes them.
+    pub roam_counts: Vec<helix_core::text_annotations::InlineAnnotation>,
+    /// Org column view: each headline's row, drawn after it. Recomputed on
+    /// every change while `org_columns_on` is set.
+    pub org_columns: Vec<helix_core::text_annotations::InlineAnnotation>,
+    pub org_columns_on: bool,
+    /// Org entities and links drawn as what they stand for, recomputed on
+    /// every change while `org_pretty` is set.
+    pub org_conceals: helix_core::conceal::Conceals,
+    pub org_pretty: bool,
+
+    /// Ranges hidden from the display.
+    ///
+    /// Per document rather than per view: Org treats visibility as a property
+    /// of the buffer, and a split showing the same file shows it folded the
+    /// same way. Selections are per view because two views have two cursors;
+    /// two views do not have two outlines.
+    folds: Folds,
     /// LSP document highlights for each view, stored as char ranges.
     pub(crate) document_highlights: HashMap<ViewId, DocumentHighlights>,
     /// LSP code action hints for each view.
@@ -765,6 +789,12 @@ impl Document {
             focused_at: std::time::Instant::now(),
             readonly: false,
             jump_labels: HashMap::new(),
+            roam_counts: Vec::new(),
+            org_columns: Vec::new(),
+            org_columns_on: false,
+            org_conceals: Default::default(),
+            org_pretty: false,
+            folds: Folds::new(),
             document_highlights: HashMap::new(),
             code_action_hints: HashSet::new(),
             color_swatches: None,
@@ -1487,6 +1517,20 @@ impl Document {
                 .map(transaction.changes())
                 // Ensure all selections across all views still adhere to invariants.
                 .ensure_invariants(self.text.slice(..));
+        }
+
+        // Folds move with the text they hide, exactly as the selections above
+        // do, so an edit above a folded section does not leave it hiding the
+        // wrong lines.
+        self.folds.map(transaction.changes());
+        self.org_conceals.map(transaction.changes());
+
+        // Annotations placed at a headline's end move with it, and stay after
+        // text typed at that end rather than before it.
+        for annotation in self.roam_counts.iter_mut().chain(&mut self.org_columns) {
+            annotation.char_idx = transaction
+                .changes()
+                .map_pos(annotation.char_idx, helix_core::Assoc::After);
         }
 
         for view_data in self.view_data.values_mut() {
@@ -2406,12 +2450,22 @@ impl Document {
             wrap_indicator_highlight: theme
                 .and_then(|theme| theme.find_highlight("ui.virtual.wrap")),
             soft_wrap_at_text_width,
+            fold_marker: Box::from(helix_core::doc_formatter::DEFAULT_FOLD_MARKER),
         }
     }
 
     /// Set the inlay hints for this document and `view_id`.
     pub fn set_inlay_hints(&mut self, view_id: ViewId, inlay_hints: DocumentInlayHints) {
         self.inlay_hints.insert(view_id, inlay_hints);
+    }
+
+    /// The ranges this document hides.
+    pub fn folds(&self) -> &Folds {
+        &self.folds
+    }
+
+    pub fn folds_mut(&mut self) -> &mut Folds {
+        &mut self.folds
     }
 
     pub fn set_jump_labels(&mut self, view_id: ViewId, labels: Vec<Overlay>) {

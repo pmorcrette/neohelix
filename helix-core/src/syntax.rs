@@ -42,6 +42,7 @@ pub struct LanguageData {
     syntax: OnceCell<Option<SyntaxConfig>>,
     indent_query: OnceCell<Option<IndentQuery>>,
     textobject_query: OnceCell<Option<TextObjectQuery>>,
+    fold_query: OnceCell<Option<TextObjectQuery>>,
     tag_query: OnceCell<Option<TagQuery>>,
     rainbow_query: OnceCell<Option<RainbowQuery>>,
 }
@@ -53,6 +54,7 @@ impl LanguageData {
             syntax: OnceCell::new(),
             indent_query: OnceCell::new(),
             textobject_query: OnceCell::new(),
+            fold_query: OnceCell::new(),
             tag_query: OnceCell::new(),
             rainbow_query: OnceCell::new(),
         }
@@ -154,6 +156,36 @@ impl LanguageData {
             .get_or_init(|| {
                 let grammar = self.syntax_config(loader)?.grammar;
                 Self::compile_textobject_query(grammar, &self.config)
+                    .map_err(|err| {
+                        log::error!("{err}");
+                    })
+                    .ok()
+                    .flatten()
+            })
+            .as_ref()
+    }
+
+    /// Compiles the folds.scm query for a language.
+    /// This function should only be used by this module or the xtask crate.
+    pub fn compile_fold_query(
+        grammar: Grammar,
+        config: &LanguageConfiguration,
+    ) -> Result<Option<TextObjectQuery>> {
+        let name = &config.language_id;
+        let text = read_query(name, "folds.scm");
+        if text.is_empty() {
+            return Ok(None);
+        }
+        let query = Query::new(grammar, &text, |_, _| Ok(()))
+            .with_context(|| format!("Failed to compile folds.scm query for '{name}'"))?;
+        Ok(Some(TextObjectQuery::new(query)))
+    }
+
+    fn fold_query(&self, loader: &Loader) -> Option<&TextObjectQuery> {
+        self.fold_query
+            .get_or_init(|| {
+                let grammar = self.syntax_config(loader)?.grammar;
+                Self::compile_fold_query(grammar, &self.config)
                     .map_err(|err| {
                         log::error!("{err}");
                     })
@@ -418,6 +450,10 @@ impl Loader {
 
     pub fn tag_query(&self, lang: Language) -> Option<&TagQuery> {
         self.language(lang).tag_query(self)
+    }
+
+    pub fn fold_query(&self, lang: Language) -> Option<&TextObjectQuery> {
+        self.language(lang).fold_query(self)
     }
 
     fn rainbow_query(&self, lang: Language) -> Option<&RainbowQuery> {

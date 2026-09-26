@@ -31,6 +31,19 @@ pub enum GraphemeSource {
     Document {
         codepoints: u32,
     },
+    /// A marker standing in for a folded range.
+    ///
+    /// It carries what the hidden text would have contributed, because the
+    /// graphemes that would have contributed it are never yielded: the
+    /// characters so that every position past the fold stays right, and the
+    /// lines because the newlines that advance the line counter are inside
+    /// the fold. Both travel with the grapheme rather than in a field on the
+    /// formatter, since soft wrap buffers a whole word before yielding it and
+    /// would read such a field a word too late.
+    Folded {
+        codepoints: u32,
+        lines: u32,
+    },
     /// Inline virtual text can not be highlighted with a `Highlight` iterator
     /// because it's not part of the document. Instead the `Highlight`
     /// is emitted right by the document formatter
@@ -45,6 +58,11 @@ impl GraphemeSource {
         matches!(self, GraphemeSource::VirtualText { .. })
     }
 
+    /// Returns whether this grapheme stands in for a folded range.
+    pub fn is_folded(self) -> bool {
+        matches!(self, GraphemeSource::Folded { .. })
+    }
+
     pub fn is_eof(self) -> bool {
         // all doc chars except the EOF char have non-zero codepoints
         matches!(self, GraphemeSource::Document { codepoints: 0 })
@@ -52,7 +70,9 @@ impl GraphemeSource {
 
     pub fn doc_chars(self) -> usize {
         match self {
-            GraphemeSource::Document { codepoints } => codepoints as usize,
+            GraphemeSource::Document { codepoints } | GraphemeSource::Folded { codepoints, .. } => {
+                codepoints as usize
+            }
             GraphemeSource::VirtualText { .. } => 0,
         }
     }
@@ -151,7 +171,12 @@ pub struct TextFormat {
     pub wrap_indicator_highlight: Option<Highlight>,
     pub viewport_width: u16,
     pub soft_wrap_at_text_width: bool,
+    /// Drawn in place of a folded range.
+    pub fold_marker: Box<str>,
 }
+
+/// What stands in for folded text when nothing else is asked for.
+pub const DEFAULT_FOLD_MARKER: &str = "…";
 
 // test implementation is basically only used for testing or when softwrap is always disabled
 impl Default for TextFormat {
@@ -165,6 +190,7 @@ impl Default for TextFormat {
             viewport_width: 17,
             wrap_indicator_highlight: None,
             soft_wrap_at_text_width: false,
+            fold_marker: Box::from(DEFAULT_FOLD_MARKER),
         }
     }
 }
@@ -173,6 +199,8 @@ impl Default for TextFormat {
 pub struct DocumentFormatter<'t> {
     text_fmt: &'t TextFormat,
     annotations: &'t TextAnnotations<'t>,
+    /// Kept so a fold can re-seat `graphemes` past the text it hides.
+    text: RopeSlice<'t>,
 
     /// The visual position at the end of the last yielded word boundary
     visual_pos: Position,
@@ -212,13 +240,23 @@ impl<'t> DocumentFormatter<'t> {
         char_idx: usize,
     ) -> Self {
         // TODO divide long lines into blocks to avoid bad performance for long lines
-        let block_line_idx = text.char_to_line(char_idx.min(text.len_chars()));
-        let block_char_idx = text.line_to_char(block_line_idx);
+        let mut block_line_idx = text.char_to_line(char_idx.min(text.len_chars()));
+        let mut block_char_idx = text.line_to_char(block_line_idx);
+
+        // Starting inside a fold would render text the fold hides. Back up to
+        // the line the fold opens on, which is the first line still visible —
+        // and take the line counter back with it, or every line the formatter
+        // reports is off by the lines that were skipped over.
+        if let Some(fold) = annotations.fold_at(block_char_idx) {
+            block_line_idx = text.char_to_line(fold.start);
+            block_char_idx = text.line_to_char(block_line_idx);
+        }
         annotations.reset_pos(block_char_idx);
 
         DocumentFormatter {
             text_fmt,
             annotations,
+            text,
             visual_pos: Position { row: 0, col: 0 },
             graphemes: text.slice(block_char_idx..).graphemes(),
             char_pos: block_char_idx,
@@ -262,6 +300,31 @@ impl<'t> DocumentFormatter<'t> {
         let (grapheme, source) =
             if let Some((grapheme, highlight)) = self.next_inline_annotation_grapheme(char_pos) {
                 (grapheme.into(), GraphemeSource::VirtualText { highlight })
+            } else if let Some(fold) = self.annotations.fold_starting_at(char_pos) {
+                // Skip what the fold hides by re-seating the iterator past it.
+                // The marker that replaces it carries the characters and the
+                // lines that will never be yielded.
+                self.graphemes = self.text.slice(fold.end..).graphemes();
+                let lines = self.text.char_to_line(fold.end) - self.text.char_to_line(fold.start);
+
+                (
+                    self.text_fmt.fold_marker.as_ref().into(),
+                    GraphemeSource::Folded {
+                        codepoints: (fold.end - fold.start) as u32,
+                        lines: lines as u32,
+                    },
+                )
+            } else if let Some(conceal) = self.annotations.conceal_starting_at(char_pos) {
+                // Like a fold, but drawn as its replacement and never across
+                // a line break, so there are no lines to carry.
+                self.graphemes = self.text.slice(conceal.end..).graphemes();
+                (
+                    conceal.replacement.as_str().into(),
+                    GraphemeSource::Folded {
+                        codepoints: (conceal.end - conceal.start) as u32,
+                        lines: 0,
+                    },
+                )
             } else if let Some(grapheme) = self.graphemes.next() {
                 let codepoints = grapheme.len_chars() as u32;
 
@@ -457,6 +520,11 @@ impl<'t> Iterator for DocumentFormatter<'t> {
         };
 
         self.char_pos += grapheme.doc_chars();
+        if let GraphemeSource::Folded { lines, .. } = grapheme.source {
+            // The hidden newlines never reach the branch below that counts
+            // them, so the fold accounts for its own lines here.
+            self.line_pos += lines as usize;
+        }
         if !grapheme.is_virtual() {
             self.annotations.process_virtual_text_anchors(&grapheme);
         }

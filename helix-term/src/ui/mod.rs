@@ -1,19 +1,28 @@
+pub mod blame_view;
 mod completion;
+pub mod confirm;
+pub mod diff_view;
+pub mod dock;
 mod document;
 pub(crate) mod editor;
 mod info;
+pub mod log_view;
 pub mod lsp;
+pub mod margin;
 mod markdown;
 pub mod menu;
 pub mod overlay;
 pub mod picker;
 pub mod popup;
 pub mod prompt;
+pub mod roam;
 mod select;
 mod spinner;
 mod statusline;
+pub mod terminal;
 mod text;
 mod text_decorations;
+pub mod transient;
 
 use crate::compositor::Compositor;
 use crate::filter_picker_entry;

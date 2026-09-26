@@ -1,0 +1,363 @@
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::visit::EdgeRef;
+use petgraph::Direction;
+use uuid::Uuid;
+
+use crate::query::NodeQuery;
+use crate::{Link, Node};
+
+/// An in-memory Org-Roam v2 knowledge graph.
+///
+/// Nodes are addressed by their `:ID:` property; the [`NodeIndex`] values
+/// petgraph hands out stay an implementation detail so that indices can never
+/// be held across a mutation. `RoamGraph` is `Send + Sync`, so a shared
+/// instance lives behind the caller's lock of choice — typically
+/// `Arc<RwLock<RoamGraph>>`.
+///
+/// The `Uuid -> NodeIndex` map turns an `:ID:` into a graph position in
+/// `O(1)`, and petgraph keeps a separate incoming and outgoing edge chain per
+/// node, so backlinks cost the same as forward links: no query scans the
+/// graph.
+#[derive(Debug, Clone, Default)]
+pub struct RoamGraph {
+    graph: DiGraph<Node, Link>,
+    /// Maps a node's `:ID:` to its position in `graph`.
+    indices: HashMap<Uuid, NodeIndex>,
+    /// Links whose endpoints were not both known when they were recorded.
+    ///
+    /// A file may link to a node in a file that has not been indexed yet, so
+    /// [`RoamGraph::add_link_deferred`] parks those here until
+    /// [`RoamGraph::resolve_pending_links`] can place them.
+    pending: Vec<(Uuid, Uuid, Link)>,
+    /// Bibliography keys, each mapped to the nodes citing them.
+    citations: HashMap<String, Vec<Uuid>>,
+    /// `:ROAM_REFS:` keys, each mapped to the node claiming it.
+    ///
+    /// A link whose target is not an `[[id:…]]` resolves through this map, so
+    /// citing a node's external identifier produces a [`Link::Ref`] edge.
+    refs: HashMap<String, Uuid>,
+    /// Where an `:ID:` was last seen, for ids the index does not own.
+    ///
+    /// The graph knows the files it scanned. An `id:` link into a file
+    /// outside the notes directory resolves to nothing, however real the
+    /// target is — so every `.org` file the editor opens leaves its ids here,
+    /// and a link that the nodes cannot answer is asked of this.
+    locations: HashMap<Uuid, PathBuf>,
+    /// For each `#+SETUPFILE:`, the files that read it.
+    ///
+    /// A file's meaning can depend on a second file, so saving the second
+    /// has to re-read the first: this is what says which ones.
+    setup_dependents: HashMap<PathBuf, std::collections::BTreeSet<PathBuf>>,
+}
+
+impl RoamGraph {
+    /// Creates an empty graph.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records which setup files `file` reads, replacing what it read before.
+    pub fn record_setup_files(&mut self, file: &Path, setup_files: &[PathBuf]) {
+        for readers in self.setup_dependents.values_mut() {
+            readers.remove(file);
+        }
+        self.setup_dependents
+            .retain(|_, readers| !readers.is_empty());
+        for setup in setup_files {
+            self.setup_dependents
+                .entry(setup.clone())
+                .or_default()
+                .insert(file.to_path_buf());
+        }
+    }
+
+    /// The files that read `setup` through `#+SETUPFILE:`.
+    pub fn setup_dependents(&self, setup: &Path) -> Vec<PathBuf> {
+        self.setup_dependents
+            .get(setup)
+            .map(|readers| readers.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Inserts `node`, or replaces the node already registered under the same
+    /// `:ID:`.
+    ///
+    /// Replacing keeps every edge attached to the node, so re-parsing a file
+    /// refreshes titles, tags and aliases without dropping the links other
+    /// files point at it with.
+    pub fn insert_node(&mut self, node: Node) {
+        match self.indices.get(&node.id) {
+            Some(&index) => self.graph[index] = node,
+            None => {
+                let id = node.id;
+                let index = self.graph.add_node(node);
+                self.indices.insert(id, index);
+            }
+        }
+    }
+
+    /// Records that `source` links to `target` through `link`.
+    ///
+    /// Returns `false` and leaves the graph untouched when either endpoint is
+    /// unknown: an Org file may be parsed before the file it links to, and a
+    /// dangling edge would have no node to hang off.
+    pub fn add_link(&mut self, source: Uuid, target: Uuid, link: Link) -> bool {
+        let (Some(&source), Some(&target)) = (self.indices.get(&source), self.indices.get(&target))
+        else {
+            return false;
+        };
+
+        self.graph.add_edge(source, target, link);
+        true
+    }
+
+    /// The nodes linking *to* `node_id`, with the link each one used.
+    ///
+    /// Locating the node is `O(1)`, and only that node's incoming edge chain
+    /// is walked — never the whole graph — so the call costs `O(1)` plus the
+    /// number of backlinks it returns.
+    ///
+    /// Returns an empty vector for an unknown id. The order is unspecified.
+    pub fn get_backlinks(&self, node_id: &Uuid) -> Vec<(&Node, &Link)> {
+        self.neighbours(node_id, Direction::Incoming)
+    }
+
+    /// The nodes `node_id` links *out* to, with the link each one uses.
+    ///
+    /// Costs `O(1)` plus the number of links returned, like
+    /// [`RoamGraph::get_backlinks`].
+    ///
+    /// Returns an empty vector for an unknown id. The order is unspecified.
+    pub fn get_forward_links(&self, node_id: &Uuid) -> Vec<(&Node, &Link)> {
+        self.neighbours(node_id, Direction::Outgoing)
+    }
+
+    /// Records a link, parking it if either endpoint is still unknown.
+    ///
+    /// Indexing visits files in directory order, so a link is routinely seen
+    /// before its target. Unlike [`RoamGraph::add_link`], this never drops
+    /// one: [`RoamGraph::resolve_pending_links`] places it once both ends are
+    /// in the graph.
+    pub fn add_link_deferred(&mut self, source: Uuid, target: Uuid, link: Link) {
+        if !self.add_link(source, target, link) {
+            self.pending.push((source, target, link));
+        }
+    }
+
+    /// Places every parked link whose endpoints are now both known.
+    ///
+    /// Returns how many were placed. Links whose source no longer exists are
+    /// discarded; links whose target is still missing stay parked, so a node
+    /// added by a later save picks up the backlinks pointing at it.
+    pub fn resolve_pending_links(&mut self) -> usize {
+        let mut placed = 0;
+        let mut still_pending = Vec::new();
+
+        for (source, target, link) in std::mem::take(&mut self.pending) {
+            if self.add_link(source, target, link) {
+                placed += 1;
+            } else if self.indices.contains_key(&source) {
+                still_pending.push((source, target, link));
+            }
+        }
+
+        self.pending = still_pending;
+        placed
+    }
+
+    /// The number of links still waiting for their target to be indexed.
+    pub fn pending_link_count(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// Drops every node parsed out of `path`, along with its links.
+    ///
+    /// Returns the ids that were removed, so a caller re-indexing the file can
+    /// tell which nodes disappeared from it.
+    pub fn remove_nodes_in_file(&mut self, path: &Path) -> Vec<Uuid> {
+        let doomed: Vec<Uuid> = self
+            .graph
+            .node_weights()
+            .filter(|node| node.file_path == path)
+            .map(|node| node.id)
+            .collect();
+
+        for id in &doomed {
+            self.remove_node(id);
+        }
+
+        // Locations pointing at this file go with its nodes: the file has
+        // just been re-read, and whatever it no longer declares is no longer
+        // there to be found.
+        self.locations.retain(|_, seen| seen != path);
+
+        // Links out of the removed nodes must not linger as pending work.
+        self.pending
+            .retain(|(source, _, _)| self.indices.contains_key(source));
+
+        doomed
+    }
+
+    /// Registers a `:ROAM_REFS:` key for `node_id`.
+    pub fn register_ref(&mut self, key: impl Into<String>, node_id: Uuid) {
+        self.refs.insert(key.into(), node_id);
+    }
+
+    /// The node claiming `key` as one of its `:ROAM_REFS:`.
+    /// Records that `node_id` cites `key`.
+    pub fn add_citation(&mut self, key: impl Into<String>, node_id: Uuid) {
+        let citing = self.citations.entry(key.into()).or_default();
+        if !citing.contains(&node_id) {
+            citing.push(node_id);
+        }
+    }
+
+    /// The nodes citing `key`.
+    pub fn cited_by(&self, key: &str) -> Vec<&Node> {
+        self.citations
+            .get(key)
+            .map(|ids| ids.iter().filter_map(|id| self.get_node(id)).collect())
+            .unwrap_or_default()
+    }
+
+    /// Every `:ROAM_REFS:` key, with the node claiming it.
+    ///
+    /// The graph has always resolved refs; nothing exposed them for searching.
+    pub fn refs(&self) -> impl Iterator<Item = (&str, &Node)> {
+        self.refs
+            .iter()
+            .filter_map(|(key, id)| Some((key.as_str(), self.get_node(id)?)))
+    }
+
+    /// Every bibliography key the graph has seen.
+    pub fn citation_keys(&self) -> impl Iterator<Item = &str> {
+        self.citations.keys().map(String::as_str)
+    }
+
+    /// The nodes matching `query`, in insertion order.
+    pub fn query(&self, query: &NodeQuery) -> Vec<&Node> {
+        self.nodes().filter(|node| query.matches(node)).collect()
+    }
+
+    /// Records that `id` was seen in `path`.
+    pub fn register_location(&mut self, id: Uuid, path: impl Into<PathBuf>) {
+        self.locations.insert(id, path.into());
+    }
+
+    /// The file an id was last seen in, whether or not it is a node here.
+    ///
+    /// A node answers for itself: the index knows where it read it, and a
+    /// remembered location for the same id would only be a second opinion.
+    pub fn location(&self, id: &Uuid) -> Option<&Path> {
+        self.get_node(id)
+            .map(|node| node.file_path.as_path())
+            .or_else(|| self.locations.get(id).map(PathBuf::as_path))
+    }
+
+    /// Every remembered location, for carrying across a rebuild.
+    pub fn locations(&self) -> impl Iterator<Item = (Uuid, &Path)> {
+        self.locations
+            .iter()
+            .map(|(id, path)| (*id, path.as_path()))
+    }
+
+    /// How many remembered locations point at ids the index does not hold.
+    ///
+    /// The ones it does hold are counted by the nodes already; what is worth
+    /// reporting is how many ids this session can reach that a rebuild
+    /// cannot find.
+    pub fn location_count(&self) -> usize {
+        self.locations
+            .keys()
+            .filter(|id| !self.indices.contains_key(id))
+            .count()
+    }
+
+    pub fn resolve_ref(&self, key: &str) -> Option<Uuid> {
+        self.refs.get(key).copied()
+    }
+
+    /// Removes a node and every link touching it.
+    ///
+    /// `petgraph::Graph` fills the hole by moving its last node into the freed
+    /// slot, which silently invalidates that node's cached index, so the
+    /// `:ID:` map is repaired here rather than left stale.
+    pub fn remove_node(&mut self, node_id: &Uuid) -> Option<Node> {
+        // A node that is going away must not leave its citations behind.
+        self.citations.retain(|_, citing| {
+            citing.retain(|id| id != node_id);
+            !citing.is_empty()
+        });
+
+        let index = self.indices.remove(node_id)?;
+        let last = NodeIndex::new(self.graph.node_count() - 1);
+
+        let removed = self.graph.remove_node(index)?;
+        self.refs.retain(|_, claimant| claimant != node_id);
+
+        if index != last {
+            let moved = self.graph[index].id;
+            self.indices.insert(moved, index);
+        }
+
+        Some(removed)
+    }
+
+    /// Looks a node up by its `:ID:`, in `O(1)`.
+    pub fn get_node(&self, node_id: &Uuid) -> Option<&Node> {
+        let index = *self.indices.get(node_id)?;
+        self.graph.node_weight(index)
+    }
+
+    /// Whether a node with this `:ID:` is registered.
+    pub fn contains_node(&self, node_id: &Uuid) -> bool {
+        self.indices.contains_key(node_id)
+    }
+
+    /// The number of nodes in the graph.
+    pub fn node_count(&self) -> usize {
+        self.graph.node_count()
+    }
+
+    /// The number of links in the graph.
+    pub fn link_count(&self) -> usize {
+        self.graph.edge_count()
+    }
+
+    /// Whether the graph holds no nodes.
+    pub fn is_empty(&self) -> bool {
+        self.graph.node_count() == 0
+    }
+
+    /// Every node parsed out of `path`, in no particular order.
+    pub fn nodes_in_file<'a>(&'a self, path: &'a Path) -> impl Iterator<Item = &'a Node> + 'a {
+        self.graph
+            .node_weights()
+            .filter(move |node| node.file_path == path)
+    }
+
+    /// Every node in the graph, in no particular order.
+    pub fn nodes(&self) -> impl Iterator<Item = &Node> {
+        self.graph.node_weights()
+    }
+
+    fn neighbours(&self, node_id: &Uuid, direction: Direction) -> Vec<(&Node, &Link)> {
+        let Some(&index) = self.indices.get(node_id) else {
+            return Vec::new();
+        };
+
+        self.graph
+            .edges_directed(index, direction)
+            .map(|edge| {
+                let neighbour = match direction {
+                    Direction::Incoming => edge.source(),
+                    Direction::Outgoing => edge.target(),
+                };
+                (&self.graph[neighbour], edge.weight())
+            })
+            .collect()
+    }
+}

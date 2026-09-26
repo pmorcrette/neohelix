@@ -382,6 +382,14 @@ fn write_impl(
     path: Option<&str>,
     options: WriteOptions,
 ) -> anyhow::Result<()> {
+    // An Org buffer holding a decrypted `:crypt:` entry would put it on
+    // disk in clear; `:w!` is the way to say that is intended.
+    if !options.force {
+        if let Some(reason) = crate::roam::crypt_guard(doc!(cx.editor)) {
+            bail!(reason);
+        }
+    }
+
     let config = cx.editor.config();
     let (view, doc) = current!(cx.editor);
     let doc_id = doc.id();
@@ -879,6 +887,10 @@ pub fn write_all_impl(
                 if options.write_scratch {
                     errors.push("cannot write a buffer without a filename");
                 }
+                return None;
+            }
+            if !options.force && crate::roam::crypt_guard(doc).is_some() {
+                errors.push("an Org buffer has :crypt: entries in clear; :org-encrypt-entries first, or force the write");
                 return None;
             }
 
@@ -2176,6 +2188,780 @@ fn debug_remote(
         _ => Some(args.remove(0)),
     };
     dap_start_impl(cx, name.as_deref(), address, Some(args))
+}
+
+fn terminal(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let callback = async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            |editor: &mut Editor, compositor: &mut Compositor| {
+                if let Some(view) = super::terminal_view(editor) {
+                    crate::ui::terminal::show(compositor, editor, view);
+                }
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
+fn terminal_new(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let directory = match args.first() {
+        Some(directory) => {
+            let directory = helix_stdx::path::canonicalize(helix_stdx::path::expand_tilde(
+                Path::new(directory),
+            ));
+            ensure!(
+                directory.is_dir(),
+                "{} is not a directory",
+                directory.display()
+            );
+            Some(directory)
+        }
+        None => None,
+    };
+    cx.jobs.callback(async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                if let Some(view) = super::new_terminal_view(editor, directory) {
+                    crate::ui::terminal::show(compositor, editor, view);
+                }
+            },
+        ));
+        Ok(call)
+    });
+    Ok(())
+}
+
+fn terminal_close(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let Some(entry) = cx.editor.terminals.remove_current() else {
+        bail!("No terminal is running");
+    };
+    let number = entry.number;
+    // Dropping the terminal ends its shell and whatever runs in it.
+    drop(entry);
+    match cx.editor.terminals.current_entry() {
+        Some(next) => cx.editor.set_status(format!(
+            "Closed terminal {number}; terminal {} is shown next",
+            next.number
+        )),
+        None => cx.editor.set_status(format!("Closed terminal {number}")),
+    }
+    Ok(())
+}
+
+fn terminal_rename(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let name: Vec<String> = args.into_iter().map(|arg| arg.to_string()).collect();
+    let name = name.join(" ");
+    let Some(entry) = cx.editor.terminals.current_entry_mut() else {
+        bail!("No terminal is running");
+    };
+    let number = entry.number;
+    if name.trim().is_empty() {
+        entry.name = None;
+        cx.editor
+            .set_status(format!("Terminal {number} is named by its program again"));
+    } else {
+        entry.name = Some(name.trim().to_string());
+        cx.editor
+            .set_status(format!("Terminal {number} is now {}", name.trim()));
+    }
+    Ok(())
+}
+
+fn terminal_list(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    cx.jobs.callback(async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            |editor: &mut Editor, compositor: &mut Compositor| {
+                if let Some(picker) = super::terminal_picker(editor) {
+                    compositor.push(picker);
+                }
+            },
+        ));
+        Ok(call)
+    });
+    Ok(())
+}
+
+fn magit(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let callback = async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            |editor: &mut Editor, compositor: &mut Compositor| {
+                if let Some(overlay) = super::magit_overlay(editor) {
+                    compositor.push(overlay);
+                }
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
+fn roam_node_find(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let callback = async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            |editor: &mut Editor, compositor: &mut Compositor| {
+                if let Some(picker) = super::roam_node_picker(editor) {
+                    compositor.push(picker);
+                }
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
+/// Runs a folding command, which needs the whole `Context`.
+macro_rules! fold_command {
+    ($name:ident, $call:path) => {
+        fn $name(
+            cx: &mut compositor::Context,
+            _args: Args,
+            event: PromptEvent,
+        ) -> anyhow::Result<()> {
+            if event == PromptEvent::Validate {
+                let mut cx = Context {
+                    register: None,
+                    count: None,
+                    editor: cx.editor,
+                    callback: Vec::new(),
+                    on_next_key_callback: None,
+                    jobs: cx.jobs,
+                };
+                $call(&mut cx);
+            }
+            Ok(())
+        }
+    };
+}
+
+macro_rules! roam_buffer_command {
+    ($name:ident, $call:path) => {
+        fn $name(
+            cx: &mut compositor::Context,
+            _args: Args,
+            event: PromptEvent,
+        ) -> anyhow::Result<()> {
+            if event == PromptEvent::Validate {
+                $call(cx.editor);
+            }
+            Ok(())
+        }
+    };
+}
+
+roam_buffer_command!(roam_promote_buffer, crate::roam::promote_buffer);
+roam_buffer_command!(roam_demote_buffer, crate::roam::demote_buffer);
+roam_buffer_command!(roam_extract_subtree, crate::roam::extract_subtree);
+roam_buffer_command!(roam_replace_links, crate::roam::replace_roam_links);
+roam_buffer_command!(org_follow_link, crate::roam::follow_link);
+roam_buffer_command!(org_store_link, crate::roam::store_link);
+roam_buffer_command!(org_insert_link, crate::roam::insert_stored_link);
+roam_buffer_command!(org_create_id, crate::roam::create_id);
+
+/// Pushes a component built from the editor, from a typable command.
+macro_rules! roam_component_command {
+    ($name:ident, $build:expr) => {
+        fn $name(
+            cx: &mut compositor::Context,
+            _args: Args,
+            event: PromptEvent,
+        ) -> anyhow::Result<()> {
+            if event != PromptEvent::Validate {
+                return Ok(());
+            }
+            let callback = async move {
+                let call: job::Callback = Callback::EditorCompositor(Box::new(
+                    move |editor: &mut Editor, compositor: &mut Compositor| {
+                        let build: fn(&mut Editor) -> Option<Box<dyn Component>> = $build;
+                        if let Some(component) = build(editor) {
+                            compositor.push(component);
+                        }
+                    },
+                ));
+                Ok(call)
+            };
+            cx.jobs.callback(callback);
+            Ok(())
+        }
+    };
+}
+
+roam_component_command!(roam_node_insert, |editor| Some(
+    crate::commands::roam_node_insert_prompt(editor)
+));
+roam_component_command!(roam_ref_find, crate::commands::roam_ref_picker);
+roam_component_command!(
+    roam_unlinked_references,
+    crate::commands::roam_unlinked_picker
+);
+roam_component_command!(roam_capture, crate::commands::roam_capture_picker);
+roam_buffer_command!(org_insert_heading, crate::roam::insert_heading);
+roam_buffer_command!(org_promote, crate::roam::promote_heading);
+roam_buffer_command!(org_demote, crate::roam::demote_heading);
+roam_buffer_command!(org_promote_subtree, crate::roam::promote_subtree);
+roam_buffer_command!(org_demote_subtree, crate::roam::demote_subtree);
+roam_buffer_command!(org_move_subtree_up, crate::roam::move_subtree_up);
+roam_buffer_command!(org_move_subtree_down, crate::roam::move_subtree_down);
+roam_buffer_command!(org_todo, crate::roam::todo_next);
+roam_buffer_command!(org_todo_previous, crate::roam::todo_previous);
+roam_buffer_command!(org_priority_up, crate::roam::priority_up);
+roam_buffer_command!(org_priority_down, crate::roam::priority_down);
+roam_buffer_command!(org_insert_item, crate::roam::list_insert_item);
+roam_buffer_command!(org_renumber_list, crate::roam::list_renumber);
+roam_buffer_command!(org_demote_item, crate::roam::list_demote_item);
+roam_buffer_command!(org_promote_item, crate::roam::list_promote_item);
+roam_buffer_command!(org_toggle_checkbox, crate::roam::toggle_checkbox);
+roam_buffer_command!(org_update_cookies, crate::roam::update_cookies);
+roam_buffer_command!(org_table_align, crate::roam::table_align);
+roam_buffer_command!(org_table_insert_row, crate::roam::table_insert_row);
+roam_buffer_command!(
+    org_table_insert_separator,
+    crate::roam::table_insert_separator
+);
+roam_buffer_command!(org_table_delete_row, crate::roam::table_delete_row);
+roam_buffer_command!(org_table_insert_column, crate::roam::table_insert_column);
+roam_buffer_command!(org_table_delete_column, crate::roam::table_delete_column);
+roam_buffer_command!(org_table_next_cell, crate::roam::table_next_cell);
+roam_buffer_command!(org_table_previous_cell, crate::roam::table_previous_cell);
+roam_buffer_command!(org_table_recalculate, crate::roam::table_recalculate);
+roam_buffer_command!(org_table_iterate, crate::roam::table_iterate);
+roam_buffer_command!(
+    org_table_recalculate_all,
+    crate::roam::table_recalculate_all
+);
+fold_command!(fold, crate::commands::fold);
+fold_command!(unfold, crate::commands::unfold);
+fold_command!(toggle_fold, crate::commands::toggle_fold);
+fold_command!(fold_all, crate::commands::fold_all);
+fold_command!(unfold_all, crate::commands::unfold_all);
+fold_command!(narrow_to_selection, crate::commands::narrow_to_selection);
+fold_command!(cycle_fold, crate::commands::cycle_fold);
+fold_command!(cycle_fold_all, crate::commands::cycle_fold_all);
+roam_buffer_command!(roam_state, crate::roam::report_state);
+roam_component_command!(roam_index, crate::commands::roam_index_picker);
+roam_buffer_command!(roam_backlink_counts, crate::roam::toggle_backlink_counts);
+roam_buffer_command!(roam_pin_node, crate::roam::pin_node);
+roam_buffer_command!(roam_unpin_node, crate::roam::unpin_node);
+roam_buffer_command!(roam_diagnose, crate::roam::diagnose_node);
+roam_buffer_command!(org_footnote_new, crate::roam::footnote_new);
+roam_buffer_command!(org_footnote_goto, crate::roam::footnote_goto);
+roam_buffer_command!(org_footnote_renumber, crate::roam::footnote_renumber);
+roam_buffer_command!(org_cite_follow, crate::roam::follow_citation);
+roam_component_command!(org_emphasis, |_editor| Some(
+    crate::commands::org_emphasis_prompt()
+));
+roam_component_command!(org_insert_block, |_editor| Some(
+    crate::commands::org_block_prompt()
+));
+roam_component_command!(org_cite_insert, |editor| Some(
+    crate::commands::org_cite_prompt(editor)
+));
+roam_buffer_command!(org_next_heading, crate::roam::goto_next_heading);
+roam_buffer_command!(org_previous_heading, crate::roam::goto_previous_heading);
+roam_buffer_command!(
+    org_next_sibling_heading,
+    crate::roam::goto_next_sibling_heading
+);
+roam_buffer_command!(
+    org_previous_sibling_heading,
+    crate::roam::goto_previous_sibling_heading
+);
+roam_buffer_command!(org_parent_heading, crate::roam::goto_parent_heading);
+roam_buffer_command!(org_outline_path, crate::roam::show_outline_path);
+roam_buffer_command!(org_narrow, crate::roam::narrow_to_subtree);
+roam_buffer_command!(org_widen, crate::roam::widen);
+roam_buffer_command!(org_startup_visibility, crate::roam::startup_visibility);
+roam_buffer_command!(org_src_next, crate::roam::src_next);
+roam_buffer_command!(org_src_previous, crate::roam::src_previous);
+roam_buffer_command!(org_src_result, crate::roam::src_result);
+roam_buffer_command!(org_edit_src, crate::roam::edit_src);
+roam_buffer_command!(org_tangle, crate::roam::tangle);
+roam_buffer_command!(org_clock_in, crate::roam::clock_in);
+roam_buffer_command!(org_clock_out, crate::roam::clock_out);
+roam_buffer_command!(org_clock_cancel, crate::roam::clock_cancel);
+roam_buffer_command!(org_clock_goto, crate::roam::clock_goto);
+roam_buffer_command!(org_clock_report, crate::roam::clock_report);
+roam_buffer_command!(org_babel_execute, crate::roam::babel_execute);
+roam_buffer_command!(org_columns, crate::roam::toggle_columns);
+roam_buffer_command!(org_toggle_pretty, crate::roam::toggle_pretty);
+roam_component_command!(roam_dailies_directory, crate::roam::dailies_picker);
+
+/// `:roam-dailies-capture <entry>`, or a prompt for it.
+fn magit_file(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    cx.jobs.callback(async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                if let Some(overlay) = super::magit_file_overlay(editor) {
+                    compositor.push(overlay);
+                }
+            },
+        ));
+        Ok(call)
+    });
+    Ok(())
+}
+
+/// `:magit-trailer [kind] [person]`: add a trailer to the commit message.
+fn magit_trailer(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let mut words = args.into_iter().map(|arg| arg.to_string());
+    let kind = words
+        .next()
+        .map(|kind| kind.trim_end_matches(':').to_string());
+    let person: Vec<String> = words.collect();
+    let person = (!person.is_empty()).then(|| person.join(" "));
+    cx.jobs.callback(async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                if let Some(prompt) = crate::magit::trailer_prompt(editor, kind, person) {
+                    compositor.push(prompt);
+                }
+            },
+        ));
+        Ok(call)
+    });
+    Ok(())
+}
+
+/// `:magit-message-previous` / `-next`: an earlier or later message.
+fn magit_message_previous(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        crate::magit::message_history(cx.editor, true);
+    }
+    Ok(())
+}
+
+fn magit_message_next(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        crate::magit::message_history(cx.editor, false);
+    }
+    Ok(())
+}
+
+/// `:magit-message-diff`: the staged changes beside the message.
+fn magit_message_diff(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    cx.jobs.callback(async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                crate::magit::message_diff(compositor, editor);
+            },
+        ));
+        Ok(call)
+    });
+    Ok(())
+}
+
+/// `:magit-insert-revision`: insert a revision looked at recently.
+fn magit_insert_revision(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    cx.jobs.callback(async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                if let Some(prompt) = crate::magit::revision_prompt(editor) {
+                    compositor.push(prompt);
+                }
+            },
+        ));
+        Ok(call)
+    });
+    Ok(())
+}
+
+fn conflict_take(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    crate::magit::conflict_take(cx.editor, &args[0]).map_err(|err| anyhow::anyhow!(err))
+}
+
+fn rebase_todo(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    crate::magit::rebase_todo(cx.editor, &args[0]).map_err(|err| anyhow::anyhow!(err))
+}
+
+fn roam_dailies_capture(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let entry: Vec<&str> = args.iter().map(|arg| arg.as_ref()).collect();
+    if entry.is_empty() {
+        cx.jobs.callback(async move {
+            let call: job::Callback = Callback::EditorCompositor(Box::new(
+                move |_editor: &mut Editor, compositor: &mut Compositor| {
+                    compositor.push(crate::commands::property_prompt(
+                        "Today: ",
+                        crate::roam::daily_capture,
+                    ))
+                },
+            ));
+            Ok(call)
+        });
+    } else {
+        crate::roam::daily_capture(cx.editor, &entry.join(" "));
+    }
+    Ok(())
+}
+/// `:org-copy-visible`, into the default register.
+fn copy_visible_default(editor: &mut Editor) {
+    crate::commands::org_copy_visible_into(editor, '"');
+}
+roam_buffer_command!(org_copy_visible, copy_visible_default);
+roam_buffer_command!(org_encrypt_entry, crate::roam::encrypt_entry);
+roam_buffer_command!(org_encrypt_entries, crate::roam::encrypt_entries);
+roam_buffer_command!(org_decrypt_entry, crate::roam::decrypt_entry);
+roam_component_command!(org_inline_task, |_editor| Some(
+    crate::commands::property_prompt("Inline task: ", crate::roam::insert_inline_task)
+));
+
+/// `:roam-graph [depth]`: the whole graph, or the neighbourhood of the node
+/// at the cursor.
+fn roam_graph(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let depth = match args.first() {
+        Some(depth) => Some(
+            depth
+                .parse::<usize>()
+                .map_err(|_| anyhow!("{depth:?} is not a number of links"))?,
+        ),
+        None => None,
+    };
+    crate::roam::graph(cx.editor, depth);
+    Ok(())
+}
+roam_component_command!(org_attach_open, crate::roam::attachment_picker);
+
+/// `:org-attach <file>`.
+fn org_attach(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let path = args
+        .first()
+        .ok_or_else(|| anyhow!("give the file to attach"))?;
+    crate::roam::attach(cx.editor, path);
+    Ok(())
+}
+
+/// `:org-export md|html|latex`.
+fn org_export(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let name = args.first().unwrap_or("html");
+    let backend = helix_roam::export::Backend::parse(name)
+        .ok_or_else(|| anyhow!("unknown export format {name:?}; use md, html or latex"))?;
+    crate::roam::export(cx.editor, backend);
+    Ok(())
+}
+roam_component_command!(org_goto_heading, crate::commands::org_heading_picker);
+roam_component_command!(org_sparse_tree, |_editor| Some(
+    crate::commands::org_sparse_tree_prompt()
+));
+roam_buffer_command!(org_copy_subtree, crate::roam::copy_subtree);
+roam_buffer_command!(org_cut_subtree, crate::roam::cut_subtree);
+roam_buffer_command!(org_paste_subtree, crate::roam::paste_subtree);
+roam_buffer_command!(org_dblock_update, crate::roam::dblock_update);
+roam_buffer_command!(org_dblock_update_all, crate::roam::dblock_update_all);
+roam_component_command!(org_clone_subtree, |_editor| Some(
+    crate::commands::property_prompt("Clone (N, or N +1w): ", crate::roam::clone_subtree)
+));
+roam_component_command!(org_sort_entries, |_editor| Some(
+    crate::commands::org_sort_prompt(crate::roam::sort_entries)
+));
+roam_component_command!(org_sort_list, |_editor| Some(
+    crate::commands::org_sort_prompt(crate::roam::sort_list)
+));
+roam_component_command!(org_sort_table, |_editor| Some(
+    crate::commands::org_sort_prompt(crate::roam::sort_table)
+));
+roam_buffer_command!(org_archive_subtree, crate::roam::archive_subtree);
+roam_component_command!(org_agenda_day, |editor| crate::commands::org_agenda_picker(
+    editor, 1
+));
+roam_component_command!(
+    org_agenda_week,
+    |editor| crate::commands::org_agenda_picker(editor, 7)
+);
+roam_component_command!(org_todo_list, crate::commands::org_todo_list_picker);
+roam_component_command!(org_todo_filtered, |_editor| Some(
+    crate::commands::org_todo_filter_prompt()
+));
+roam_buffer_command!(org_agenda_restrict, crate::roam::agenda_restrict_to_file);
+roam_buffer_command!(org_agenda_unrestrict, crate::roam::agenda_restrict_clear);
+
+fn org_agenda_scope(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        let scope = crate::roam::agenda_scope(cx.editor);
+        cx.editor.set_status(format!("Agenda reads {scope}"));
+    }
+    Ok(())
+}
+roam_component_command!(org_set_priority, |_editor| Some(
+    crate::commands::property_prompt("Priority (A-C, empty clears): ", crate::roam::set_priority)
+));
+roam_component_command!(org_schedule, |_editor| Some(
+    crate::commands::property_prompt("Scheduled (today, +3, 2026-09-18): ", crate::roam::schedule)
+));
+roam_component_command!(org_deadline, |_editor| Some(
+    crate::commands::property_prompt("Deadline (today, +3, 2026-09-18): ", crate::roam::deadline)
+));
+roam_component_command!(org_set_property, |editor| Some(
+    crate::commands::org_set_property_prompt(editor)
+));
+roam_component_command!(org_remove_property, |_editor| Some(
+    crate::commands::property_prompt("Remove property: ", crate::roam::remove_property)
+));
+roam_component_command!(org_set_effort, |_editor| Some(
+    crate::commands::property_prompt("Effort: ", crate::roam::set_effort)
+));
+roam_component_command!(org_insert_drawer, |_editor| Some(
+    crate::commands::property_prompt("Drawer: ", crate::roam::insert_drawer)
+));
+roam_component_command!(org_add_note, |_editor| Some(
+    crate::commands::property_prompt("Note: ", crate::roam::add_note)
+));
+roam_component_command!(org_log_state, |_editor| Some(
+    crate::commands::property_prompt("State (OLD -> NEW): ", crate::roam::log_state_change)
+));
+roam_buffer_command!(org_increment_effort, crate::roam::increment_effort);
+roam_component_command!(roam_alias_add, |_editor| Some(
+    crate::commands::property_prompt("Alias: ", crate::roam::alias_add)
+));
+roam_component_command!(roam_alias_remove, |_editor| Some(
+    crate::commands::property_prompt("Remove alias: ", crate::roam::alias_remove)
+));
+roam_component_command!(roam_tag_add, |editor| Some(
+    crate::commands::org_tag_prompt(editor, true)
+));
+roam_component_command!(roam_tag_remove, |editor| Some(
+    crate::commands::org_tag_prompt(editor, false)
+));
+roam_component_command!(roam_ref_add, |_editor| Some(
+    crate::commands::property_prompt("Ref: ", crate::roam::ref_add)
+));
+roam_component_command!(roam_ref_remove, |_editor| Some(
+    crate::commands::property_prompt("Remove ref: ", crate::roam::ref_remove)
+));
+roam_buffer_command!(roam_random_node, crate::roam::random_node);
+roam_buffer_command!(roam_dailies_today, crate::roam::daily_today);
+roam_component_command!(roam_rename_node, |_editor| Some(
+    crate::commands::property_prompt("New title: ", crate::roam::rename_node)
+));
+roam_component_command!(roam_dailies_date, |_editor| Some(
+    crate::commands::property_prompt("Date (YYYY-MM-DD): ", crate::roam::daily_on)
+));
+
+fn roam_dailies_next(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        crate::roam::daily_step(cx.editor, true);
+    }
+    Ok(())
+}
+
+fn roam_dailies_previous(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        crate::roam::daily_step(cx.editor, false);
+    }
+    Ok(())
+}
+
+fn roam_refile(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let callback = async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                if let Some(picker) = crate::commands::roam_refile_picker(editor) {
+                    compositor.push(picker);
+                }
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
+fn roam_backlinks_toggle(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let callback = async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            |_editor: &mut Editor, compositor: &mut Compositor| {
+                super::toggle_roam_backlinks(compositor);
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
+fn roam_reindex(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    if !cx.editor.config().roam.enable {
+        cx.editor.set_error("Org-Roam indexing is off");
+        return Ok(());
+    }
+
+    let directory = cx.editor.config().roam.directory();
+    let graph = cx.editor.roam.clone();
+    cx.editor.set_status(format!(
+        "Rebuilding the index from {}…",
+        directory.display()
+    ));
+
+    // Rebuilt rather than refreshed: this is the command for when an
+    // incremental update has gone wrong, so it must not trust what is there.
+    let callback = async move {
+        let outcome = helix_roam::scanner::scan_directory_async(graph, directory).await;
+        let call: job::Callback = Callback::Editor(Box::new(move |editor: &mut Editor| {
+            match outcome {
+                Ok(stats) => {
+                    // The counts drawn beside headlines were read from the
+                    // index that has just been replaced.
+                    if !doc!(editor).roam_counts.is_empty() {
+                        crate::roam::refresh_backlink_counts(editor);
+                    }
+                    editor.set_status(format!(
+                        "Rebuilt: {} nodes and {} links from {} files{}",
+                        stats.nodes,
+                        stats.links,
+                        stats.files,
+                        if stats.errors > 0 {
+                            format!(", {} unreadable", stats.errors)
+                        } else {
+                            String::new()
+                        }
+                    ));
+                }
+                Err(err) => editor.set_error(format!("Rebuilding the index failed: {err}")),
+            }
+        }));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
 }
 
 fn tutor(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
@@ -3590,6 +4376,1695 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &["char"],
         doc: "Get info about the character under the primary cursor.",
         fun: get_character_info,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "terminal",
+        aliases: &["term"],
+        doc: "Open the integrated terminal.",
+        fun: terminal,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "terminal-new",
+        aliases: &["term-new"],
+        doc: "Open another integrated terminal, in the directory given or the current document's.",
+        fun: terminal_new,
+        completer: CommandCompleter::positional(&[completers::directory]),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "terminal-close",
+        aliases: &["term-close"],
+        doc: "Close the integrated terminal shown last, ending the programs running in it.",
+        fun: terminal_close,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "terminal-rename",
+        aliases: &["term-rename"],
+        doc: "Name the integrated terminal shown last; with no name, it is named by its program again.",
+        fun: terminal_rename,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, None),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "terminal-list",
+        aliases: &["term-list"],
+        doc: "List the integrated terminals and show the one picked.",
+        fun: terminal_list,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "magit",
+        aliases: &[],
+        doc: "Open the Magit transient menu.",
+        fun: magit,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "magit-file",
+        aliases: &[],
+        doc: "Open the Magit menu for the current file: stage, unstage, diff, log, blame.",
+        fun: magit_file,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "magit-trailer",
+        aliases: &[],
+        doc: "Add a trailer (Signed-off-by, Co-authored-by, …) to the commit message, choosing from people in the history.",
+        fun: magit_trailer,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, None),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "magit-message-previous",
+        aliases: &[],
+        doc: "In the commit message buffer: replace the message with an earlier one (uncommitted ones first, then recent commits').",
+        fun: magit_message_previous,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "magit-message-next",
+        aliases: &[],
+        doc: "In the commit message buffer: go back to a later message, and then to the draft.",
+        fun: magit_message_next,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "magit-message-diff",
+        aliases: &[],
+        doc: "While writing a commit message: show the staged changes the commit records.",
+        fun: magit_message_diff,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "magit-insert-revision",
+        aliases: &[],
+        doc: "Insert a revision looked at recently (a commit opened or copied) as `hash (\"subject\")`.",
+        fun: magit_insert_revision,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "conflict-take",
+        aliases: &[],
+        doc: "Resolve the merge conflict under the cursor with ours, theirs, base or both.",
+        fun: conflict_take,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (1, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "rebase-todo",
+        aliases: &[],
+        doc: "In a rebase todo-list, set the selected lines to pick, reword, edit, squash, fixup or drop, or move them up or down.",
+        fun: rebase_todo,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (1, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-node-find",
+        aliases: &["rnf"],
+        doc: "Open the Org-Roam node picker.",
+        fun: roam_node_find,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-backlinks-toggle",
+        aliases: &["roam-backlinks"],
+        doc: "Show or hide the Org-Roam backlinks panel.",
+        fun: roam_backlinks_toggle,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-promote-buffer",
+        aliases: &["roam-promote"],
+        doc: "Turn a buffer holding one heading into an Org-Roam file node.",
+        fun: roam_promote_buffer,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-demote-buffer",
+        aliases: &["roam-demote"],
+        doc: "Turn an Org-Roam file node into a single heading holding the file.",
+        fun: roam_demote_buffer,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-extract-subtree",
+        aliases: &["roam-extract"],
+        doc: "Extract the subtree at the cursor into a node of its own.",
+        fun: roam_extract_subtree,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-replace-links",
+        aliases: &[],
+        doc: "Rewrite this buffer's legacy roam: links as id: links.",
+        fun: roam_replace_links,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-follow-link",
+        aliases: &["org-open"],
+        doc: "Follow the Org link under the cursor.",
+        fun: org_follow_link,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-store-link",
+        aliases: &[],
+        doc: "Store a link to the cursor's location, for inserting elsewhere.",
+        fun: org_store_link,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-insert-link",
+        aliases: &[],
+        doc: "Insert the stored Org link at the cursor.",
+        fun: org_insert_link,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-create-id",
+        aliases: &["org-id-get-create"],
+        doc: "Give the entry at the cursor an :ID: so it can be linked to.",
+        fun: org_create_id,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-node-insert",
+        aliases: &["roam-insert"],
+        doc: "Insert a link to an Org-Roam node, creating it if the title is new.",
+        fun: roam_node_insert,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-ref-find",
+        aliases: &[],
+        doc: "Find an Org-Roam node by one of its :ROAM_REFS: keys.",
+        fun: roam_ref_find,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-random-node",
+        aliases: &["roam-random"],
+        doc: "Open a random Org-Roam node.",
+        fun: roam_random_node,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-alias-add",
+        aliases: &[],
+        doc: "Add an alias to the node at the cursor.",
+        fun: roam_alias_add,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-alias-remove",
+        aliases: &[],
+        doc: "Remove an alias from the node at the cursor.",
+        fun: roam_alias_remove,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-insert-heading",
+        aliases: &[],
+        doc: "Insert a heading after the current subtree.",
+        fun: org_insert_heading,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-promote",
+        aliases: &[],
+        doc: "Promote the headline at the cursor.",
+        fun: org_promote,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-demote",
+        aliases: &[],
+        doc: "Demote the headline at the cursor.",
+        fun: org_demote,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-promote-subtree",
+        aliases: &[],
+        doc: "Promote the subtree at the cursor.",
+        fun: org_promote_subtree,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-demote-subtree",
+        aliases: &[],
+        doc: "Demote the subtree at the cursor.",
+        fun: org_demote_subtree,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-move-subtree-up",
+        aliases: &[],
+        doc: "Move the subtree above its sibling.",
+        fun: org_move_subtree_up,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-move-subtree-down",
+        aliases: &[],
+        doc: "Move the subtree below its sibling.",
+        fun: org_move_subtree_down,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-todo",
+        aliases: &[],
+        doc: "Cycle the TODO state forward, using the file's keywords.",
+        fun: org_todo,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-todo-previous",
+        aliases: &[],
+        doc: "Cycle the TODO state backward.",
+        fun: org_todo_previous,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-priority-up",
+        aliases: &[],
+        doc: "Raise the priority towards [#A].",
+        fun: org_priority_up,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-priority-down",
+        aliases: &[],
+        doc: "Lower the priority.",
+        fun: org_priority_down,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-todo-filtered",
+        aliases: &["org-todo-filter"],
+        doc: "List unfinished tasks matching a keyword, tag or priority.",
+        fun: org_todo_filtered,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-agenda-restrict",
+        aliases: &[],
+        doc: "Restrict the agenda to the file in this buffer.",
+        fun: org_agenda_restrict,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-agenda-unrestrict",
+        aliases: &[],
+        doc: "Lift the agenda restriction.",
+        fun: org_agenda_unrestrict,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-agenda-scope",
+        aliases: &[],
+        doc: "Say which files the agenda currently reads.",
+        fun: org_agenda_scope,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-agenda",
+        aliases: &["org-agenda-day"],
+        doc: "Show what is due today.",
+        fun: org_agenda_day,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-agenda-week",
+        aliases: &[],
+        doc: "Show what is due over the next seven days.",
+        fun: org_agenda_week,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-todo-list",
+        aliases: &["org-todos"],
+        doc: "List every unfinished task, whatever its dates.",
+        fun: org_todo_list,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-insert-item",
+        aliases: &[],
+        doc: "Insert a list item after the one at the cursor.",
+        fun: org_insert_item,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-renumber-list",
+        aliases: &[],
+        doc: "Renumber the ordered list at the cursor.",
+        fun: org_renumber_list,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-demote-item",
+        aliases: &[],
+        doc: "Move the list item in a level, with its children.",
+        fun: org_demote_item,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-promote-item",
+        aliases: &[],
+        doc: "Move the list item out a level, with its children.",
+        fun: org_promote_item,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-toggle-checkbox",
+        aliases: &["org-toggle"],
+        doc: "Tick or untick the checkbox at the cursor.",
+        fun: org_toggle_checkbox,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-update-cookies",
+        aliases: &[],
+        doc: "Bring every [n/m] and [p%] cookie up to date.",
+        fun: org_update_cookies,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "narrow-to-selection",
+        aliases: &["narrow"],
+        doc: "Hide every line outside the selection.",
+        fun: narrow_to_selection,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "cycle-fold",
+        aliases: &[],
+        doc: "Step the range at the cursor through folded, children, open.",
+        fun: cycle_fold,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "cycle-fold-all",
+        aliases: &[],
+        doc: "Step the buffer through overview, contents, everything.",
+        fun: cycle_fold_all,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "fold",
+        aliases: &[],
+        doc: "Fold the innermost foldable range at the cursor.",
+        fun: fold,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "unfold",
+        aliases: &[],
+        doc: "Open the fold at the cursor.",
+        fun: unfold,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "toggle-fold",
+        aliases: &[],
+        doc: "Close the fold at the cursor, or open it.",
+        fun: toggle_fold,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "fold-all",
+        aliases: &[],
+        doc: "Fold everything the language marks as foldable.",
+        fun: fold_all,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "unfold-all",
+        aliases: &[],
+        doc: "Open every fold in the buffer.",
+        fun: unfold_all,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-index",
+        aliases: &["roam-browse"],
+        doc: "Look through everything the index holds.",
+        fun: roam_index,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-state",
+        aliases: &[],
+        doc: "Report the fork's Org-Roam state for a bug report.",
+        fun: roam_state,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-backlink-counts",
+        aliases: &["roam-counts"],
+        doc: "Show each headline's backlink count beside it.",
+        fun: roam_backlink_counts,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-pin",
+        aliases: &[],
+        doc: "Pin the Roam panel to the node at the cursor.",
+        fun: roam_pin_node,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-unpin",
+        aliases: &[],
+        doc: "Let the Roam panel follow the cursor again.",
+        fun: roam_unpin_node,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-diagnose",
+        aliases: &["roam-doctor"],
+        doc: "Report what the index believes about the node at the cursor.",
+        fun: roam_diagnose,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-emphasis",
+        aliases: &[],
+        doc: "Toggle an emphasis marker on the selection.",
+        fun: org_emphasis,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-insert-block",
+        aliases: &["org-block"],
+        doc: "Insert a structure block, wrapping the selection.",
+        fun: org_insert_block,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-footnote-new",
+        aliases: &[],
+        doc: "Add a footnote and go to where its text goes.",
+        fun: org_footnote_new,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-footnote-goto",
+        aliases: &[],
+        doc: "Jump between a footnote's reference and definition.",
+        fun: org_footnote_goto,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-footnote-renumber",
+        aliases: &[],
+        doc: "Renumber the numeric footnotes in reference order.",
+        fun: org_footnote_renumber,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-cite-insert",
+        aliases: &["org-cite"],
+        doc: "Insert a citation, completing over the bibliography.",
+        fun: org_cite_insert,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-cite-follow",
+        aliases: &[],
+        doc: "Open the bibliography at the cited entry.",
+        fun: org_cite_follow,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-next-heading",
+        aliases: &[],
+        doc: "Move to the next heading.",
+        fun: org_next_heading,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-previous-heading",
+        aliases: &[],
+        doc: "Move to the previous heading.",
+        fun: org_previous_heading,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-next-sibling-heading",
+        aliases: &[],
+        doc: "Move to the next heading at the same level.",
+        fun: org_next_sibling_heading,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-previous-sibling-heading",
+        aliases: &[],
+        doc: "Move to the previous heading at the same level.",
+        fun: org_previous_sibling_heading,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-parent-heading",
+        aliases: &["org-up-heading"],
+        doc: "Move to the parent heading.",
+        fun: org_parent_heading,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-goto-heading",
+        aliases: &["org-goto"],
+        doc: "Jump to a heading in this buffer by name.",
+        fun: org_goto_heading,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-outline-path",
+        aliases: &[],
+        doc: "Show the outline path of the entry at the cursor.",
+        fun: org_outline_path,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-sparse-tree",
+        aliases: &["org-match"],
+        doc: "Hide everything but the entries matching a filter.",
+        fun: org_sparse_tree,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-narrow",
+        aliases: &[],
+        doc: "Hide everything outside the subtree at the cursor.",
+        fun: org_narrow,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-widen",
+        aliases: &[],
+        doc: "Bring back everything a narrowing or sparse tree hid.",
+        fun: org_widen,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-startup-visibility",
+        aliases: &[],
+        doc: "Fold the buffer the way its #+STARTUP: says it opens.",
+        fun: org_startup_visibility,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-src-next",
+        aliases: &[],
+        doc: "Move to the next source block.",
+        fun: org_src_next,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-src-previous",
+        aliases: &[],
+        doc: "Move to the previous source block.",
+        fun: org_src_previous,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-src-result",
+        aliases: &[],
+        doc: "Jump between a source block and its #+RESULTS:.",
+        fun: org_src_result,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-edit-src",
+        aliases: &[],
+        doc: "Edit the source block at the cursor in a buffer of its own.",
+        fun: org_edit_src,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-tangle",
+        aliases: &[],
+        doc: "Write every block with a :tangle target to its file.",
+        fun: org_tangle,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-clock-in",
+        aliases: &[],
+        doc: "Start a clock on the entry at the cursor, stopping any other.",
+        fun: org_clock_in,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-clock-out",
+        aliases: &[],
+        doc: "Stop the running clock.",
+        fun: org_clock_out,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-clock-cancel",
+        aliases: &[],
+        doc: "Discard the running clock.",
+        fun: org_clock_cancel,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-clock-goto",
+        aliases: &[],
+        doc: "Jump to the entry with the running clock.",
+        fun: org_clock_goto,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-clock-report",
+        aliases: &[],
+        doc: "Insert or refresh a clock report table.",
+        fun: org_clock_report,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-export",
+        aliases: &[],
+        doc: "Export the buffer next to its file: md, html (the default) or latex.",
+        fun: org_export,
+        completer: CommandCompleter::positional(&[|_editor, input| {
+            ["md", "html", "latex"]
+                .iter()
+                .filter(|name| name.starts_with(input))
+                .map(|name| ((0..), (*name).into()))
+                .collect()
+        }]),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-babel-execute",
+        aliases: &[],
+        doc: "Run the source block at the cursor and write its results (needs workspace trust).",
+        fun: org_babel_execute,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-toggle-pretty",
+        aliases: &[],
+        doc: "Draw the buffer's entities (\\alpha) and links as written, or as what they stand for.",
+        fun: org_toggle_pretty,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-columns",
+        aliases: &[],
+        doc: "Show or hide the column view of the buffer, from its #+COLUMNS:.",
+        fun: org_columns,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-dailies-capture",
+        aliases: &[],
+        doc: "Add an entry to today's daily note without leaving this buffer.",
+        fun: roam_dailies_capture,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, None),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-dailies-directory",
+        aliases: &[],
+        doc: "Pick a file in the dailies directory.",
+        fun: roam_dailies_directory,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-copy-visible",
+        aliases: &[],
+        doc: "Yank only the visible text of the selections (or of the buffer) to the default register.",
+        fun: org_copy_visible,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-encrypt-entry",
+        aliases: &[],
+        doc: "Encrypt the body of the entry at the cursor with gpg.",
+        fun: org_encrypt_entry,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-encrypt-entries",
+        aliases: &[],
+        doc: "Encrypt every :crypt: entry of the buffer that is in clear.",
+        fun: org_encrypt_entries,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-decrypt-entry",
+        aliases: &[],
+        doc: "Decrypt the entry at the cursor.",
+        fun: org_decrypt_entry,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-inline-task",
+        aliases: &[],
+        doc: "Insert an inline task, with its END line, below the cursor.",
+        fun: org_inline_task,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-graph",
+        aliases: &[],
+        doc: "Draw the Org-Roam graph with Graphviz; with a depth, only the nodes that many links from the one at the cursor.",
+        fun: roam_graph,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-attach",
+        aliases: &[],
+        doc: "Copy a file into the attachment directory of the entry at the cursor.",
+        fun: org_attach,
+        completer: CommandCompleter::positional(&[completers::filename]),
+        signature: Signature {
+            positionals: (1, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-attach-open",
+        aliases: &[],
+        doc: "Pick one of the files attached to the entry at the cursor.",
+        fun: org_attach_open,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-copy-subtree",
+        aliases: &[],
+        doc: "Copy the subtree at the cursor.",
+        fun: org_copy_subtree,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-cut-subtree",
+        aliases: &[],
+        doc: "Cut the subtree at the cursor.",
+        fun: org_cut_subtree,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-paste-subtree",
+        aliases: &[],
+        doc: "Paste the copied subtree at the cursor's level.",
+        fun: org_paste_subtree,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-clone-subtree",
+        aliases: &[],
+        doc: "Clone the subtree at the cursor, shifting its dates.",
+        fun: org_clone_subtree,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-sort-entries",
+        aliases: &["org-sort"],
+        doc: "Sort the children of the entry at the cursor.",
+        fun: org_sort_entries,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-sort-list",
+        aliases: &[],
+        doc: "Sort the list items at the cursor.",
+        fun: org_sort_list,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-sort-table",
+        aliases: &[],
+        doc: "Sort the table rows by the cursor's column.",
+        fun: org_sort_table,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-dblock-update",
+        aliases: &["org-update-block"],
+        doc: "Regenerate the dynamic block at the cursor.",
+        fun: org_dblock_update,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-dblock-update-all",
+        aliases: &[],
+        doc: "Regenerate every dynamic block in the buffer.",
+        fun: org_dblock_update_all,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-align",
+        aliases: &["org-align"],
+        doc: "Realign the Org table at the cursor.",
+        fun: org_table_align,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-insert-row",
+        aliases: &[],
+        doc: "Insert a table row below the cursor's.",
+        fun: org_table_insert_row,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-insert-separator",
+        aliases: &[],
+        doc: "Insert a table separator below the cursor's row.",
+        fun: org_table_insert_separator,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-delete-row",
+        aliases: &[],
+        doc: "Remove the table row at the cursor.",
+        fun: org_table_delete_row,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-insert-column",
+        aliases: &[],
+        doc: "Insert a table column at the cursor's.",
+        fun: org_table_insert_column,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-delete-column",
+        aliases: &[],
+        doc: "Remove the table column at the cursor.",
+        fun: org_table_delete_column,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-next-cell",
+        aliases: &[],
+        doc: "Realign, then move to the next table cell.",
+        fun: org_table_next_cell,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-previous-cell",
+        aliases: &[],
+        doc: "Realign, then move to the previous table cell.",
+        fun: org_table_previous_cell,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-recalculate",
+        aliases: &["org-table-recalc"],
+        doc: "Recalculate the Org table at the cursor from its #+TBLFM: line.",
+        fun: org_table_recalculate,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-iterate",
+        aliases: &[],
+        doc: "Recalculate the Org table at the cursor until it stops changing.",
+        fun: org_table_iterate,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-recalculate-buffer-tables",
+        aliases: &["org-table-recalc-all"],
+        doc: "Recalculate every Org table in the buffer that has a #+TBLFM: line.",
+        fun: org_table_recalculate_all,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-archive-subtree",
+        aliases: &["org-archive"],
+        doc: "Move the subtree at the cursor to the file's archive.",
+        fun: org_archive_subtree,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-set-priority",
+        aliases: &[],
+        doc: "Set the priority on the headline at the cursor.",
+        fun: org_set_priority,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-schedule",
+        aliases: &[],
+        doc: "Set SCHEDULED: on the entry at the cursor.",
+        fun: org_schedule,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-deadline",
+        aliases: &[],
+        doc: "Set DEADLINE: on the entry at the cursor.",
+        fun: org_deadline,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-set-property",
+        aliases: &[],
+        doc: "Set a property on the entry at the cursor.",
+        fun: org_set_property,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-remove-property",
+        aliases: &[],
+        doc: "Remove a property from the entry at the cursor.",
+        fun: org_remove_property,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-set-effort",
+        aliases: &[],
+        doc: "Set the effort estimate on the entry at the cursor.",
+        fun: org_set_effort,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-increment-effort",
+        aliases: &["org-inc-effort"],
+        doc: "Step the effort estimate to the next value in the file's list.",
+        fun: org_increment_effort,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-insert-drawer",
+        aliases: &[],
+        doc: "Insert an empty drawer under the entry at the cursor.",
+        fun: org_insert_drawer,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-add-note",
+        aliases: &[],
+        doc: "Record a dated note in the entry's :LOGBOOK:.",
+        fun: org_add_note,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-log-state",
+        aliases: &[],
+        doc: "Record a TODO state change in the entry's :LOGBOOK:.",
+        fun: org_log_state,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-capture",
+        aliases: &[],
+        doc: "Create an Org-Roam node from a template.",
+        fun: roam_capture,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-unlinked-references",
+        aliases: &["roam-unlinked"],
+        doc: "List the places this node is named without being linked.",
+        fun: roam_unlinked_references,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-rename-node",
+        aliases: &["roam-rename"],
+        doc: "Rename the node at the cursor, and the link descriptions naming it.",
+        fun: roam_rename_node,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-dailies-today",
+        aliases: &["roam-today"],
+        doc: "Open today's daily note, creating it if needed.",
+        fun: roam_dailies_today,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-dailies-date",
+        aliases: &[],
+        doc: "Open the daily note for a date, creating it if needed.",
+        fun: roam_dailies_date,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-dailies-next",
+        aliases: &[],
+        doc: "Open the next daily note that exists.",
+        fun: roam_dailies_next,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-dailies-previous",
+        aliases: &[],
+        doc: "Open the previous daily note that exists.",
+        fun: roam_dailies_previous,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-tag-add",
+        aliases: &[],
+        doc: "Add a tag to the node at the cursor.",
+        fun: roam_tag_add,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-tag-remove",
+        aliases: &[],
+        doc: "Remove a tag from the node at the cursor.",
+        fun: roam_tag_remove,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-ref-add",
+        aliases: &[],
+        doc: "Add a ref to the node at the cursor.",
+        fun: roam_ref_add,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-ref-remove",
+        aliases: &[],
+        doc: "Remove a ref from the node at the cursor.",
+        fun: roam_ref_remove,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-refile",
+        aliases: &[],
+        doc: "Refile the subtree at the cursor into another Org-Roam node.",
+        fun: roam_refile,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-reindex",
+        aliases: &[],
+        doc: "Re-index the Org-Roam directory from scratch.",
+        fun: roam_reindex,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
