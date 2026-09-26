@@ -1608,11 +1608,12 @@ pub struct Editor {
     /// An interactive rebase waiting for its todo-list to be written.
     pub pending_rebase: Option<PendingRebase>,
 
-    /// The integrated terminal, kept here so that hiding its view does not
-    /// kill the shell running in it.
+    /// The integrated terminals, kept here so that hiding the view does not
+    /// kill the shells running in them.
     ///
-    /// `None` until `:terminal` starts one, and cleared when the shell exits.
-    pub terminal: Option<helix_pty::PtyTerminal>,
+    /// Empty until `:terminal` starts one; a terminal leaves the list when
+    /// its shell exits or it is closed.
+    pub terminals: crate::terminals::Terminals,
 
     /// The Org-Roam knowledge graph, shared with the background indexer.
     ///
@@ -1745,7 +1746,7 @@ impl Editor {
             dir_stack: VecDeque::with_capacity(DIR_STACK_CAP),
             workspace_trust,
             roam: Arc::default(),
-            terminal: None,
+            terminals: Default::default(),
             roam_pinned: None,
             roam_unlinked: None,
             org_src_edits: HashMap::new(),

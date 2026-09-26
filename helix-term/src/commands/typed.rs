@@ -2209,6 +2209,112 @@ fn terminal(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> an
     Ok(())
 }
 
+fn terminal_new(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let directory = match args.first() {
+        Some(directory) => {
+            let directory = helix_stdx::path::canonicalize(helix_stdx::path::expand_tilde(
+                Path::new(directory),
+            ));
+            ensure!(
+                directory.is_dir(),
+                "{} is not a directory",
+                directory.display()
+            );
+            Some(directory)
+        }
+        None => None,
+    };
+    cx.jobs.callback(async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                if let Some(view) = super::new_terminal_view(editor, directory) {
+                    compositor.push(view);
+                }
+            },
+        ));
+        Ok(call)
+    });
+    Ok(())
+}
+
+fn terminal_close(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let Some(entry) = cx.editor.terminals.remove_current() else {
+        bail!("No terminal is running");
+    };
+    let number = entry.number;
+    // Dropping the terminal ends its shell and whatever runs in it.
+    drop(entry);
+    match cx.editor.terminals.current_entry() {
+        Some(next) => cx.editor.set_status(format!(
+            "Closed terminal {number}; terminal {} is shown next",
+            next.number
+        )),
+        None => cx.editor.set_status(format!("Closed terminal {number}")),
+    }
+    Ok(())
+}
+
+fn terminal_rename(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let name: Vec<String> = args.into_iter().map(|arg| arg.to_string()).collect();
+    let name = name.join(" ");
+    let Some(entry) = cx.editor.terminals.current_entry_mut() else {
+        bail!("No terminal is running");
+    };
+    let number = entry.number;
+    if name.trim().is_empty() {
+        entry.name = None;
+        cx.editor
+            .set_status(format!("Terminal {number} is named by its program again"));
+    } else {
+        entry.name = Some(name.trim().to_string());
+        cx.editor
+            .set_status(format!("Terminal {number} is now {}", name.trim()));
+    }
+    Ok(())
+}
+
+fn terminal_list(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    cx.jobs.callback(async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            |editor: &mut Editor, compositor: &mut Compositor| {
+                if let Some(picker) = super::terminal_picker(editor) {
+                    compositor.push(picker);
+                }
+            },
+        ));
+        Ok(call)
+    });
+    Ok(())
+}
+
 fn magit(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
@@ -4231,6 +4337,50 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &["term"],
         doc: "Open the integrated terminal.",
         fun: terminal,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "terminal-new",
+        aliases: &["term-new"],
+        doc: "Open another integrated terminal, in the directory given or the current document's.",
+        fun: terminal_new,
+        completer: CommandCompleter::positional(&[completers::directory]),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "terminal-close",
+        aliases: &["term-close"],
+        doc: "Close the integrated terminal shown last, ending the programs running in it.",
+        fun: terminal_close,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "terminal-rename",
+        aliases: &["term-rename"],
+        doc: "Name the integrated terminal shown last; with no name, it is named by its program again.",
+        fun: terminal_rename,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, None),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "terminal-list",
+        aliases: &["term-list"],
+        doc: "List the integrated terminals and show the one picked.",
+        fun: terminal_list,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

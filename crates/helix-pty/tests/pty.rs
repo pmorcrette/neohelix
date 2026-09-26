@@ -242,3 +242,26 @@ fn writing_does_not_block_when_the_shell_stops_reading() {
         before.elapsed()
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_program_in_the_foreground_and_its_directory_are_known() {
+    let (terminal, _) = spawn(80, 24);
+    let directory = tempfile::tempdir().unwrap();
+    let directory = directory.path().canonicalize().unwrap();
+    let line = format!("cd '{}' && sleep 5\n", directory.display());
+    assert!(terminal.write(line.into_bytes()));
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut seen = None;
+    while Instant::now() < deadline {
+        seen = terminal.foreground();
+        if seen.as_ref().is_some_and(|found| found.command == "sleep") {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let found = seen.expect("the foreground should be readable");
+    assert_eq!(found.command, "sleep");
+    assert_eq!(found.directory.as_deref(), Some(directory.as_path()));
+}

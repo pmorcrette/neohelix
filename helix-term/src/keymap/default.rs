@@ -240,6 +240,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "m" => magit,
             "M" => magit_file,
             "t" => terminal,
+            "T" => terminal_list,
             "n" => { "Notes (Org-Roam)"
                 "f" => roam_node_find,
                 "b" => roam_backlinks_toggle,

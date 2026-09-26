@@ -316,6 +316,19 @@ editor) gets clicks, drags and the wheel; hold `Shift` to keep them from it.
 Otherwise the wheel scrolls back through the output, or, in a full-screen
 program like `less`, sends the arrow keys.
 
+Several terminals can run at once; the title bar shows them as tabs, each by
+the name it was given or the title its program set, with `!` on one whose bell
+rang while another was shown. With tmux's keys for its windows, `Ctrl-\ c`
+starts another terminal in the current document's directory, `Ctrl-\ w`
+lists them (also `<space>T` and `:terminal-list`: what runs in each and in
+which directory), `Ctrl-\ 1` to `Ctrl-\ 9` show one by its number,
+`Ctrl-\ (` and `Ctrl-\ )` the previous and the next, `Ctrl-\ ,` names the
+one shown (also `:terminal-rename`) and `Ctrl-\ &` closes it after asking
+(also `:terminal-close`). `:terminal` comes back to the terminal shown last;
+`:terminal-new [directory]` starts another. A new terminal starts in the
+directory of the document focused at the time; a running one keeps its own,
+as its shell does.
+
 ### `[editor.magit]` Section
 
 Set options for the Magit client (`<space>m`).

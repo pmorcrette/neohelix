@@ -1272,26 +1272,25 @@ pub fn revision_prompt(editor: &mut Editor) -> Option<Box<dyn crate::compositor:
     Some(Box::new(prompt))
 }
 
-/// Runs `git mergetool` on a conflicted file in the integrated terminal,
-/// which the tool — often a terminal program itself — needs.
+/// Runs `git mergetool` on a conflicted file in an integrated terminal of
+/// its own, which the tool — often a terminal program itself — needs. A
+/// terminal of its own, so that nothing running in another one gets the
+/// command typed into it.
 pub fn mergetool(
     editor: &mut Editor,
     compositor: &mut Compositor,
     workdir: &std::path::Path,
     path: &str,
 ) {
-    let Some(view) = crate::commands::terminal_view(editor) else {
+    let Some(view) = crate::commands::new_terminal_view(editor, Some(workdir.to_path_buf())) else {
         return;
     };
     close_views(compositor);
     let quote = |text: &str| format!("'{}'", text.replace('\'', r"'\''"));
-    let line = format!(
-        "cd {} && git mergetool -- {}\r",
-        quote(&workdir.display().to_string()),
-        quote(path)
-    );
-    if let Some(terminal) = editor.terminal.as_ref() {
-        terminal.write(line.into_bytes());
+    let line = format!("git mergetool -- {}\r", quote(path));
+    if let Some(entry) = editor.terminals.current_entry_mut() {
+        entry.name = Some(format!("mergetool {path}"));
+        entry.terminal.write(line.into_bytes());
     }
     compositor.push(view);
 }

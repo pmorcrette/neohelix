@@ -2076,11 +2076,32 @@ the wheel.
 Reopening `:terminal` returns to it, which was a deliberate improvement over
 killing it, but it is still one.
 
-- [ ] Several terminals, listed and switchable.
-- [ ] Name them, or show what each is running, which needs Task 3.3's title.
-- [ ] Close one explicitly, rather than only by exiting its shell.
-- [ ] Decide what a terminal's working directory follows: the document at the
+- [x] Several terminals, listed and switchable.
+- [x] Name them, or show what each is running, which needs Task 3.3's title.
+- [x] Close one explicitly, rather than only by exiting its shell.
+- [x] Decide what a terminal's working directory follows: the document at the
       time it was opened, as now, or the current one.
+
+*Done.* `Editor::terminals` (`helix_view::terminals::Terminals`) holds the
+terminals and which one is shown; numbers start at 1 and a new terminal takes
+the lowest free one, as tmux numbers windows, and keeps it. The view's title
+bar shows them as tabs (the shown one in bold, `!` for a bell rung while not
+shown) and takes tmux's window keys after `Ctrl-\`: `c` new, `w` list,
+`1`–`9`, `(` and `)`, `,` rename, `&` close after a `y/n` question. The list
+(`<space>T`, `:terminal-list`) shows each terminal's foreground program and
+its directory, which `PtyTerminal::foreground` reads from `/proc` through the
+PTY's process group (Linux only; elsewhere those columns stay empty), and its
+name. `:terminal-new [directory]`, `:terminal-close` and `:terminal-rename`
+are the typed forms. A terminal whose shell exits leaves the list: when not
+shown, at once with a status message; when shown, at the next key, so its
+last output can still be read, and the next terminal is shown or the view
+closes. Clipboard copies (OSC 52) are taken from every terminal, shown or not.
+The directory decision: a new terminal starts in the directory of the document
+focused when it is opened, and a running one keeps its own, since only its
+shell can change it; Magit's mergetool now gets a terminal of its own in the
+repository, named after the file, rather than typing into whatever the shown
+terminal runs. Found and fixed on the way: the title bar was styled but not
+cleared, so text of the document underneath showed through it.
 
 ### Task 3.7: Terminal Configuration
 

@@ -551,6 +551,7 @@ impl MappableCommand {
         magit, "Open the Magit transient menu",
         magit_file, "Open the Magit menu for the current file",
         terminal, "Open the integrated terminal",
+        terminal_list, "List the integrated terminals",
         symbol_picker, "Open symbol picker",
         syntax_symbol_picker, "Open symbol picker from syntax information",
         lsp_or_syntax_symbol_picker, "Open symbol picker from LSP or syntax information",
@@ -3567,53 +3568,166 @@ fn buffer_picker(cx: &mut Context) {
     cx.push_layer(Box::new(overlaid(picker)));
 }
 
-/// Opens the integrated terminal, starting a shell if none is running.
+/// Starts a shell in a new terminal, which the view shows from then on.
+/// It starts in `directory`, or else in the focused document's directory,
+/// which is where a shell opened from an editor is expected to land.
 ///
-/// The shell lives in the editor rather than in the view, so closing the view
-/// with `Ctrl-\ Ctrl-n` and reopening comes back to the same session.
-pub fn terminal_view(editor: &mut Editor) -> Option<Box<dyn Component>> {
-    if editor
-        .terminal
-        .as_mut()
-        .is_some_and(|terminal| terminal.has_exited())
-    {
-        editor.terminal = None;
-    }
+/// Returns the terminal's number, or `None` once the error is reported.
+pub fn spawn_terminal(editor: &mut Editor, directory: Option<PathBuf>) -> Option<usize> {
+    let directory = directory
+        .or_else(|| {
+            doc!(editor)
+                .path()
+                .and_then(|path| path.parent())
+                .map(Path::to_path_buf)
+        })
+        .or_else(|| Some(helix_stdx::env::current_working_dir()));
 
-    if editor.terminal.is_none() {
-        // Start in the focused document's directory, which is where a shell
-        // opened from an editor is expected to land.
-        let directory = doc!(editor)
-            .path()
-            .and_then(|path| path.parent())
-            .map(Path::to_path_buf)
-            .or_else(|| Some(helix_stdx::env::current_working_dir()));
+    // The reader thread calls this whenever output arrives; Helix's event
+    // loop wakes and redraws.
+    let redraw = std::sync::Arc::new(helix_event::request_redraw);
 
-        // The reader thread calls this whenever output arrives; Helix's event
-        // loop wakes and redraws.
-        let redraw = std::sync::Arc::new(helix_event::request_redraw);
+    let (columns, rows) = {
+        let area = editor.tree.area();
+        (area.width, area.height.saturating_sub(1))
+    };
 
-        let (columns, rows) = {
-            let area = editor.tree.area();
-            (area.width, area.height.saturating_sub(1))
-        };
-
-        let settings = editor.config().integrated_terminal.clone();
-        let options = helix_pty::Options {
-            scrollback: settings.scrollback,
-            kitty_keyboard: settings.kitty_keyboard,
-        };
-        match helix_pty::PtyTerminal::spawn_with(columns, rows, directory, redraw, options) {
-            Ok(terminal) => editor.terminal = Some(terminal),
-            Err(err) => {
-                editor.set_error(err.to_string());
-                return None;
-            }
+    let settings = editor.config().integrated_terminal.clone();
+    let options = helix_pty::Options {
+        scrollback: settings.scrollback,
+        kitty_keyboard: settings.kitty_keyboard,
+    };
+    match helix_pty::PtyTerminal::spawn_with(columns, rows, directory, redraw, options) {
+        Ok(terminal) => Some(editor.terminals.add(terminal)),
+        Err(err) => {
+            editor.set_error(err.to_string());
+            None
         }
     }
+}
 
+/// Opens the integrated terminal on the terminal shown last, starting a
+/// shell if none is running.
+///
+/// The shells live in the editor rather than in the view, so closing the
+/// view with `Ctrl-\ Ctrl-n` and reopening comes back to the same session.
+pub fn terminal_view(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    editor
+        .terminals
+        .remove_where(|entry| entry.terminal.has_exited());
+    if editor.terminals.is_empty() {
+        spawn_terminal(editor, None)?;
+    }
     editor.set_status("Terminal: Ctrl-\\ Ctrl-n returns to the editor");
     Some(Box::new(ui::terminal::TerminalView::new()))
+}
+
+/// Opens the integrated terminal on a new shell, even when others run.
+pub fn new_terminal_view(
+    editor: &mut Editor,
+    directory: Option<PathBuf>,
+) -> Option<Box<dyn Component>> {
+    editor
+        .terminals
+        .remove_where(|entry| entry.terminal.has_exited());
+    let number = spawn_terminal(editor, directory)?;
+    editor.set_status(format!(
+        "Terminal {number}: Ctrl-\\ Ctrl-n returns to the editor"
+    ));
+    Some(Box::new(ui::terminal::TerminalView::new()))
+}
+
+/// Lists the terminals; the one picked is shown in the terminal view.
+pub fn terminal_picker(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    editor
+        .terminals
+        .remove_where(|entry| entry.terminal.has_exited());
+    if editor.terminals.is_empty() {
+        editor.set_status("No terminal is running: :terminal starts one");
+        return None;
+    }
+
+    struct TerminalMeta {
+        number: usize,
+        label: String,
+        running: String,
+        directory: String,
+        flags: &'static str,
+    }
+
+    let current = editor.terminals.current_entry().map(|entry| entry.number);
+    let items: Vec<TerminalMeta> = editor
+        .terminals
+        .entries()
+        .iter()
+        .map(|entry| {
+            let foreground = entry.terminal.foreground();
+            TerminalMeta {
+                number: entry.number,
+                label: ui::terminal::label(entry),
+                running: foreground
+                    .as_ref()
+                    .map(|found| found.command.clone())
+                    .unwrap_or_default(),
+                directory: foreground
+                    .and_then(|found| found.directory)
+                    .map(|directory| {
+                        helix_stdx::path::fold_home_dir(&directory)
+                            .display()
+                            .to_string()
+                    })
+                    .unwrap_or_default(),
+                flags: match (Some(entry.number) == current, entry.alert) {
+                    (true, _) => "*",
+                    (false, true) => "!",
+                    (false, false) => "",
+                },
+            }
+        })
+        .collect();
+    let initial_cursor = items
+        .iter()
+        .position(|item| Some(item.number) == current)
+        .unwrap_or(0);
+
+    let columns = [
+        PickerColumn::new("#", |meta: &TerminalMeta, _| meta.number.to_string().into()),
+        PickerColumn::new("flags", |meta: &TerminalMeta, _| meta.flags.into()),
+        PickerColumn::new("running", |meta: &TerminalMeta, _| {
+            meta.running.as_str().into()
+        }),
+        PickerColumn::new("directory", |meta: &TerminalMeta, _| {
+            meta.directory.as_str().into()
+        }),
+        // Last: a shell's title often repeats a long directory.
+        PickerColumn::new("name", |meta: &TerminalMeta, _| meta.label.as_str().into()),
+    ];
+    let picker = Picker::new(columns, 4, items, (), |cx, meta, _action| {
+        let number = meta.number;
+        cx.jobs.callback(async move {
+            Ok(job::Callback::EditorCompositor(Box::new(
+                move |editor: &mut Editor, compositor: &mut Compositor| {
+                    if let Some(view) = compositor
+                        .find_id::<ui::terminal::TerminalView>(ui::terminal::TerminalView::ID)
+                    {
+                        view.select(editor, number);
+                    } else if editor.terminals.select(number) {
+                        if let Some(view) = terminal_view(editor) {
+                            compositor.push(view);
+                        }
+                    }
+                },
+            )))
+        });
+    })
+    .with_initial_cursor(initial_cursor as u32);
+    Some(Box::new(overlaid(picker)))
+}
+
+fn terminal_list(cx: &mut Context) {
+    if let Some(picker) = terminal_picker(cx.editor) {
+        cx.push_layer(picker);
+    }
 }
 
 fn terminal(cx: &mut Context) {

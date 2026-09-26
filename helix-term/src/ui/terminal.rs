@@ -1,8 +1,9 @@
 //! The integrated terminal's view.
 //!
-//! The shell itself lives in [`Editor::terminal`], not here, so that hiding
-//! this view leaves the session running: closing it with the escape sequence
-//! and reopening `:terminal` comes back to the same shell.
+//! The shells themselves live in [`Editor::terminals`], not here, so that
+//! hiding this view leaves them running: closing it with the escape sequence
+//! and reopening `:terminal` comes back to the same shell. The view shows one
+//! terminal at a time, with the others as tabs in its title bar.
 
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point};
@@ -21,8 +22,8 @@ use crate::compositor::{Component, Context, Event, EventResult};
 pub struct TerminalView {
     /// Set by `Ctrl-\`, which only means "leave" if `Ctrl-n` follows.
     pending_escape: bool,
-    /// Last size the terminal was told about, to avoid resizing every frame.
-    size: (u16, u16),
+    /// Set by `Ctrl-\ &`: the next key says whether to close the terminal.
+    confirm_close: bool,
     /// Until when the title bar flashes for the bell.
     bell_until: Option<std::time::Instant>,
     /// Set while in copy mode.
@@ -55,7 +56,7 @@ impl TerminalView {
     pub fn new() -> Self {
         Self {
             pending_escape: false,
-            size: (0, 0),
+            confirm_close: false,
             bell_until: None,
             copy: None,
             grid_area: Rect::default(),
@@ -64,7 +65,7 @@ impl TerminalView {
 
     /// The bytes a keypress sends to the shell.
     fn encode(editor: &Editor, key: KeyEvent) -> Option<Vec<u8>> {
-        let terminal = editor.terminal.as_ref()?;
+        let terminal = editor.terminals.current()?;
         // Programs like `vim` and `less` switch DECCKM on and then expect the
         // SS3 form of the arrow keys.
         let mode = *terminal.term().lock().mode();
@@ -93,15 +94,114 @@ impl TerminalView {
     }
 }
 
+/// What a terminal is called: the name it was given, or else the title its
+/// program set, or else what runs in it.
+pub fn label(entry: &helix_view::terminals::Entry<helix_pty::PtyTerminal>) -> String {
+    entry
+        .name
+        .clone()
+        .or_else(|| {
+            entry
+                .terminal
+                .title()
+                .filter(|title| !title.trim().is_empty())
+        })
+        .or_else(|| entry.terminal.foreground().map(|found| found.command))
+        .unwrap_or_else(|| "Terminal".to_string())
+}
+
+/// `text` cut to `width` characters, with an ellipsis when cut.
+fn shorten(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    let mut short: String = text.chars().take(width.saturating_sub(1)).collect();
+    short.push('…');
+    short
+}
+
+impl TerminalView {
+    /// Shows the terminal numbered `number`, leaving copy mode in the one
+    /// shown until now.
+    pub fn select(&mut self, editor: &mut Editor, number: usize) {
+        if editor
+            .terminals
+            .current_entry()
+            .is_some_and(|entry| entry.number == number)
+        {
+            return;
+        }
+        if self.copy.is_some() {
+            self.leave_copy_mode(editor);
+        }
+        self.confirm_close = false;
+        if !editor.terminals.select(number) {
+            editor.set_error(format!("There is no terminal {number}"));
+        }
+    }
+
+    /// Shows the next terminal, or the previous one.
+    fn cycle(&mut self, editor: &mut Editor, forward: bool) {
+        if self.copy.is_some() {
+            self.leave_copy_mode(editor);
+        }
+        editor.terminals.cycle(forward);
+    }
+
+    /// Takes the terminal shown out of the list, ending its shell; `true`
+    /// when none is left and the view should close.
+    fn close_current(&mut self, editor: &mut Editor, why: &str) -> bool {
+        self.copy = None;
+        self.confirm_close = false;
+        let Some(entry) = editor.terminals.remove_current() else {
+            return true;
+        };
+        let number = entry.number;
+        drop(entry);
+        match editor.terminals.current_entry() {
+            Some(next) => {
+                editor.set_status(format!(
+                    "Terminal {number} {why}; terminal {} is shown",
+                    next.number
+                ));
+                false
+            }
+            None => {
+                editor.set_status(format!("Terminal {number} {why}"));
+                true
+            }
+        }
+    }
+}
+
 impl TerminalView {
     /// Acts on what the emulator kept for the view: text a program copied
     /// goes to the clipboard registers, and the bell starts a flash.
     fn take_notices(&mut self, editor: &mut Editor) {
-        let Some(terminal) = editor.terminal.as_ref() else {
-            return;
-        };
-        let copied = terminal.take_copied();
-        let bell = terminal.take_bell();
+        // A terminal not shown whose shell exited leaves the list; the one
+        // shown stays until a key is pressed, so its last output can be read.
+        let current = editor.terminals.current_entry().map(|entry| entry.number);
+        let gone = editor
+            .terminals
+            .remove_where(|entry| Some(entry.number) != current && entry.terminal.has_exited());
+        if !gone.is_empty() {
+            let numbers: Vec<String> = gone.iter().map(ToString::to_string).collect();
+            editor.set_status(format!("Terminal {} exited", numbers.join(", ")));
+        }
+
+        let mut copied = Vec::new();
+        let mut bell = false;
+        for entry in editor.terminals.entries_mut() {
+            copied.extend(entry.terminal.take_copied());
+            if entry.terminal.take_bell() {
+                if Some(entry.number) == current {
+                    bell = true;
+                } else {
+                    // A terminal not shown is marked in the tabs instead.
+                    entry.alert = true;
+                }
+            }
+        }
         for (clipboard, text) in copied {
             let register = match clipboard {
                 helix_pty::Clipboard::Clipboard => '+',
@@ -131,7 +231,7 @@ impl TerminalView {
     /// Pastes `text` into the shell, bracketed when the program asked for
     /// it so that a pasted newline does not run anything by itself.
     fn paste(&self, editor: &mut Editor, text: &str) {
-        if let Some(terminal) = editor.terminal.as_ref() {
+        if let Some(terminal) = editor.terminals.current() {
             terminal.paste(text);
         }
     }
@@ -153,7 +253,7 @@ impl TerminalView {
     /// held, as terminals let Shift bypass the program; otherwise the wheel
     /// scrolls back.
     fn mouse(&mut self, event: &MouseEvent, editor: &mut Editor) {
-        let Some(terminal) = editor.terminal.as_ref() else {
+        let Some(terminal) = editor.terminals.current() else {
             return;
         };
         let convert_button = |button| match button {
@@ -235,14 +335,14 @@ impl TerminalView {
     }
 
     fn enter_copy_mode(&mut self, editor: &mut Editor) {
-        if let Some(terminal) = editor.terminal.as_ref() {
+        if let Some(terminal) = editor.terminals.current() {
             helix_pty::copy::enter(&mut terminal.term().lock());
             self.copy = Some(CopyMode::default());
         }
     }
 
     fn leave_copy_mode(&mut self, editor: &mut Editor) {
-        if let Some(terminal) = editor.terminal.as_ref() {
+        if let Some(terminal) = editor.terminals.current() {
             helix_pty::copy::leave(&mut terminal.term().lock());
         }
         self.copy = None;
@@ -251,7 +351,7 @@ impl TerminalView {
     /// Searches from the copy-mode cursor, remembering the search for `n`
     /// and `N`.
     pub fn search(&mut self, editor: &mut Editor, pattern: &str, forward: bool) {
-        let Some(terminal) = editor.terminal.as_ref() else {
+        let Some(terminal) = editor.terminals.current() else {
             return;
         };
         let Some(copy) = self.copy.as_mut() else {
@@ -276,7 +376,7 @@ impl TerminalView {
     fn copy_mode_key(&mut self, key: KeyEvent, cx: &mut Context) -> EventResult {
         use helix_pty::copy::{self, Motion, Selecting};
 
-        let Some(terminal) = cx.editor.terminal.as_ref() else {
+        let Some(terminal) = cx.editor.terminals.current() else {
             return EventResult::Consumed(None);
         };
         let Some(state) = self.copy.as_mut() else {
@@ -588,7 +688,7 @@ impl Component for TerminalView {
             return;
         }
 
-        if cx.editor.terminal.is_none() {
+        if cx.editor.terminals.is_empty() {
             return;
         }
         self.take_notices(cx.editor);
@@ -609,43 +709,96 @@ impl Component for TerminalView {
             rgb(theme.get("ui.text").fg),
             rgb(theme.get("ui.background").bg),
         );
-        let Some(terminal) = cx.editor.terminal.as_mut() else {
+        // The tabs: each terminal's number and label, the one shown in bold,
+        // and `!` on one whose bell rang while it was not shown.
+        let many = cx.editor.terminals.len() > 1;
+        let current = cx
+            .editor
+            .terminals
+            .current_entry()
+            .map(|entry| entry.number);
+        let tabs: Vec<(String, bool)> = cx
+            .editor
+            .terminals
+            .entries()
+            .iter()
+            .map(|entry| {
+                let shown = Some(entry.number) == current;
+                let label = label(entry);
+                let text = match (many, shown) {
+                    (false, _) => label,
+                    (true, true) => format!("{} {}", entry.number, shorten(&label, 32)),
+                    (true, false) => format!(
+                        "{}{} {}",
+                        entry.number,
+                        if entry.alert { "!" } else { "" },
+                        shorten(&label, 12)
+                    ),
+                };
+                (text, shown)
+            })
+            .collect();
+        let Some(terminal) = cx.editor.terminals.current_mut() else {
             return;
         };
         // Programs asking for the default colours get the theme's.
         terminal.set_default_colors(foreground, background);
 
-        // The title bar: what the program says it is, or what it is.
+        // The title bar: the terminals, each by what the program in it says
+        // it is, or by what it is.
         let title_area = Rect::new(area.x, area.y, area.width, 1);
-        surface.set_style(title_area, bar_style);
-        let title = terminal
-            .title()
-            .filter(|title| !title.trim().is_empty())
-            .unwrap_or_else(|| "Terminal".to_string());
-        let (title, hint) = match &self.copy {
+        // Cleared, so that nothing of the editor underneath shows through.
+        surface.clear_with(title_area, bar_style);
+        let close_question;
+        let (prefix, hint) = match &self.copy {
+            _ if self.confirm_close => {
+                close_question = format!(
+                    " Close terminal {} and what runs in it? y/n ",
+                    current.unwrap_or_default()
+                );
+                (String::new(), close_question.as_str())
+            }
             Some(copy) => (
                 match &copy.search {
-                    Some((pattern, _)) => format!("[copy] /{pattern}  {title}"),
-                    None => format!("[copy] {title}"),
+                    Some((pattern, _)) => format!("[copy] /{pattern}  "),
+                    None => "[copy] ".to_string(),
                 },
                 " v select  y copy  / search  q done ",
             ),
             None => (
-                title,
-                " Ctrl-\\ Ctrl-n: back  Ctrl-\\ [: copy  Ctrl-\\ p: paste ",
+                String::new(),
+                " Ctrl-\\ Ctrl-n: back  [: copy  p: paste  c: new  w: list ",
             ),
         };
         let hint_width = hint.chars().count() as u16;
-        let title_width = area.width.saturating_sub(hint_width + 1);
-        surface.set_stringn(
+        let title_end = area.right().saturating_sub(hint_width + 1);
+        let (mut x, _) = surface.set_stringn(
             area.x,
             area.y,
-            &format!(" {title}"),
-            title_width as usize,
+            &format!(" {prefix}"),
+            title_end.saturating_sub(area.x) as usize,
             bar_style,
         );
-        if area.width > hint_width * 2 {
-            surface.set_string(area.right() - hint_width, area.y, hint, bar_style);
+        for (index, (text, shown)) in tabs.iter().enumerate() {
+            if index > 0 && x < title_end {
+                x = surface
+                    .set_stringn(x, area.y, " │ ", (title_end - x) as usize, bar_style)
+                    .0;
+            }
+            let style = if *shown && many {
+                bar_style.add_modifier(Modifier::BOLD)
+            } else {
+                bar_style
+            };
+            if x < title_end {
+                x = surface
+                    .set_stringn(x, area.y, text, (title_end - x) as usize, style)
+                    .0;
+            }
+        }
+        if area.width > hint_width * 2 || self.confirm_close {
+            let hint_x = area.right().saturating_sub(hint_width).max(area.x);
+            surface.set_stringn(hint_x, area.y, hint, area.width as usize, bar_style);
         }
         let area = Rect::new(
             area.x,
@@ -660,10 +813,7 @@ impl Component for TerminalView {
 
         // The pane's size is only known at render time, so this is where the
         // shell learns about it. `resize` ignores a size it already has.
-        if self.size != (area.width, area.height) {
-            self.size = (area.width, area.height);
-            terminal.resize(area.width, area.height);
-        }
+        terminal.resize(area.width, area.height);
 
         let term = terminal.term().lock();
         let grid = term.grid();
@@ -722,7 +872,7 @@ impl Component for TerminalView {
         viewport: Rect,
         editor: &Editor,
     ) -> (Option<helix_core::Position>, CursorKind) {
-        let Some(terminal) = editor.terminal.as_ref() else {
+        let Some(terminal) = editor.terminals.current() else {
             return (None, CursorKind::Hidden);
         };
         let term = terminal.term().lock();
@@ -773,6 +923,20 @@ impl Component for TerminalView {
         let close: crate::compositor::Callback = Box::new(|compositor, _| {
             compositor.remove(TerminalView::ID);
         });
+        if cx.editor.terminals.is_empty() {
+            return EventResult::Consumed(Some(close));
+        }
+
+        // `Ctrl-\ &` asked whether to close the terminal: `y` does.
+        if self.confirm_close {
+            self.confirm_close = false;
+            if key.code == KeyCode::Char('y') && key.modifiers.is_empty() {
+                let last = self.close_current(cx.editor, "closed");
+                return EventResult::Consumed(last.then_some(close));
+            }
+            cx.editor.set_status("The terminal stays open");
+            return EventResult::Consumed(None);
+        }
 
         // `Ctrl-\ Ctrl-n` hands the keyboard back, as it does in Neovim. The
         // first key is held rather than sent, because it only means "leave"
@@ -799,10 +963,69 @@ impl Component for TerminalView {
                     self.paste_register(cx.editor, register);
                     return EventResult::Consumed(None);
                 }
+                // The terminals, with tmux's keys for its windows.
+                match key.code {
+                    // `c`: another terminal.
+                    KeyCode::Char('c') => {
+                        if self.copy.is_some() {
+                            self.leave_copy_mode(cx.editor);
+                        }
+                        if let Some(number) = crate::commands::spawn_terminal(cx.editor, None) {
+                            cx.editor.set_status(format!("Terminal {number}"));
+                        }
+                        return EventResult::Consumed(None);
+                    }
+                    // `w`: the list of them.
+                    KeyCode::Char('w') => {
+                        let Some(picker) = crate::commands::terminal_picker(cx.editor) else {
+                            return EventResult::Consumed(None);
+                        };
+                        return EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                            compositor.push(picker);
+                        })));
+                    }
+                    // `1` to `9`: that one.
+                    KeyCode::Char(digit @ '1'..='9') => {
+                        let number = digit.to_digit(10).unwrap_or(1) as usize;
+                        self.select(cx.editor, number);
+                        return EventResult::Consumed(None);
+                    }
+                    // `)` and `(`: the next one and the previous one.
+                    KeyCode::Char(bracket @ (')' | '(')) => {
+                        self.cycle(cx.editor, bracket == ')');
+                        return EventResult::Consumed(None);
+                    }
+                    // `&`: close this one, once confirmed.
+                    KeyCode::Char('&') => {
+                        self.confirm_close = true;
+                        return EventResult::Consumed(None);
+                    }
+                    // `,`: name it.
+                    KeyCode::Char(',') => {
+                        let prompt = crate::ui::Prompt::new(
+                            "terminal name: ".into(),
+                            None,
+                            |_, _| Vec::new(),
+                            |cx, input, event| {
+                                if event != crate::ui::PromptEvent::Validate {
+                                    return;
+                                }
+                                if let Some(entry) = cx.editor.terminals.current_entry_mut() {
+                                    let name = input.trim();
+                                    entry.name = (!name.is_empty()).then(|| name.to_string());
+                                }
+                            },
+                        );
+                        return EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                            compositor.push(Box::new(prompt));
+                        })));
+                    }
+                    _ => {}
+                }
             }
             // It was not the escape sequence after all, so the shell gets the
             // Ctrl-\ it should have had, followed by this key.
-            if let Some(terminal) = cx.editor.terminal.as_ref() {
+            if let Some(terminal) = cx.editor.terminals.current() {
                 terminal.write(vec![0x1c]);
             }
         } else if is_escape_prefix(*key) {
@@ -817,7 +1040,7 @@ impl Component for TerminalView {
         if key.modifiers.contains(KeyModifiers::SHIFT)
             && matches!(key.code, KeyCode::PageUp | KeyCode::PageDown)
         {
-            if let Some(terminal) = cx.editor.terminal.as_ref() {
+            if let Some(terminal) = cx.editor.terminals.current() {
                 terminal
                     .term()
                     .lock()
@@ -830,20 +1053,20 @@ impl Component for TerminalView {
             return EventResult::Consumed(None);
         }
 
-        // A shell that exited leaves nothing to type into.
+        // A shell that exited leaves nothing to type into: the next
+        // terminal is shown, or the editor when it was the last.
         if cx
             .editor
-            .terminal
-            .as_mut()
+            .terminals
+            .current_mut()
             .is_some_and(|terminal| terminal.has_exited())
         {
-            cx.editor.terminal = None;
-            cx.editor.set_status("Shell exited");
-            return EventResult::Consumed(Some(close));
+            let last = self.close_current(cx.editor, "exited");
+            return EventResult::Consumed(last.then_some(close));
         }
 
         if let Some(bytes) = Self::encode(cx.editor, *key) {
-            if let Some(terminal) = cx.editor.terminal.as_ref() {
+            if let Some(terminal) = cx.editor.terminals.current() {
                 // Typing is about what is happening now: back to the bottom.
                 terminal.term().lock().scroll_display(Scroll::Bottom);
                 terminal.write(bytes);

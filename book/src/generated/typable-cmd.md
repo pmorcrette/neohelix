@@ -54,6 +54,10 @@
 | `:encoding` | Set encoding. Based on `https://encoding.spec.whatwg.org`. |
 | `:character-info`, `:char` | Get info about the character under the primary cursor. |
 | `:terminal`, `:term` | Open the integrated terminal. |
+| `:terminal-new`, `:term-new` | Open another integrated terminal, in the directory given or the current document's. |
+| `:terminal-close`, `:term-close` | Close the integrated terminal shown last, ending the programs running in it. |
+| `:terminal-rename`, `:term-rename` | Name the integrated terminal shown last; with no name, it is named by its program again. |
+| `:terminal-list`, `:term-list` | List the integrated terminals and show the one picked. |
 | `:magit` | Open the Magit transient menu. |
 | `:magit-file` | Open the Magit menu for the current file: stage, unstage, diff, log, blame. |
 | `:magit-trailer` | Add a trailer (Signed-off-by, Co-authored-by, …) to the commit message, choosing from people in the history. |

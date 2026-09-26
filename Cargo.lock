@@ -1761,6 +1761,7 @@ dependencies = [
  "crossbeam-channel",
  "log",
  "portable-pty",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
 ]

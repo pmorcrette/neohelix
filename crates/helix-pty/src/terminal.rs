@@ -266,6 +266,15 @@ fn requested_color(
     }
 }
 
+/// The program in a terminal's foreground.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Foreground {
+    /// Its command name, as `ps` shows it: `bash`, `vim`.
+    pub command: String,
+    /// Its working directory, when it can be read.
+    pub directory: Option<std::path::PathBuf>,
+}
+
 /// A shell attached to a pseudo-terminal.
 pub struct PtyTerminal {
     term: SharedTerm,
@@ -389,6 +398,26 @@ impl PtyTerminal {
     /// The emulator's grid, for rendering.
     pub fn term(&self) -> &SharedTerm {
         &self.term
+    }
+
+    /// What runs in the foreground — a program the shell started, or the
+    /// shell itself — as the system tells it; `None` where it cannot be
+    /// told, which is anywhere without Linux's `/proc`.
+    pub fn foreground(&self) -> Option<Foreground> {
+        #[cfg(unix)]
+        let pid = self
+            .master
+            .process_group_leader()
+            .map(i64::from)
+            .or_else(|| self.child.process_id().map(i64::from));
+        #[cfg(not(unix))]
+        let pid = self.child.process_id().map(i64::from);
+        let process = std::path::PathBuf::from(format!("/proc/{}", pid?));
+        let command = std::fs::read_to_string(process.join("comm")).ok()?;
+        Some(Foreground {
+            command: command.trim_end().to_string(),
+            directory: std::fs::read_link(process.join("cwd")).ok(),
+        })
     }
 
     /// The grid's current size.

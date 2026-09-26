@@ -248,6 +248,7 @@
 | `magit` | Open the Magit transient menu | normal: `` <space>m ``, select: `` <space>m `` |
 | `magit_file` | Open the Magit menu for the current file | normal: `` <space>M ``, select: `` <space>M `` |
 | `terminal` | Open the integrated terminal | normal: `` <space>t ``, select: `` <space>t `` |
+| `terminal_list` | List the integrated terminals | normal: `` <space>T ``, select: `` <space>T `` |
 | `symbol_picker` | Open symbol picker |  |
 | `syntax_symbol_picker` | Open symbol picker from syntax information |  |
 | `lsp_or_syntax_symbol_picker` | Open symbol picker from LSP or syntax information | normal: `` <space>s ``, select: `` <space>s `` |
