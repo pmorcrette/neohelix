@@ -1582,7 +1582,7 @@ pub fn short_hash(workdir: &std::path::Path, rev: &str) -> Option<String> {
 
 /// The repository a document belongs to — the commit message file lives in
 /// the git directory, whose parent is the working tree.
-fn document_repository(editor: &Editor) -> Option<PathBuf> {
+pub fn document_repository(editor: &Editor) -> Option<PathBuf> {
     let doc = helix_view::doc!(editor);
     let dir = doc.path()?.parent()?.to_path_buf();
     let dir = if dir.file_name().is_some_and(|name| name == ".git") {
@@ -2125,4 +2125,248 @@ pub fn ediff(
             }
         }
     }
+}
+
+// ── Blobs: a file as it was at a commit ──────────────────────────────────
+
+/// The blob buffers open, by their file: the repository, the commit (full
+/// hash) and the path in it. What `:magit-blob-previous` and the rest read.
+static BLOBS: std::sync::Mutex<Vec<(PathBuf, PathBuf, String, PathBuf)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Opens `path` as it was at `rev`, read-only, at `line` (0-based).
+pub fn open_blob(
+    editor: &mut Editor,
+    workdir: &std::path::Path,
+    rev: &str,
+    path: &std::path::Path,
+    line: usize,
+    action: Action,
+) {
+    let Some(hash) = helix_magit::ediff::commit_hash(workdir, rev) else {
+        return editor.set_error(format!("{rev} is not a commit"));
+    };
+    let Some(content) = helix_magit::ediff::content(workdir, &Version::Rev(hash.clone()), path)
+    else {
+        return editor.set_error(format!("{} is not in {rev}", path.display()));
+    };
+    let short = &hash[..hash.len().min(7)];
+    let file = match helix_magit::ediff::materialize_blob(workdir, short, path, &content) {
+        Ok(file) => file,
+        Err(err) => return editor.set_error(err),
+    };
+    // A commit's version never changes, so one already open is reused.
+    if let Err(err) = editor.open(&file, action) {
+        return editor.set_error(format!("could not open {}: {err}", file.display()));
+    }
+    let (view, doc) = helix_view::current!(editor);
+    doc.readonly = true;
+    let text = doc.text().slice(..);
+    let line = line.min(text.len_lines().saturating_sub(1));
+    doc.set_selection(
+        view.id,
+        helix_core::Selection::point(text.line_to_char(line)),
+    );
+    helix_view::align_view(doc, view, helix_view::Align::Center);
+
+    let mut blobs = BLOBS.lock().unwrap();
+    blobs.retain(|(open, ..)| *open != file);
+    blobs.push((
+        file,
+        workdir.to_path_buf(),
+        hash.clone(),
+        path.to_path_buf(),
+    ));
+    let subject = helix_magit::status::commit_subject(workdir, &hash).unwrap_or_default();
+    editor.set_status(format!(
+        "{} at {short} {subject} — :magit-blob-previous / -next, :magit-blob-commit",
+        path.display()
+    ));
+}
+
+/// The blob in the current buffer: its repository, commit and path.
+fn current_blob(editor: &Editor) -> Option<(PathBuf, String, PathBuf)> {
+    let path = helix_view::doc!(editor).path()?.to_path_buf();
+    BLOBS
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(file, ..)| *file == path)
+        .map(|(_, workdir, hash, path)| (workdir.clone(), hash.clone(), path.clone()))
+}
+
+/// `:magit-blob-previous` / `-next`: the same file at the commit before or
+/// after the one shown, among those that changed it, the cursor on the
+/// same line.
+pub fn blob_step(editor: &mut Editor, older: bool) {
+    let Some((workdir, hash, path)) = current_blob(editor) else {
+        return editor.set_error("Not a file at a revision: see :magit-find-file");
+    };
+    let history = helix_magit::ediff::file_history(&workdir, &path);
+    // A blob of a commit that did not change the file stands for the one
+    // that last did.
+    let at = history
+        .iter()
+        .position(|(commit, _)| *commit == hash)
+        .or_else(|| {
+            let last = helix_magit::ediff::last_change(&workdir, &hash, &path)?;
+            history.iter().position(|(commit, _)| *commit == last)
+        });
+    let Some(at) = at else {
+        return editor.set_error(format!("{} has no history here", path.display()));
+    };
+    let target = if older {
+        history.get(at + 1)
+    } else {
+        at.checked_sub(1).and_then(|newer| history.get(newer))
+    };
+    let Some((commit, name)) = target.cloned() else {
+        return editor.set_status(if older {
+            "This is the oldest version".to_string()
+        } else {
+            format!(
+                "This is the newest version; the file itself is {}",
+                path.display()
+            )
+        });
+    };
+    let (view, doc) = helix_view::current!(editor);
+    let line = doc.text().char_to_line(
+        doc.selection(view.id)
+            .primary()
+            .cursor(doc.text().slice(..)),
+    );
+    open_blob(editor, &workdir, &commit, &name, line, Action::Replace);
+}
+
+/// `:magit-blob-commit`: the commit the shown version comes from.
+pub fn blob_commit(compositor: &mut Compositor, editor: &mut Editor) {
+    let Some((workdir, hash, _)) = current_blob(editor) else {
+        return editor.set_error("Not a file at a revision: see :magit-find-file");
+    };
+    match DiffView::commit(&workdir, &hash) {
+        Ok(view) => compositor.push(Box::new(view)),
+        Err(err) => editor.set_error(err),
+    }
+}
+
+/// `:magit-find-file` and the file menu's `f`: asks a revision, then a file
+/// in it (`path` when given), and opens it as it was then.
+pub fn find_file(compositor: &mut Compositor, workdir: PathBuf, path: Option<String>, line: usize) {
+    let names = helix_magit::refs::names(&workdir, AskKind::Revision);
+    choose(
+        compositor,
+        "Visit at revision: ".to_string(),
+        names,
+        false,
+        move |editor, compositor, rev| {
+            let workdir = workdir.clone();
+            match &path {
+                Some(path) => open_blob(
+                    editor,
+                    &workdir,
+                    &rev,
+                    std::path::Path::new(path),
+                    line,
+                    Action::Replace,
+                ),
+                None => {
+                    let files = helix_magit::ediff::files_at(&workdir, &rev);
+                    if files.is_empty() {
+                        return editor.set_error(format!("{rev} has no files"));
+                    }
+                    choose(
+                        compositor,
+                        format!("File in {rev}: "),
+                        files,
+                        true,
+                        move |editor, _, path| {
+                            open_blob(
+                                editor,
+                                &workdir,
+                                &rev,
+                                std::path::Path::new(&path),
+                                0,
+                                Action::Replace,
+                            )
+                        },
+                    );
+                }
+            }
+        },
+    );
+}
+
+/// The file menu's `R`: `git mv`, and the open buffer follows the file.
+pub fn rename_file(compositor: &mut Compositor, editor: &Editor, workdir: PathBuf, path: String) {
+    let start = path.clone();
+    let prompt = crate::ui::Prompt::new(
+        format!("Rename {path} to: ").into(),
+        None,
+        crate::ui::completers::filename,
+        move |cx, input, event| {
+            if event != crate::ui::PromptEvent::Validate {
+                return;
+            }
+            let target = input.trim();
+            if target.is_empty() || target == path {
+                return;
+            }
+            let output = GitCommand::new(
+                &workdir,
+                vec!["mv".into(), "--".into(), path.clone(), target.into()],
+            )
+            .run();
+            match output {
+                Ok(output) if output.success => {
+                    let (old, new) = (workdir.join(&path), workdir.join(target));
+                    if let Some(doc_id) = cx.editor.document_by_path(&old).map(|doc| doc.id()) {
+                        cx.editor.set_doc_path(doc_id, &new);
+                    }
+                    cx.editor.set_status(format!("Renamed {path} to {target}"));
+                }
+                Ok(output) => cx.editor.set_error(output.summary()),
+                Err(err) => cx.editor.set_error(err.to_string()),
+            }
+        },
+    )
+    .with_line(start, editor);
+    compositor.push(Box::new(prompt));
+}
+
+/// The file menu's `t`: the log of some of the file's lines, `git log -L`.
+/// Offered the line at the cursor; `10,20` or `:funcname` are git's.
+pub fn trace_lines(
+    compositor: &mut Compositor,
+    editor: &Editor,
+    workdir: PathBuf,
+    path: String,
+    line: usize,
+) {
+    let prompt = crate::ui::Prompt::new(
+        "Trace lines (start,end or :funcname): ".into(),
+        None,
+        |_, _| Vec::new(),
+        move |cx, input, event| {
+            if event != crate::ui::PromptEvent::Validate || input.trim().is_empty() {
+                return;
+            }
+            let filter = helix_magit::log::LogFilter {
+                path: Some(PathBuf::from(&path)),
+                lines: Some(input.trim().to_string()),
+                ..helix_magit::log::LogFilter::default()
+            };
+            let workdir = workdir.clone();
+            cx.jobs.callback(async move {
+                Ok(Callback::EditorCompositor(Box::new(
+                    move |_: &mut Editor, compositor: &mut Compositor| {
+                        compositor
+                            .push(Box::new(crate::ui::log_view::LogView::new(workdir, filter)));
+                    },
+                )))
+            });
+        },
+    )
+    .with_line(format!("{},{}", line + 1, line + 1), editor);
+    compositor.push(Box::new(prompt));
 }

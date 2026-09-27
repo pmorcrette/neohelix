@@ -545,6 +545,9 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
         | MagitCommand::FileLog
         | MagitCommand::FileBlame
         | MagitCommand::FileEditLineCommit
+        | MagitCommand::FileFind
+        | MagitCommand::FileRename
+        | MagitCommand::FileTrace
         | MagitCommand::InsertRevision
         | MagitCommand::Mergetool
         | MagitCommand::RunGit
@@ -595,6 +598,27 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
             "Rewrite the conflicts with the base shown, discarding edits to the file",
         )
         .asking([Ask::required(AskKind::Path, "Conflicted file")])
+        .destructive(),
+        // The file dispatch's ways of changing what git tracks.
+        MagitCommand::FileDelete => Plan::new(
+            ["rm", "--", "{0}"],
+            "Delete the file, from the index and the working tree",
+        )
+        .asking([Ask::required(AskKind::Path, "Delete")])
+        .destructive(),
+        MagitCommand::FileUntrack => Plan::new(
+            ["rm", "--cached", "--", "{0}"],
+            "Stop tracking the file, keeping it on disk",
+        )
+        .asking([Ask::required(AskKind::Path, "Untrack")]),
+        MagitCommand::FileRestore => Plan::new(
+            ["checkout", "{1}", "--", "{0}"],
+            "Put the file back as a revision has it, discarding its changes",
+        )
+        .asking([
+            Ask::required(AskKind::Path, "Restore"),
+            Ask::required(AskKind::Revision, "From revision").or("HEAD"),
+        ])
         .destructive(),
         MagitCommand::Continue => {
             Plan::new(Vec::<String>::new(), "Continue").special(Special::Continue)

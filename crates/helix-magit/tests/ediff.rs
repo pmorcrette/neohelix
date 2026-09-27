@@ -135,3 +135,51 @@ fn a_conflict_offers_its_three_stages_and_dwim_resolves_it() {
     assert_eq!(ediff::unmerged_paths(work), ["f.txt"]);
     assert_eq!(ediff::dwim(work, "f.txt"), Some(Dwim::Resolve));
 }
+
+#[test]
+fn a_files_history_follows_it_through_a_rename() {
+    let dir = repo_or_skip!();
+    let work = dir.path();
+    fs::write(work.join("f.txt"), "two\n").unwrap();
+    git(work, &["commit", "-am", "two"]).unwrap();
+    git(work, &["mv", "f.txt", "g.txt"]).unwrap();
+    git(work, &["commit", "-m", "rename"]).unwrap();
+    fs::write(work.join("other.txt"), "x\n").unwrap();
+    git(work, &["add", "other.txt"]).unwrap();
+    git(work, &["commit", "-m", "unrelated"]).unwrap();
+
+    let history = ediff::file_history(work, Path::new("g.txt"));
+    let names: Vec<_> = history
+        .iter()
+        .map(|(_, path)| path.display().to_string())
+        .collect();
+    assert_eq!(names, ["g.txt", "f.txt", "f.txt"]);
+
+    // HEAD did not change g.txt: the rename did, last.
+    let last = ediff::last_change(work, "HEAD", Path::new("g.txt")).unwrap();
+    assert_eq!(last, history[0].0);
+    assert_eq!(ediff::commit_hash(work, "HEAD~1").unwrap(), history[0].0);
+    assert_eq!(ediff::files_at(work, "HEAD"), ["g.txt", "other.txt"]);
+
+    // The oldest version, read through its old name.
+    let (oldest, name) = history.last().unwrap();
+    assert_eq!(
+        ediff::content(work, &Version::Rev(oldest.clone()), name).as_deref(),
+        Some("one\n")
+    );
+    let file = ediff::materialize_blob(work, "abc1234", Path::new("g.txt"), "x").unwrap();
+    assert!(file.ends_with("helix/blob/abc1234/g.txt"));
+}
+
+#[test]
+fn tracing_lines_is_log_minus_l_without_a_pathspec() {
+    let filter = helix_magit::log::LogFilter {
+        path: Some("src/lib.rs".into()),
+        lines: Some("10,20".into()),
+        ..Default::default()
+    };
+    let args = filter.args();
+    assert!(args.contains(&"-L10,20:src/lib.rs".to_string()), "{args:?}");
+    assert!(args.contains(&"-s".to_string()));
+    assert!(!args.contains(&"--".to_string()), "{args:?}");
+}

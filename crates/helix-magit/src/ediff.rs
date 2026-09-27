@@ -173,3 +173,89 @@ pub enum Dwim {
     Unstaged,
     Staged,
 }
+
+// ── Blobs: a file as it was at a commit ──────────────────────────────────
+
+/// Writes `path` as it was at `rev` where a buffer opens it, under
+/// `.git/helix/blob/<rev>/`.
+pub fn materialize_blob(
+    workdir: &Path,
+    rev: &str,
+    path: &Path,
+    content: &str,
+) -> Result<PathBuf, String> {
+    let git_dir = crate::status::git_dir(workdir).ok_or("not in a git repository")?;
+    let file = git_dir.join("helix").join("blob").join(rev).join(path);
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    std::fs::write(&file, content).map_err(|err| err.to_string())?;
+    Ok(file)
+}
+
+/// The full hash `rev` names, when it names a commit.
+pub fn commit_hash(workdir: &Path, rev: &str) -> Option<String> {
+    git(
+        workdir,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{rev}^{{commit}}"),
+        ],
+    )
+    .map(|hash| hash.trim().to_string())
+}
+
+/// The files `rev` has, for choosing one to visit.
+pub fn files_at(workdir: &Path, rev: &str) -> Vec<String> {
+    git(workdir, &["ls-tree", "-r", "--name-only", rev])
+        .map(|text| text.lines().map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// The commits that changed `path`, newest first, each with the file's name
+/// at that commit, followed through renames.
+pub fn file_history(workdir: &Path, path: &Path) -> Vec<(String, PathBuf)> {
+    let Some(text) = git(
+        workdir,
+        &[
+            "log",
+            "--follow",
+            "--format=%x00%H",
+            "--name-only",
+            "--",
+            &path.display().to_string(),
+        ],
+    ) else {
+        return Vec::new();
+    };
+    text.split('\0')
+        .filter_map(|entry| {
+            let mut lines = entry.lines().filter(|line| !line.is_empty());
+            let hash = lines.next()?.trim().to_string();
+            let name = lines
+                .next()
+                .map_or_else(|| path.to_path_buf(), PathBuf::from);
+            Some((hash, name))
+        })
+        .collect()
+}
+
+/// The commit that last changed `path` as of `rev`: where a blob of `rev`
+/// sits in the file's history.
+pub fn last_change(workdir: &Path, rev: &str, path: &Path) -> Option<String> {
+    git(
+        workdir,
+        &[
+            "log",
+            "-1",
+            "--format=%H",
+            rev,
+            "--",
+            &path.display().to_string(),
+        ],
+    )
+    .map(|hash| hash.trim().to_string())
+    .filter(|hash| !hash.is_empty())
+}

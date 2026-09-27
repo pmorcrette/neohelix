@@ -2134,14 +2134,30 @@ changes, else its staged ones. Magit's keys differ in places — it has no
 
 ### Task 2.26: Files at a Revision (Blobs) and the File Dispatch
 
-- [ ] Visit a file as it was at a revision (Magit's `magit-find-file`), and
+- [x] Visit a file as it was at a revision (Magit's `magit-find-file`), and
       make `RET` in a commit's diff open that version rather than today's.
-- [ ] In such a buffer, move to the previous or next version of the file
+- [x] In such a buffer, move to the previous or next version of the file
       (`p` / `n`) and show the commit that made it.
-- [ ] File dispatch: rename (`git mv`), delete (`git rm`), untrack
+- [x] File dispatch: rename (`git mv`), delete (`git rm`), untrack
       (`git rm --cached`), and restore the file from a revision.
-- [ ] File dispatch: trace, the log of a function or a range of lines
+- [x] File dispatch: trace, the log of a function or a range of lines
       (`git log -L`).
+
+*Done.* A file at a revision is written under `.git/helix/blob/<commit>/`
+and opened read-only, so its buffer is named by the commit and highlighted
+as the file is. `:magit-find-file` asks a revision, then a file in it; the
+file menu (`<space>M`) has it as `f`, for the file being edited, keeping the
+cursor's line. `RET` in a commit's diff, or a diff between two revisions,
+opens the file as that commit has it, at the line under the cursor — a
+deleted file as its parent had it; the working tree's diffs still visit the
+file itself. Helix has no buffer-local keys for Magit's blob-mode `p` / `n`,
+so they are `:magit-blob-previous` / `:magit-blob-next`, which move along the
+commits that changed the file, following renames, on the same line;
+`:magit-blob-commit` opens the commit. The file menu gains `R` rename
+(`git mv`, the open buffer following the file), `K` delete, `U` untrack,
+`C` restore from a revision (HEAD when left empty, behind a confirmation)
+and `t` trace: offered the cursor's line as `N,N`, it takes any `-L` git
+does (`10,20`, `:funcname`) and opens the log of those lines.
 
 ### Task 2.27: The Remaining Suffixes and Arguments
 

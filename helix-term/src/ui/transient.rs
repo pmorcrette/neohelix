@@ -392,6 +392,29 @@ impl TransientOverlay {
                     }
                 })))
             }
+            MagitCommand::FileFind | MagitCommand::FileRename | MagitCommand::FileTrace => {
+                let path = match self.target.clone() {
+                    Some((path, AskKind::Path)) => Some(path),
+                    _ => None,
+                };
+                let workdir = self.workdir.clone();
+                let line = self.line;
+                EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                    compositor.remove(TransientOverlay::ID);
+                    match (command, path) {
+                        (MagitCommand::FileFind, path) => {
+                            crate::magit::find_file(compositor, workdir, path, line)
+                        }
+                        (MagitCommand::FileRename, Some(path)) => {
+                            crate::magit::rename_file(compositor, cx.editor, workdir, path)
+                        }
+                        (_, Some(path)) => {
+                            crate::magit::trace_lines(compositor, cx.editor, workdir, path, line)
+                        }
+                        (_, None) => cx.editor.set_error("Open the file menu on a file"),
+                    }
+                })))
+            }
             MagitCommand::Ediff(kind) => {
                 let target = self.target.clone();
                 let workdir = self.workdir.clone();
@@ -796,6 +819,9 @@ mod tests {
                         | MagitCommand::FileLog
                         | MagitCommand::FileBlame
                         | MagitCommand::FileEditLineCommit
+                        | MagitCommand::FileFind
+                        | MagitCommand::FileRename
+                        | MagitCommand::FileTrace
                         | MagitCommand::InsertRevision
                         | MagitCommand::Mergetool
                         | MagitCommand::ApplyDiffSettings

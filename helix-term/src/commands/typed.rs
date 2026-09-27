@@ -2622,6 +2622,74 @@ fn magit_message_diff(
     Ok(())
 }
 
+/// `:magit-find-file`: a file as it was at a revision.
+fn magit_find_file(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let Some(workdir) = crate::magit::document_repository(cx.editor).or_else(|| {
+        helix_magit::Repository::discover(&helix_stdx::env::current_working_dir())
+            .ok()
+            .map(|repository| repository.workdir().to_path_buf())
+    }) else {
+        anyhow::bail!("Not in a git repository");
+    };
+    cx.jobs.callback(async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            move |_: &mut Editor, compositor: &mut Compositor| {
+                crate::magit::find_file(compositor, workdir, None, 0);
+            },
+        ));
+        Ok(call)
+    });
+    Ok(())
+}
+
+fn magit_blob_previous(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        crate::magit::blob_step(cx.editor, true);
+    }
+    Ok(())
+}
+
+fn magit_blob_next(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        crate::magit::blob_step(cx.editor, false);
+    }
+    Ok(())
+}
+
+fn magit_blob_commit(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    cx.jobs.callback(async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                crate::magit::blob_commit(compositor, editor);
+            },
+        ));
+        Ok(call)
+    });
+    Ok(())
+}
+
 /// `:magit-insert-revision`: insert a revision looked at recently.
 fn magit_insert_revision(
     cx: &mut compositor::Context,
@@ -4497,6 +4565,50 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "While writing a commit message: show the staged changes the commit records.",
         fun: magit_message_diff,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "magit-find-file",
+        aliases: &[],
+        doc: "Visit a file as it was at a revision, read-only.",
+        fun: magit_find_file,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "magit-blob-previous",
+        aliases: &[],
+        doc: "In a file shown at a revision: the version before, from the commit that changed it before.",
+        fun: magit_blob_previous,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "magit-blob-next",
+        aliases: &[],
+        doc: "In a file shown at a revision: the version after.",
+        fun: magit_blob_next,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "magit-blob-commit",
+        aliases: &[],
+        doc: "In a file shown at a revision: show the commit it comes from.",
+        fun: magit_blob_commit,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

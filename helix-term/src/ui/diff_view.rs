@@ -1760,6 +1760,47 @@ impl DiffView {
         }
     }
 
+    /// Where `RET` goes in a commit's diff, or a diff between revisions:
+    /// the file as it was at that commit, not as it is now. The revision,
+    /// the path and a 0-based line; `None` when the change is the working
+    /// tree's.
+    fn blob_target(&self) -> Option<(String, PathBuf, usize)> {
+        let rev = match (&self.kind, &self.commit) {
+            (ViewKind::Commit, Some(commit)) => commit.clone(),
+            (ViewKind::Range { to: Some(to), .. }, _) => to.clone(),
+            _ => return None,
+        };
+        let row = self.current_row()?;
+        let file = self.file_at(row)?;
+        let near = |hunk: &helix_magit::DiffHunk, index: usize| -> u32 {
+            if file.status == helix_magit::diff::FileStatus::Deleted {
+                hunk.lines[..=index.min(hunk.lines.len().saturating_sub(1))]
+                    .iter()
+                    .rev()
+                    .find_map(|line| line.old_line)
+                    .unwrap_or(hunk.header.old_start)
+            } else {
+                new_line_near(hunk, index)
+            }
+        };
+        let line = match row {
+            Row::Hunk { hunk, .. } => file.hunks.get(hunk).map(|hunk| near(hunk, 0)),
+            Row::Line { hunk, line, .. } => file.hunks.get(hunk).map(|hunk| near(hunk, line)),
+            _ => file.hunks.first().map(|hunk| near(hunk, 0)),
+        };
+        // A deleted file is only in the commit's parent.
+        let rev = if file.status == helix_magit::diff::FileStatus::Deleted {
+            format!("{rev}^")
+        } else {
+            rev
+        };
+        Some((
+            rev,
+            file.path.clone(),
+            line.unwrap_or(1).saturating_sub(1) as usize,
+        ))
+    }
+
     /// Where `RET` on a change goes: the file in the working tree, at the
     /// line under the cursor. A 1-based line.
     fn visit_target(&self) -> Result<(PathBuf, usize), String> {
@@ -2059,6 +2100,20 @@ impl Component for DiffView {
                         Err(err) => self.error = Some(err),
                     }
                     return EventResult::Consumed(None);
+                }
+                if let Some((rev, path, line)) = self.blob_target() {
+                    let workdir = self.workdir.clone();
+                    return EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                        crate::magit::step_aside(compositor, cx.editor);
+                        crate::magit::open_blob(
+                            cx.editor,
+                            &workdir,
+                            &rev,
+                            &path,
+                            line,
+                            helix_view::editor::Action::Replace,
+                        );
+                    })));
                 }
                 match self.visit_target() {
                     Ok((path, line)) => {

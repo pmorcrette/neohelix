@@ -214,6 +214,14 @@ pub enum MagitCommand {
     /// Stop an interactive rebase at the commit that last changed the line
     /// being edited.
     FileEditLineCommit,
+    /// A file as it was at a revision (Magit's `magit-find-file`).
+    FileFind,
+    FileRename,
+    FileDelete,
+    FileUntrack,
+    FileRestore,
+    /// The log of some lines of the file: `git log -L`.
+    FileTrace,
     /// Insert a revision from the ones looked at recently.
     InsertRevision,
 
@@ -1378,7 +1386,15 @@ pub fn file_menu() -> TransientMenu {
         TransientGroup::new("Inspect").with_actions([
             TransientAction::new('d', "Diff", MagitCommand::FileDiff),
             TransientAction::new('l', "Log", MagitCommand::FileLog),
+            TransientAction::new('t', "Trace these lines", MagitCommand::FileTrace),
             TransientAction::new('b', "Blame", MagitCommand::FileBlame),
+            TransientAction::new('f', "At a revision", MagitCommand::FileFind),
+        ]),
+        TransientGroup::new("File").with_actions([
+            TransientAction::new('R', "Rename", MagitCommand::FileRename),
+            TransientAction::new('K', "Delete", MagitCommand::FileDelete),
+            TransientAction::new('U', "Untrack", MagitCommand::FileUntrack),
+            TransientAction::new('C', "Restore from a revision", MagitCommand::FileRestore),
         ]),
         TransientGroup::new("History").with_actions([
             TransientAction::new(

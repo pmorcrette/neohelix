@@ -27,6 +27,9 @@ pub struct LogFilter {
     pub path: Option<PathBuf>,
     /// Follow the path through renames; git allows it for one file only.
     pub follow: bool,
+    /// Trace these lines of `path` (`10,20`, or `:funcname`) through
+    /// history: `git log -L`.
+    pub lines: Option<String>,
     /// Walk the reflog of `range` (HEAD when `None`) instead of history:
     /// where the ref has pointed, newest first, and why it moved.
     pub reflog: bool,
@@ -42,6 +45,7 @@ impl Default for LogFilter {
             grep: None,
             path: None,
             follow: false,
+            lines: None,
             reflog: false,
             limit: DEFAULT_LIMIT,
         }
@@ -127,6 +131,16 @@ impl LogFilter {
         if self.all {
             args.push("--all".into());
         }
+        // `-L` names its file itself and takes no pathspec; `-s` keeps the
+        // patches it would print out of the list.
+        if let (Some(lines), Some(path)) = (&self.lines, &self.path) {
+            args.push(format!("-L{lines}:{}", path.display()));
+            args.push("-s".into());
+            if let Some(range) = &self.range {
+                args.push(range.clone());
+            }
+            return args;
+        }
         if self.follow && self.path.is_some() {
             args.push("--follow".into());
         }
@@ -157,7 +171,10 @@ impl LogFilter {
             parts.push(format!("message ~ {grep}"));
         }
         if let Some(path) = &self.path {
-            parts.push(format!("touching {}", path.display()));
+            parts.push(match &self.lines {
+                Some(lines) => format!("tracing {lines} of {}", path.display()),
+                None => format!("touching {}", path.display()),
+            });
         }
         parts.join(", ")
     }

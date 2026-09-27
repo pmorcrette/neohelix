@@ -704,3 +704,38 @@ fn fetch_takes_the_push_remote_another_branch_and_prune() {
     assert_eq!(branch.args, ["fetch", "origin", "main"]);
     assert!(GitCommand::new(&work, branch.args).run().unwrap().success);
 }
+
+#[test]
+fn the_file_dispatch_deletes_untracks_and_restores() {
+    let (_dir, work) = fixture_or_skip!();
+    let answered = |command, answers: &[&str]| {
+        resolve(command, &[])
+            .unwrap()
+            .answered(&answers.iter().map(|a| a.to_string()).collect::<Vec<_>>())
+    };
+
+    fs::write(work.join("f.txt"), "changed\n").unwrap();
+    let restore = answered(MagitCommand::FileRestore, &["f.txt", "HEAD"]);
+    assert!(restore.destructive);
+    assert_eq!(restore.args, ["checkout", "HEAD", "--", "f.txt"]);
+    assert!(GitCommand::new(&work, restore.args).run().unwrap().success);
+    assert_eq!(fs::read_to_string(work.join("f.txt")).unwrap(), "one\n");
+
+    let untrack = answered(MagitCommand::FileUntrack, &["f.txt"]);
+    assert!(GitCommand::new(&work, untrack.args).run().unwrap().success);
+    assert_eq!(
+        git(&work, &["status", "--porcelain"]).unwrap(),
+        "D  f.txt\n?? f.txt\n"
+    );
+    assert!(work.join("f.txt").exists());
+    git(&work, &["reset", "-q"]).unwrap();
+
+    let delete = answered(MagitCommand::FileDelete, &["f.txt"]);
+    assert!(delete.destructive);
+    assert!(GitCommand::new(&work, delete.args).run().unwrap().success);
+    assert_eq!(
+        git(&work, &["status", "--porcelain"]).unwrap(),
+        "D  f.txt\n"
+    );
+    assert!(!work.join("f.txt").exists());
+}
