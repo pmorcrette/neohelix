@@ -550,6 +550,7 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
         | MagitCommand::RunGit
         | MagitCommand::RunShell
         | MagitCommand::JumpTo(_)
+        | MagitCommand::Ediff(_)
         | MagitCommand::SwitchTo(_)
         | MagitCommand::ApplyDiffSettings
         | MagitCommand::DiffRange

@@ -9,6 +9,7 @@ pub mod blame;
 pub mod command;
 pub mod conflict;
 pub mod diff;
+pub mod ediff;
 pub mod log;
 pub mod message;
 pub mod patch;

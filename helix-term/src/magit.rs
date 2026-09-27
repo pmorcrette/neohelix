@@ -1721,3 +1721,408 @@ fn person_prompt(workdir: PathBuf, kind: String) -> Box<dyn crate::compositor::C
         },
     ))
 }
+
+// ── Ediff: versions of a file side by side ───────────────────────────────
+//
+// See `helix_magit::ediff`. Each version opens in a split, the diff gutter
+// set against the version it is compared with; `]g` / `[g` move between the
+// changes as in any buffer.
+
+use helix_magit::ediff::Version;
+use helix_magit::transient::EdiffKind;
+use helix_view::editor::Action;
+
+/// The index versions being edited, by the file they were written to:
+/// writing one stages it.
+static INDEX_EDITS: std::sync::Mutex<Vec<(PathBuf, PathBuf, PathBuf)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Opens `version` of `path` with `action`, its gutter against `against`.
+fn open_version(
+    editor: &mut Editor,
+    workdir: &std::path::Path,
+    version: &Version,
+    path: &std::path::Path,
+    action: Action,
+    against: Option<&Version>,
+) -> Result<helix_view::ViewId, String> {
+    let file = match version {
+        Version::Worktree => workdir.join(path),
+        version => {
+            // A version the file is missing from shows as empty.
+            let content = helix_magit::ediff::content(workdir, version, path).unwrap_or_default();
+            helix_magit::ediff::materialize(workdir, version, path, &content)?
+        }
+    };
+    let doc_id = editor
+        .open(&file, action)
+        .map_err(|err| format!("could not open {}: {err}", file.display()))?;
+    let doc = helix_view::doc_mut!(editor, &doc_id);
+    // Only the index's version is edited, and only when staging.
+    doc.readonly = !matches!(version, Version::Worktree | Version::Index);
+    if let Some(against) = against {
+        let base = helix_magit::ediff::content(workdir, against, path).unwrap_or_default();
+        doc.set_diff_base(base.into_bytes());
+    }
+    Ok(helix_view::view!(editor).id)
+}
+
+/// Two versions side by side, the older on the left, the cursor on the
+/// newer.
+fn compare(
+    editor: &mut Editor,
+    workdir: &std::path::Path,
+    path: &std::path::Path,
+    old: Version,
+    new: Version,
+) {
+    let result = open_version(editor, workdir, &old, path, Action::Replace, None).and_then(|_| {
+        open_version(
+            editor,
+            workdir,
+            &new,
+            path,
+            Action::VerticalSplit,
+            Some(&old),
+        )
+    });
+    match result {
+        Ok(_) => editor.set_status(format!(
+            "{}: {} | {}; ]g / [g move between the changes",
+            path.display(),
+            old.label(),
+            new.label()
+        )),
+        Err(err) => editor.set_error(err),
+    }
+}
+
+/// Ours, the merged file and theirs; the cursor on the merged file's first
+/// conflict, where `:conflict-take` picks a side.
+fn resolve3(editor: &mut Editor, workdir: &std::path::Path, path: &std::path::Path) {
+    let base = Version::Stage(1);
+    let result = (|| {
+        open_version(
+            editor,
+            workdir,
+            &Version::Stage(2),
+            path,
+            Action::Replace,
+            Some(&base),
+        )?;
+        let merged = open_version(
+            editor,
+            workdir,
+            &Version::Worktree,
+            path,
+            Action::VerticalSplit,
+            None,
+        )?;
+        open_version(
+            editor,
+            workdir,
+            &Version::Stage(3),
+            path,
+            Action::VerticalSplit,
+            Some(&base),
+        )?;
+        editor.focus(merged);
+        Ok::<_, String>(())
+    })();
+    match result {
+        Ok(()) => edit_conflict(editor, &workdir.join(path)),
+        Err(err) => editor.set_error(err),
+    }
+}
+
+/// HEAD, the index and the working tree; the cursor on the index's
+/// version, which is edited and written to stage it.
+fn stage3(editor: &mut Editor, workdir: &std::path::Path, path: &std::path::Path) {
+    let result = (|| {
+        open_version(editor, workdir, &Version::Head, path, Action::Replace, None)?;
+        let index = open_version(
+            editor,
+            workdir,
+            &Version::Index,
+            path,
+            Action::VerticalSplit,
+            Some(&Version::Head),
+        )?;
+        let index_file = helix_view::doc!(editor)
+            .path()
+            .map(|path| path.to_path_buf())
+            .ok_or("the index version has no file")?;
+        open_version(
+            editor,
+            workdir,
+            &Version::Worktree,
+            path,
+            Action::VerticalSplit,
+            Some(&Version::Index),
+        )?;
+        editor.focus(index);
+        let mut edits = INDEX_EDITS.lock().unwrap();
+        edits.retain(|(file, _, _)| *file != index_file);
+        edits.push((index_file, workdir.to_path_buf(), path.to_path_buf()));
+        Ok::<_, String>(())
+    })();
+    match result {
+        Ok(()) => editor.set_status(format!(
+            "{}: HEAD | index | worktree. Bring changes into the index's version, then :w stages it",
+            path.display()
+        )),
+        Err(err) => editor.set_error(err),
+    }
+}
+
+/// Stages an edited index version when its buffer is written. Returns
+/// whether the write was one.
+pub fn index_if_written(editor: &mut Editor, path: &std::path::Path) -> bool {
+    let entry = INDEX_EDITS
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(file, _, _)| file == path)
+        .cloned();
+    let Some((file, workdir, relative)) = entry else {
+        return false;
+    };
+    let content = std::fs::read_to_string(&file).unwrap_or_default();
+    match helix_magit::ediff::write_index(&workdir, &relative, &content) {
+        Ok(()) => {
+            // The working tree's gutter is against the index: it moved.
+            let worktree = workdir.join(&relative);
+            if let Some(doc) = editor
+                .documents_mut()
+                .find(|doc| doc.path().is_some_and(|p| *p == worktree))
+            {
+                doc.set_diff_base(content.into_bytes());
+            }
+            editor.set_status(format!("Staged {} as edited", relative.display()));
+        }
+        Err(err) => editor.set_error(err),
+    }
+    true
+}
+
+/// Asks to choose among `options`, then goes on with the choice. With
+/// `strict`, only one of them is taken: a file has to be one listed, where
+/// a revision can be any the user types.
+fn choose(
+    compositor: &mut Compositor,
+    label: String,
+    options: Vec<String>,
+    strict: bool,
+    then: impl Fn(&mut Editor, &mut Compositor, String) + Send + Sync + Clone + 'static,
+) {
+    let listed = options.clone();
+    let prompt = crate::ui::Prompt::new(
+        label.into(),
+        None,
+        move |_, input: &str| {
+            options
+                .iter()
+                .filter(|option| option.contains(input))
+                .map(|option| (0.., option.clone().into()))
+                .collect()
+        },
+        move |cx, input, event| {
+            if event != crate::ui::PromptEvent::Validate || input.trim().is_empty() {
+                return;
+            }
+            if strict && !listed.iter().any(|option| option == input.trim()) {
+                cx.editor
+                    .set_error(format!("{} is not one of the choices", input.trim()));
+                return;
+            }
+            let (answer, then) = (input.trim().to_string(), then.clone());
+            cx.jobs.callback(async move {
+                Ok(Callback::EditorCompositor(Box::new(
+                    move |editor: &mut Editor, compositor: &mut Compositor| {
+                        then(editor, compositor, answer)
+                    },
+                )))
+            });
+        },
+    );
+    compositor.push(Box::new(prompt));
+}
+
+/// The Ediff menu's actions. `target` is what the menu was opened on: a
+/// file, or a commit or stash.
+pub fn ediff(
+    compositor: &mut Compositor,
+    editor: &mut Editor,
+    workdir: PathBuf,
+    kind: EdiffKind,
+    target: Option<(String, AskKind)>,
+) {
+    use helix_magit::ediff::{changed_paths, unmerged_paths};
+    let path = target
+        .as_ref()
+        .filter(|(_, kind)| *kind == AskKind::Path)
+        .map(|(path, _)| path.clone());
+    let revision = target
+        .as_ref()
+        .filter(|(_, kind)| matches!(kind, AskKind::Revision | AskKind::Stash))
+        .map(|(rev, _)| rev.clone());
+    step_aside(compositor, editor);
+
+    // Runs `open` on the path at the cursor, or on one chosen from `paths`.
+    let with_path =
+        |compositor: &mut Compositor,
+         editor: &mut Editor,
+         paths: Vec<String>,
+         what: &str,
+         open: fn(&mut Editor, &std::path::Path, &std::path::Path)| {
+            let workdir = workdir.clone();
+            match &path {
+                Some(path) => open(editor, &workdir, std::path::Path::new(path)),
+                None if paths.is_empty() => editor.set_error(format!("No {what}")),
+                None => choose(
+                    compositor,
+                    format!("File ({what}): "),
+                    paths,
+                    true,
+                    move |editor, _, path| open(editor, &workdir, std::path::Path::new(&path)),
+                ),
+            }
+        };
+
+    match kind {
+        EdiffKind::Dwim => {
+            let Some(path) = path.clone() else {
+                // On a commit or stash, its change to one of its files.
+                return match revision {
+                    Some(_) => ediff(compositor, editor, workdir, EdiffKind::Commit, target),
+                    None => editor.set_error("Ediff what? Open the menu on a file or a commit"),
+                };
+            };
+            match helix_magit::ediff::dwim(&workdir, &path) {
+                Some(helix_magit::ediff::Dwim::Resolve) => {
+                    resolve3(editor, &workdir, std::path::Path::new(&path))
+                }
+                Some(helix_magit::ediff::Dwim::Unstaged) => compare(
+                    editor,
+                    &workdir,
+                    std::path::Path::new(&path),
+                    Version::Index,
+                    Version::Worktree,
+                ),
+                Some(helix_magit::ediff::Dwim::Staged) => compare(
+                    editor,
+                    &workdir,
+                    std::path::Path::new(&path),
+                    Version::Head,
+                    Version::Index,
+                ),
+                None => editor.set_error(format!("{path} has no changes to compare")),
+            }
+        }
+        EdiffKind::Resolve => with_path(
+            compositor,
+            editor,
+            unmerged_paths(&workdir),
+            "in conflict",
+            resolve3,
+        ),
+        EdiffKind::Stage => {
+            let mut paths = changed_paths(&workdir, &[]);
+            for staged in changed_paths(&workdir, &["--cached"]) {
+                if !paths.contains(&staged) {
+                    paths.push(staged);
+                }
+            }
+            with_path(compositor, editor, paths, "with changes", stage3)
+        }
+        EdiffKind::Unstaged => with_path(
+            compositor,
+            editor,
+            changed_paths(&workdir, &[]),
+            "with unstaged changes",
+            |editor, workdir, path| {
+                compare(editor, workdir, path, Version::Index, Version::Worktree)
+            },
+        ),
+        EdiffKind::Staged => with_path(
+            compositor,
+            editor,
+            changed_paths(&workdir, &["--cached"]),
+            "with staged changes",
+            |editor, workdir, path| compare(editor, workdir, path, Version::Head, Version::Index),
+        ),
+        EdiffKind::Worktree => with_path(
+            compositor,
+            editor,
+            changed_paths(&workdir, &["HEAD"]),
+            "changed since HEAD",
+            |editor, workdir, path| {
+                compare(editor, workdir, path, Version::Head, Version::Worktree)
+            },
+        ),
+        EdiffKind::Commit | EdiffKind::Stash | EdiffKind::Compare => {
+            let label = match kind {
+                EdiffKind::Commit => "Commit: ",
+                EdiffKind::Stash => "Stash: ",
+                _ => "Compare A..B (B empty for the working tree): ",
+            };
+            let names = helix_magit::refs::names(
+                &workdir,
+                if kind == EdiffKind::Stash {
+                    AskKind::Stash
+                } else {
+                    AskKind::Revision
+                },
+            );
+            let ask_file = move |editor: &mut Editor,
+                                 compositor: &mut Compositor,
+                                 answer: String| {
+                // Commit and stash: their parent to them; else A..B.
+                let (old, new) = match kind {
+                    EdiffKind::Commit | EdiffKind::Stash => (
+                        Version::Rev(format!("{answer}^")),
+                        Version::Rev(answer.clone()),
+                    ),
+                    _ => match answer.split_once("..") {
+                        Some((a, "")) => (Version::Rev(a.to_string()), Version::Worktree),
+                        Some((a, b)) => (Version::Rev(a.to_string()), Version::Rev(b.to_string())),
+                        None => (Version::Rev(answer.clone()), Version::Worktree),
+                    },
+                };
+                let spec = |version: &Version| match version {
+                    Version::Rev(rev) => rev.clone(),
+                    _ => String::new(),
+                };
+                let (a, b) = (spec(&old), spec(&new));
+                let mut args = vec![a.as_str()];
+                if !b.is_empty() {
+                    args.push(b.as_str());
+                }
+                let workdir = workdir.clone();
+                let paths = helix_magit::ediff::changed_paths(&workdir, &args);
+                if paths.is_empty() {
+                    return editor.set_error(format!("No file changed in {answer}"));
+                }
+                choose(
+                    compositor,
+                    format!("File changed in {answer}: "),
+                    paths,
+                    true,
+                    move |editor, _, path| {
+                        compare(
+                            editor,
+                            &workdir,
+                            std::path::Path::new(&path),
+                            old.clone(),
+                            new.clone(),
+                        )
+                    },
+                );
+            };
+            match revision {
+                Some(rev) if kind != EdiffKind::Compare => ask_file(editor, compositor, rev),
+                _ => choose(compositor, label.to_string(), names, false, ask_file),
+            }
+        }
+    }
+}

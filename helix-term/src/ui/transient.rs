@@ -126,6 +126,7 @@ impl TransientOverlay {
             MenuKind::BranchConfig | MenuKind::RemoteConfig => "git config",
             MenuKind::Resolve | MenuKind::File => return String::new(),
             MenuKind::Diff => "git diff",
+            MenuKind::Ediff => return String::new(),
             MenuKind::Fetch => "git fetch",
             MenuKind::DiffSettings => "diff settings:",
             MenuKind::Jump | MenuKind::Views | MenuKind::Setup => return String::new(),
@@ -389,6 +390,14 @@ impl TransientOverlay {
                             crate::magit::show_conflict_side(cx.editor, &workdir, &path, side);
                         }
                     }
+                })))
+            }
+            MagitCommand::Ediff(kind) => {
+                let target = self.target.clone();
+                let workdir = self.workdir.clone();
+                EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                    compositor.remove(TransientOverlay::ID);
+                    crate::magit::ediff(compositor, cx.editor, workdir, kind, target);
                 })))
             }
             MagitCommand::InsertRevision => {
@@ -793,6 +802,7 @@ mod tests {
                         | MagitCommand::RunGit
                         | MagitCommand::RunShell
                         | MagitCommand::JumpTo(_)
+                        | MagitCommand::Ediff(_)
                         | MagitCommand::SwitchTo(_)
                         | MagitCommand::DiffRange
                         | MagitCommand::DiffWorktree

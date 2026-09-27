@@ -225,6 +225,8 @@ pub enum MagitCommand {
     RunShell,
     /// Move the status buffer's cursor to a section.
     JumpTo(JumpTarget),
+    /// Versions of a file side by side (`E`).
+    Ediff(EdiffKind),
     /// Bring one of the open Git views to the front, or open it.
     SwitchTo(GitView),
 
@@ -251,6 +253,29 @@ pub enum MagitCommand {
     Refresh,
     /// Close the transient without running anything.
     Quit,
+}
+
+/// What the Ediff menu lays out side by side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EdiffKind {
+    /// Whatever suits the file: resolve, unstaged or staged.
+    Dwim,
+    /// HEAD, the index (editable) and the working tree.
+    Stage,
+    /// Ours, the merged file and theirs.
+    Resolve,
+    /// Two revisions of a file.
+    Compare,
+    /// The index and the working tree.
+    Unstaged,
+    /// HEAD and the index.
+    Staged,
+    /// HEAD and the working tree.
+    Worktree,
+    /// A commit's parent and the commit.
+    Commit,
+    /// A stash's base and the stash.
+    Stash,
 }
 
 /// A section of the status buffer to jump to.
@@ -347,6 +372,8 @@ pub enum MenuKind {
     /// Which diff to show (`d`), and how to show diffs (`D`).
     Diff,
     DiffSettings,
+    /// Versions of a file side by side (`E`).
+    Ediff,
     /// The status buffer's sections, to jump to (`'`).
     Jump,
     /// The open Git views, to switch between (`J`).
@@ -356,7 +383,7 @@ pub enum MenuKind {
 }
 
 impl MenuKind {
-    pub const ALL: [MenuKind; 35] = [
+    pub const ALL: [MenuKind; 36] = [
         MenuKind::Main,
         MenuKind::Commit,
         MenuKind::Push,
@@ -389,6 +416,7 @@ impl MenuKind {
         MenuKind::File,
         MenuKind::Diff,
         MenuKind::DiffSettings,
+        MenuKind::Ediff,
         MenuKind::Jump,
         MenuKind::Views,
         MenuKind::Setup,
@@ -427,6 +455,7 @@ impl MenuKind {
             MenuKind::Clean => 'K',
             MenuKind::Diff => 'd',
             MenuKind::DiffSettings => 'D',
+            MenuKind::Ediff => 'E',
             MenuKind::Jump => '\'',
             MenuKind::Views => 'J',
             MenuKind::Setup => return None,
@@ -479,6 +508,7 @@ impl MenuKind {
             MenuKind::File => file_menu(),
             MenuKind::Diff => diff_menu(),
             MenuKind::DiffSettings => diff_settings_menu(&crate::diff::DiffOptions::default()),
+            MenuKind::Ediff => ediff_menu(),
             MenuKind::Jump => jump_menu(),
             MenuKind::Views => views_menu(&GitView::ALL.map(|(_, view, _)| view)),
             MenuKind::Setup => setup_menu(),
@@ -828,6 +858,7 @@ pub fn main_menu() -> TransientMenu {
             open(MenuKind::Log, "Log"),
             open(MenuKind::Diff, "Diff"),
             open(MenuKind::DiffSettings, "Diff settings"),
+            open(MenuKind::Ediff, "Ediff"),
             TransientAction::new('y', "Show refs", MagitCommand::ShowRefs),
             TransientAction::new('Y', "Cherries", MagitCommand::ShowCherries),
             open(MenuKind::Bisect, "Bisect"),
@@ -1447,6 +1478,25 @@ pub fn setup_menu() -> TransientMenu {
             "Quit",
             MagitCommand::Quit,
         )]),
+    ])
+}
+
+pub fn ediff_menu() -> TransientMenu {
+    let ediff = |key, label, kind| TransientAction::new(key, label, MagitCommand::Ediff(kind));
+    TransientMenu::new(MenuKind::Ediff, "Ediff").with_groups([
+        TransientGroup::new("Edit").with_actions([
+            ediff('E', "Dwim", EdiffKind::Dwim),
+            ediff('s', "Stage", EdiffKind::Stage),
+            ediff('m', "Resolve", EdiffKind::Resolve),
+        ]),
+        TransientGroup::new("Show").with_actions([
+            ediff('u', "Unstaged", EdiffKind::Unstaged),
+            ediff('i', "Staged", EdiffKind::Staged),
+            ediff('w', "Worktree", EdiffKind::Worktree),
+            ediff('r', "Two revisions", EdiffKind::Compare),
+            ediff('c', "Commit", EdiffKind::Commit),
+            ediff('z', "Stash", EdiffKind::Stash),
+        ]),
     ])
 }
 

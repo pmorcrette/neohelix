@@ -2106,12 +2106,31 @@ pull menu keeps its own `f` and `a`, as Magit's does.
 Conflicts can be edited, taken from one side, or sent to a mergetool, but
 there is no three-way view inside the editor.
 
-- [ ] Resolve a conflict with ours, theirs and the merged result side by side,
+- [x] Resolve a conflict with ours, theirs and the merged result side by side,
       picking a side hunk by hunk (Magit's `E m` / `E r`).
-- [ ] Stage interactively from HEAD, index and working tree side by side
+- [x] Stage interactively from HEAD, index and working tree side by side
       (`E s`).
-- [ ] Compare two revisions of a file, a commit, a stash, and the unstaged or
+- [x] Compare two revisions of a file, a commit, a stash, and the unstaged or
       staged changes side by side (`E c`, `E d`, `E z`, `E u`, `E i`).
+
+*Done.* Helix has no diff mode, so Ediff is built from what it has: each
+version of the file is written under `.git/helix/ediff/<version>/` and opened
+in a split, with the diff gutter set against the version it is compared with
+(`Document::set_diff_base`), so the changes are marked and `]g` / `[g` move
+between them. `E` opens the menu, on the file (or commit, stash) at the
+cursor, else asking which, among the files that apply only. `E m` lays out
+ours | the merged file | theirs, both sides' gutters against the base, the
+cursor on the merged file's first conflict, where `:conflict-take` picks a
+side (`]m` / `[m` move between conflicts). `E s` lays out HEAD | the index |
+the working tree, the cursor on the index's version, which is the one
+editable copy: writing it stages it (`git hash-object` then `update-index`,
+keeping the file's mode) and the working tree's gutter follows. `E u`, `E i`
+and `E w` compare index and working tree, HEAD and index, HEAD and working
+tree; `E c` and `E z` a commit or stash against its parent, for a file it
+changed; `E r` two revisions (`A..B`, B empty for the working tree); and
+`E E`, Magit's dwim, resolves a conflicted file, else shows its unstaged
+changes, else its staged ones. Magit's keys differ in places — it has no
+`d` for dwim in this menu; `E` is Magit's own.
 
 ### Task 2.26: Files at a Revision (Blobs) and the File Dispatch
 
