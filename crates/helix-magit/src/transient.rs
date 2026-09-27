@@ -222,6 +222,39 @@ pub enum MagitCommand {
     FileRestore,
     /// The log of some lines of the file: `git log -L`.
     FileTrace,
+
+    // ── Task 2.27's suffixes ──
+    PushOther,
+    PushMatching,
+    PushTag,
+    BranchShelve,
+    BranchUnshelve,
+    MergeEdit,
+    MergeAbsorb,
+    MergeInto,
+    ResetIndex,
+    ResetFile,
+    StashKeepIndex,
+    StashSnapshot,
+    StashPaths,
+    StashBranchHere,
+    StashFormatPatch,
+    TagPrune,
+    TagRelease,
+    RemotePrune,
+    RemoteSetHead,
+    RemoteUnshallow,
+    WorktreeAddBranch,
+    WorktreeMove,
+    SubmoduleRegister,
+    SubmodulePopulate,
+    SubmoduleUnpopulate,
+    SubmoduleRemove,
+    BisectRun,
+    BisectMark,
+    RequestPull,
+    SendEmail,
+    NoteMerge,
     /// Insert a revision from the ones looked at recently.
     InsertRevision,
 
@@ -946,14 +979,25 @@ pub fn push_menu() -> TransientMenu {
             switch('u', "--set-upstream", "Set upstream"),
             switch('d', "--dry-run", "Dry run"),
             switch('t', "--tags", "Push tags too"),
+            switch(
+                'T',
+                "--follow-tags",
+                "Push the annotated tags of what is pushed",
+            ),
+            option('o', "--push-option=", "Push option"),
         ]),
         TransientGroup::new("Push to").with_actions([
             TransientAction::new('p', "pushRemote", MagitCommand::PushToPushRemote),
             TransientAction::new('u', "Upstream", MagitCommand::PushToUpstream),
             TransientAction::new('e', "Elsewhere", MagitCommand::PushElsewhere),
             TransientAction::new('P', "Push", MagitCommand::Push),
+        ]),
+        TransientGroup::new("Push").with_actions([
+            TransientAction::new('o', "Another branch", MagitCommand::PushOther),
             TransientAction::new('r', "Explicit refspecs", MagitCommand::PushRefspecs),
-            TransientAction::new('T', "All tags", MagitCommand::TagPush),
+            TransientAction::new('m', "Matching branches", MagitCommand::PushMatching),
+            TransientAction::new('T', "A tag", MagitCommand::PushTag),
+            TransientAction::new('t', "All tags", MagitCommand::TagPush),
         ]),
     ])
 }
@@ -998,11 +1042,10 @@ pub fn fetch_menu() -> TransientMenu {
 
 pub fn branch_menu() -> TransientMenu {
     TransientMenu::new(MenuKind::Branch, "Branch").with_groups([
-        TransientGroup::new("Arguments").with_arguments([switch(
-            't',
-            "--track",
-            "Set up tracking",
-        )]),
+        TransientGroup::new("Arguments").with_arguments([
+            switch('t', "--track", "Set up tracking"),
+            switch('r', "--recurse-submodules", "Check out the submodules too"),
+        ]),
         TransientGroup::new("Checkout").with_actions([
             TransientAction::new('b', "Branch", MagitCommand::BranchCheckout),
             TransientAction::new('c', "New branch", MagitCommand::BranchCreateAndCheckout),
@@ -1016,6 +1059,8 @@ pub fn branch_menu() -> TransientMenu {
             TransientAction::new('m', "Rename", MagitCommand::BranchRename),
             TransientAction::new('X', "Reset", MagitCommand::BranchReset),
             TransientAction::new('x', "Delete", MagitCommand::BranchDelete),
+            TransientAction::new('h', "Shelve", MagitCommand::BranchShelve),
+            TransientAction::new('H', "Unshelve", MagitCommand::BranchUnshelve),
             TransientAction::new(
                 'C',
                 "Configure…",
@@ -1036,6 +1081,16 @@ pub fn rebase_menu() -> TransientMenu {
                 "Move fixup! and squash! commits into place",
             ),
             switch('k', "--keep-empty", "Keep empty commits"),
+            switch('r', "--rebase-merges", "Keep the merges"),
+            switch('u', "--update-refs", "Move the branches in between too"),
+            switch(
+                'c',
+                "--committer-date-is-author-date",
+                "Committer date is author date",
+            ),
+            switch('D', "--ignore-date", "Use the current date"),
+            option('X', "--strategy-option=", "Strategy option"),
+            option('G', "--gpg-sign=", "Sign with key"),
             // `S`, so `s` stays free for skipping: an argument's key shadows
             // an action's.
             option('S', "--strategy=", "Merge strategy"),
@@ -1066,11 +1121,20 @@ pub fn stash_menu() -> TransientMenu {
             TransientAction::new('z', "Both", MagitCommand::StashBoth),
             TransientAction::new('i', "Index", MagitCommand::StashIndex),
             TransientAction::new('w', "Worktree", MagitCommand::StashWorktree),
+            TransientAction::new('x', "Keeping the index", MagitCommand::StashKeepIndex),
+            TransientAction::new('P', "Some paths", MagitCommand::StashPaths),
+            TransientAction::new(
+                'Z',
+                "Snapshot (keep the changes)",
+                MagitCommand::StashSnapshot,
+            ),
         ]),
         TransientGroup::new("Use").with_actions([
             TransientAction::new('p', "Pop", MagitCommand::StashPop),
             TransientAction::new('a', "Apply", MagitCommand::StashApply),
             TransientAction::new('b', "Branch", MagitCommand::StashBranch),
+            TransientAction::new('B', "Branch here", MagitCommand::StashBranchHere),
+            TransientAction::new('f', "Format a patch", MagitCommand::StashFormatPatch),
             TransientAction::new('k', "Drop", MagitCommand::StashDrop),
         ]),
     ])
@@ -1081,11 +1145,19 @@ pub fn merge_menu() -> TransientMenu {
         TransientGroup::new("Arguments").with_arguments([
             switch('f', "--ff-only", "Fast-forward only"),
             switch('n', "--no-ff", "No fast-forward"),
+            option('s', "--strategy=", "Strategy"),
+            option('X', "--strategy-option=", "Strategy option"),
+            option('S', "--gpg-sign=", "Sign with key"),
         ]),
         TransientGroup::new("Merge").with_actions([
             TransientAction::new('m', "Merge", MagitCommand::Merge),
+            TransientAction::new('e', "Merge, editing the message", MagitCommand::MergeEdit),
             TransientAction::new('s', "Squash", MagitCommand::MergeSquash),
             TransientAction::new('n', "Without committing", MagitCommand::MergeNoCommit),
+        ]),
+        TransientGroup::new("Merge and delete").with_actions([
+            TransientAction::new('a', "Absorb a branch", MagitCommand::MergeAbsorb),
+            TransientAction::new('i', "Dissolve into another", MagitCommand::MergeInto),
         ]),
         TransientGroup::new("In progress").with_actions([
             TransientAction::new('c', "Commit the merge", MagitCommand::MergeContinue),
@@ -1098,12 +1170,17 @@ pub fn tag_menu() -> TransientMenu {
     TransientMenu::new(MenuKind::Tag, "Tag").with_groups([
         TransientGroup::new("Arguments").with_arguments([
             option('m', "--message=", "Annotate with a message"),
+            switch('a', "--annotate", "Annotated"),
+            switch('s', "--sign", "Signed"),
+            option('u', "--local-user=", "Sign as"),
             switch('f', "--force", "Replace an existing tag"),
         ]),
         TransientGroup::new("Tag").with_actions([
             TransientAction::new('t', "Create", MagitCommand::TagCreate),
+            TransientAction::new('r', "Release", MagitCommand::TagRelease),
             TransientAction::new('k', "Delete", MagitCommand::TagDelete),
             TransientAction::new('p', "Push tags", MagitCommand::TagPush),
+            TransientAction::new('P', "Prune local tags", MagitCommand::TagPrune),
         ]),
     ])
 }
@@ -1113,6 +1190,9 @@ pub fn cherry_pick_menu() -> TransientMenu {
         TransientGroup::new("Arguments").with_arguments([
             switch('x', "-x", "Note the original commit"),
             switch('f', "--ff", "Fast-forward when possible"),
+            option('m', "--mainline=", "Mainline parent (of a merge)"),
+            switch('s', "--signoff", "Add Signed-off-by line"),
+            option('S', "--strategy=", "Strategy"),
         ]),
         TransientGroup::new("Apply here").with_actions([
             TransientAction::new('A', "Pick", MagitCommand::CherryPick),
@@ -1128,6 +1208,10 @@ pub fn cherry_pick_menu() -> TransientMenu {
 
 pub fn revert_menu() -> TransientMenu {
     TransientMenu::new(MenuKind::Revert, "Revert").with_groups([
+        TransientGroup::new("Arguments").with_arguments([
+            option('m', "--mainline=", "Mainline parent (of a merge)"),
+            switch('s', "--signoff", "Add Signed-off-by line"),
+        ]),
         TransientGroup::new("Revert").with_actions([
             TransientAction::new('V', "Revert", MagitCommand::Revert),
             TransientAction::new('v', "Without committing", MagitCommand::RevertNoCommit),
@@ -1146,6 +1230,9 @@ pub fn remote_menu() -> TransientMenu {
             TransientAction::new('a', "Add", MagitCommand::RemoteAdd),
             TransientAction::new('r', "Rename", MagitCommand::RemoteRename),
             TransientAction::new('k', "Remove", MagitCommand::RemoteRemove),
+            TransientAction::new('p', "Prune stale branches", MagitCommand::RemotePrune),
+            TransientAction::new('b', "Update default branch", MagitCommand::RemoteSetHead),
+            TransientAction::new('z', "Unshallow", MagitCommand::RemoteUnshallow),
         ]),
         TransientGroup::new("Branch").with_actions([
             TransientAction::new('u', "Set upstream", MagitCommand::RemoteSetUpstream),
@@ -1161,14 +1248,20 @@ pub fn remote_menu() -> TransientMenu {
 
 pub fn bisect_menu() -> TransientMenu {
     TransientMenu::new(MenuKind::Bisect, "Bisect").with_groups([
+        TransientGroup::new("Arguments").with_arguments([
+            option('o', "--term-old=", "Term for good"),
+            option('n', "--term-new=", "Term for bad"),
+        ]),
         TransientGroup::new("Bisect").with_actions([
             TransientAction::new('B', "Start", MagitCommand::BisectStart),
+            TransientAction::new('x', "Run a script", MagitCommand::BisectRun),
             TransientAction::new('r', "Reset", MagitCommand::BisectReset),
         ]),
         TransientGroup::new("This commit is").with_actions([
             TransientAction::new('g', "Good", MagitCommand::BisectGood),
             TransientAction::new('b', "Bad", MagitCommand::BisectBad),
             TransientAction::new('s', "Untestable (skip)", MagitCommand::BisectSkip),
+            TransientAction::new('m', "Marked with a term", MagitCommand::BisectMark),
         ]),
     ])
 }
@@ -1178,7 +1271,13 @@ pub fn worktree_menu() -> TransientMenu {
         "Worktree",
     )
     .with_actions([
-        TransientAction::new('a', "Add", MagitCommand::WorktreeAdd),
+        TransientAction::new('a', "Add, checking out", MagitCommand::WorktreeAdd),
+        TransientAction::new(
+            'c',
+            "Add, with a new branch",
+            MagitCommand::WorktreeAddBranch,
+        ),
+        TransientAction::new('m', "Move", MagitCommand::WorktreeMove),
         TransientAction::new('k', "Remove", MagitCommand::WorktreeRemove),
         TransientAction::new('p', "Prune", MagitCommand::WorktreePrune),
     ])])
@@ -1197,6 +1296,14 @@ pub fn submodule_menu() -> TransientMenu {
         ),
         TransientAction::new('s', "Sync URLs", MagitCommand::SubmoduleSync),
         TransientAction::new('f', "Fetch in each", MagitCommand::SubmoduleFetch),
+        TransientAction::new('r', "Register (init)", MagitCommand::SubmoduleRegister),
+        TransientAction::new('p', "Populate", MagitCommand::SubmodulePopulate),
+        TransientAction::new(
+            'd',
+            "Unpopulate (deinit)",
+            MagitCommand::SubmoduleUnpopulate,
+        ),
+        TransientAction::new('k', "Remove", MagitCommand::SubmoduleRemove),
     ])])
 }
 
@@ -1229,11 +1336,11 @@ pub fn format_patch_menu() -> TransientMenu {
             switch('c', "--cover-letter", "With a cover letter"),
             switch('n', "--numbered", "Numbered [PATCH n/m]"),
         ]),
-        TransientGroup::new("Format").with_actions([TransientAction::new(
-            'c',
-            "Create",
-            MagitCommand::FormatPatch,
-        )]),
+        TransientGroup::new("Format").with_actions([
+            TransientAction::new('c', "Create", MagitCommand::FormatPatch),
+            TransientAction::new('r', "Request pull", MagitCommand::RequestPull),
+            TransientAction::new('s', "Send by email", MagitCommand::SendEmail),
+        ]),
     ])
 }
 
@@ -1248,13 +1355,20 @@ pub fn subtree_menu() -> TransientMenu {
 }
 
 pub fn notes_menu() -> TransientMenu {
-    TransientMenu::new(MenuKind::Notes, "Notes").with_groups([TransientGroup::new("Notes")
-        .with_actions([
+    TransientMenu::new(MenuKind::Notes, "Notes").with_groups([
+        TransientGroup::new("Arguments").with_arguments([option(
+            'r',
+            "--ref=",
+            "Notes ref (e.g. review)",
+        )]),
+        TransientGroup::new("Notes").with_actions([
             TransientAction::new('T', "Set", MagitCommand::NoteEdit),
             TransientAction::new('a', "Append", MagitCommand::NoteAppend),
             TransientAction::new('r', "Remove", MagitCommand::NoteRemove),
             TransientAction::new('p', "Prune", MagitCommand::NotePrune),
-        ])])
+            TransientAction::new('m', "Merge in another ref", MagitCommand::NoteMerge),
+        ]),
+    ])
 }
 
 pub fn sparse_menu() -> TransientMenu {
@@ -1570,6 +1684,8 @@ pub fn reset_menu() -> TransientMenu {
             "only the worktree's files",
             MagitCommand::ResetWorktree,
         ),
+        TransientAction::new('i', "only the index", MagitCommand::ResetIndex),
+        TransientAction::new('f', "a file", MagitCommand::ResetFile),
     ])])
 }
 

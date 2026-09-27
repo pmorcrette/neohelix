@@ -2163,10 +2163,10 @@ does (`10,20`, `:funcname`) and opens the log of those lines.
 
 Menu by menu, what Magit offers that the fork's transients do not.
 
-- [ ] Push: another branch (`o`), matching branches (`m`), a single tag
+- [x] Push: another branch (`o`), matching branches (`m`), a single tag
       (`T`, which today pushes every tag), `--follow-tags`, push options
       (`-o`).
-- [ ] Branch: `--recurse-submodules`; shelve and unshelve a branch.
+- [x] Branch: `--recurse-submodules`; shelve and unshelve a branch.
 - [ ] Merge: merge and edit the message (`e`), preview (`p`), absorb — merge
       then delete the branch (`a`), dissolve — merge the current branch into
       another (`i`); `--strategy`, `--strategy-option`, `--gpg-sign`.
@@ -2181,7 +2181,7 @@ Menu by menu, what Magit offers that the fork's transients do not.
       spin off from commits (`n`, `s`); `--mainline`, `--edit`, `--signoff`,
       `--strategy`.
 - [ ] Revert: `--mainline`, `--edit` / `--no-edit`, `--signoff`.
-- [ ] Reset: the index only (`i`), and a file from a revision (`f`).
+- [x] Reset: the index only (`i`), and a file from a revision (`f`).
 - [ ] Stash: keeping the index (`x`); snapshots that leave the changes in
       place (`Z`, `I`, `W`); only some paths (`P`); a list buffer (`l`);
       create a branch here (`B`); turn a stash into a patch (`f`).
@@ -2193,15 +2193,36 @@ Menu by menu, what Magit offers that the fork's transients do not.
       one; visit a worktree.
 - [ ] Submodule: register (`init`), populate, unpopulate (`deinit`), remove;
       a list buffer.
-- [ ] Bisect: run a script (`git bisect run`); custom terms
+- [x] Bisect: run a script (`git bisect run`); custom terms
       (`--term-old` / `--term-new`).
 - [ ] Patches: `git request-pull`, `git send-email`, and save the diff on
       screen as a patch file.
-- [ ] Notes: choose the notes ref (`--ref`); merge notes.
+- [x] Notes: choose the notes ref (`--ref`); merge notes.
 - [ ] Diff: dwim (`d d`); between two paths (`d p`); a stash (`d t`);
       `--function-context`, `--color-moved`, rename detection (`-M`), reverse
       (`-R`), `--no-ext-diff`; switch a range between `..` and `...`; flip the
       two revisions.
+
+*In progress.* Done so far, beyond the lines ticked: merge with an edited
+message (`e`, the message written first and given to `git merge -F`), absorb
+(`a`) and dissolve (`i`), with `--strategy`, `--strategy-option` and
+`--gpg-sign`; the rebase arguments (`-r --rebase-merges`, `-u --update-refs`,
+`-c`, `-D --ignore-date`, `-X`, `-G`); cherry-pick's and revert's
+`--mainline` and `--signoff`, and cherry-pick's `--strategy`; the stash's
+`x` (keeping the index), `P` (some paths), `Z` (a snapshot that leaves the
+changes: `git stash create` then `store`), `B` (branch here) and `f` (a
+stash as a patch); tags annotated, signed and signed as (`-a`, `-s`, `-u`),
+a release (`r`) and pruning the local tags a remote lacks (`P`); remote
+`p` (prune stale branches), `b` (update the default branch) and `z`
+(unshallow); worktree `c` (with a new branch) and `m` (move); submodule
+`r`, `p`, `d` and `k`; `git request-pull` and `git send-email` (behind a
+confirmation). Branch shelving keeps a branch as `refs/shelved/<name>`.
+Left: merge preview, the single-commit rebase actions and `--edit-todo`, the
+todo buffer's `exec` / `break` and merge commands, harvest, donate and the
+cherry spins, `--edit` for cherry-pick and revert (which need an editor
+during the command), index-only and worktree-only snapshots, the stash and
+submodule list buffers, pruning stale refspecs, visiting a worktree, saving
+a diff as a patch, and the diff menu's additions.
 
 ### Task 2.28: The Status, Log and Blame Views
 

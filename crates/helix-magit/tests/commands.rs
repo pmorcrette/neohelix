@@ -739,3 +739,244 @@ fn the_file_dispatch_deletes_untracks_and_restores() {
     );
     assert!(!work.join("f.txt").exists());
 }
+
+/// Runs a plan with its questions answered, as the editor would.
+fn run_answered(
+    work: &Path,
+    command: MagitCommand,
+    args: &[&str],
+    answers: &[&str],
+) -> helix_magit::GitOutput {
+    let args: Vec<String> = args.iter().map(ToString::to_string).collect();
+    let answers: Vec<String> = answers.iter().map(ToString::to_string).collect();
+    let plan = resolve(command, &args).unwrap().answered(&answers);
+    helix_magit::command::run_plan(work, &plan).unwrap()
+}
+
+fn branch_on(work: &Path, name: &str, file: &str) {
+    git(work, &["checkout", "-q", "-b", name]).unwrap();
+    fs::write(work.join(file), format!("{file}\n")).unwrap();
+    git(work, &["add", file]).unwrap();
+    git(work, &["commit", "-m", &format!("on {name}")]).unwrap();
+    git(work, &["checkout", "-q", "main"]).unwrap();
+}
+
+#[test]
+fn a_shelved_branch_leaves_the_list_and_comes_back() {
+    let (_dir, work) = fixture_or_skip!();
+    branch_on(&work, "idea", "idea.txt");
+    let tip = git(&work, &["rev-parse", "idea"]).unwrap();
+
+    let output = run_answered(&work, MagitCommand::BranchShelve, &[], &["idea"]);
+    assert!(output.success, "{}", output.summary());
+    assert!(git(&work, &["rev-parse", "--verify", "refs/heads/idea"]).is_none());
+    assert_eq!(
+        git(&work, &["rev-parse", "refs/shelved/idea"]).unwrap(),
+        tip
+    );
+
+    let output = run_answered(&work, MagitCommand::BranchUnshelve, &[], &["idea"]);
+    assert!(output.success, "{}", output.summary());
+    assert_eq!(git(&work, &["rev-parse", "idea"]).unwrap(), tip);
+    assert!(git(&work, &["rev-parse", "--verify", "refs/shelved/idea"]).is_none());
+}
+
+#[test]
+fn absorb_and_dissolve_merge_then_delete_the_branch() {
+    let (_dir, work) = fixture_or_skip!();
+    branch_on(&work, "feature", "feature.txt");
+    let output = run_answered(&work, MagitCommand::MergeAbsorb, &[], &["feature"]);
+    assert!(output.success, "{}", output.summary());
+    assert!(work.join("feature.txt").exists());
+    assert!(git(&work, &["rev-parse", "--verify", "refs/heads/feature"]).is_none());
+
+    // Dissolve: this branch into main, then gone.
+    git(&work, &["checkout", "-q", "-b", "topic"]).unwrap();
+    fs::write(work.join("topic.txt"), "t\n").unwrap();
+    git(&work, &["add", "topic.txt"]).unwrap();
+    git(&work, &["commit", "-m", "topic"]).unwrap();
+    let output = run_answered(&work, MagitCommand::MergeInto, &[], &["main", "topic"]);
+    assert!(output.success, "{}", output.summary());
+    assert_eq!(
+        git(&work, &["symbolic-ref", "--short", "HEAD"]).unwrap(),
+        "main\n"
+    );
+    assert!(work.join("topic.txt").exists());
+    assert!(git(&work, &["rev-parse", "--verify", "refs/heads/topic"]).is_none());
+}
+
+#[test]
+fn a_merge_takes_the_message_written_for_it() {
+    let (_dir, work) = fixture_or_skip!();
+    branch_on(&work, "feature", "feature.txt");
+    let plan = resolve(MagitCommand::MergeEdit, &[])
+        .unwrap()
+        .answered(&["feature".into()]);
+    let Requirement::CommitMessage { seed } = &plan.requirement else {
+        panic!("the merge composes a message first");
+    };
+    assert!(
+        helix_magit::command::commit_template_for(&work, seed, false)
+            .starts_with("Merge feature\n")
+    );
+    let output = commit_with(&work, &plan, "Merge feature, for the release\n");
+    assert!(output.success, "{}", output.summary());
+    assert_eq!(
+        head_message(&work).unwrap(),
+        "Merge feature, for the release"
+    );
+    assert_eq!(
+        git(&work, &["rev-list", "--parents", "-n1", "HEAD"])
+            .unwrap()
+            .split_whitespace()
+            .count(),
+        3
+    );
+}
+
+#[test]
+fn a_snapshot_stashes_and_keeps_the_changes() {
+    let (_dir, work) = fixture_or_skip!();
+    fs::write(work.join("f.txt"), "wip\n").unwrap();
+    let output = run_answered(&work, MagitCommand::StashSnapshot, &[], &[]);
+    assert!(output.success, "{}", output.summary());
+    assert_eq!(fs::read_to_string(work.join("f.txt")).unwrap(), "wip\n");
+    assert!(git(&work, &["stash", "list"]).unwrap().contains("Snapshot"));
+
+    // Branch here: a new branch at HEAD with the stash popped onto it.
+    git(&work, &["checkout", "--", "f.txt"]).unwrap();
+    let output = run_answered(
+        &work,
+        MagitCommand::StashBranchHere,
+        &[],
+        &["from-stash", ""],
+    );
+    assert!(output.success, "{}", output.summary());
+    assert_eq!(
+        git(&work, &["symbolic-ref", "--short", "HEAD"]).unwrap(),
+        "from-stash\n"
+    );
+    assert_eq!(fs::read_to_string(work.join("f.txt")).unwrap(), "wip\n");
+    assert_eq!(git(&work, &["stash", "list"]).unwrap(), "");
+}
+
+#[test]
+fn reset_index_release_tag_and_notes_ref() {
+    let (_dir, work) = fixture_or_skip!();
+    fs::write(work.join("f.txt"), "staged\n").unwrap();
+    git(&work, &["add", "f.txt"]).unwrap();
+    let output = run_answered(&work, MagitCommand::ResetIndex, &[], &["HEAD"]);
+    assert!(output.success, "{}", output.summary());
+    assert_eq!(
+        git(&work, &["status", "--porcelain"]).unwrap(),
+        " M f.txt\n"
+    );
+
+    let output = run_answered(&work, MagitCommand::TagRelease, &[], &["v1.0.0"]);
+    assert!(output.success, "{}", output.summary());
+    assert_eq!(
+        git(
+            &work,
+            &["tag", "-l", "--format=%(contents:subject)", "v1.0.0"]
+        )
+        .unwrap(),
+        "Release v1.0.0\n"
+    );
+
+    let output = run_answered(
+        &work,
+        MagitCommand::NoteEdit,
+        &["--ref=review"],
+        &["looks good", ""],
+    );
+    assert!(output.success, "{}", output.summary());
+    assert_eq!(
+        git(&work, &["notes", "--ref=review", "show"]).unwrap(),
+        "looks good\n"
+    );
+    assert!(
+        git(&work, &["notes", "show"]).is_none(),
+        "not in the default ref"
+    );
+}
+
+#[test]
+fn push_another_branch_a_tag_and_the_matching_ones() {
+    let (_dir, work) = fixture_or_skip!();
+    branch_on(&work, "side", "side.txt");
+    git(&work, &["tag", "v0.1"]).unwrap();
+
+    let output = run_answered(&work, MagitCommand::PushOther, &[], &["side", "origin"]);
+    assert!(output.success, "{}", output.summary());
+    let output = run_answered(&work, MagitCommand::PushTag, &[], &["v0.1", "origin"]);
+    assert!(output.success, "{}", output.summary());
+    let remote = git(&work, &["ls-remote", "origin"]).unwrap();
+    assert!(remote.contains("refs/heads/side"), "{remote}");
+    assert!(remote.contains("refs/tags/v0.1"), "{remote}");
+
+    fs::write(work.join("f.txt"), "two\n").unwrap();
+    git(&work, &["commit", "-am", "two"]).unwrap();
+    let output = run_answered(&work, MagitCommand::PushMatching, &[], &["origin"]);
+    assert!(output.success, "{}", output.summary());
+    assert_eq!(
+        git(&work, &["rev-parse", "origin/main"]),
+        git(&work, &["rev-parse", "main"])
+    );
+}
+
+#[test]
+fn worktrees_with_a_new_branch_move_and_bisect_runs_a_script() {
+    let (dir, work) = fixture_or_skip!();
+    let tree = dir.path().join("tree");
+    let moved = dir.path().join("moved");
+    let output = run_answered(
+        &work,
+        MagitCommand::WorktreeAddBranch,
+        &[],
+        &[tree.to_str().unwrap(), "wt-branch", ""],
+    );
+    assert!(output.success, "{}", output.summary());
+    assert!(git(&work, &["rev-parse", "--verify", "wt-branch"]).is_some());
+    let output = run_answered(
+        &work,
+        MagitCommand::WorktreeMove,
+        &[],
+        &[tree.to_str().unwrap(), moved.to_str().unwrap()],
+    );
+    assert!(output.success, "{}", output.summary());
+    assert!(moved.join("f.txt").exists());
+
+    // Three commits; the last one breaks f.txt.
+    for text in ["first\n", "second\n", "broken\n"] {
+        fs::write(work.join("f.txt"), text).unwrap();
+        git(&work, &["commit", "-qam", text.trim()]).unwrap();
+    }
+    git(&work, &["bisect", "start", "HEAD", "HEAD~3"]).unwrap();
+    let output = run_answered(
+        &work,
+        MagitCommand::BisectRun,
+        &[],
+        &["grep -qv broken f.txt"],
+    );
+    assert!(output.success, "{}", output.summary());
+    assert!(
+        output.stdout.contains("is the first bad commit"),
+        "{}",
+        output.stdout
+    );
+    git(&work, &["bisect", "reset"]).unwrap();
+}
+
+#[test]
+fn remote_prune_drops_the_branches_gone_from_the_remote() {
+    let (dir, work) = fixture_or_skip!();
+    git(&work, &["push", "origin", "HEAD:refs/heads/gone"]).unwrap();
+    git(&work, &["fetch", "origin"]).unwrap();
+    // Deleted on the remote itself, so the tracking branch here is stale.
+    git(&dir.path().join("remote.git"), &["branch", "-D", "gone"]).unwrap();
+    assert!(git(&work, &["rev-parse", "--verify", "origin/gone"]).is_some());
+
+    let output = run_answered(&work, MagitCommand::RemotePrune, &[], &["origin"]);
+    assert!(output.success, "{}", output.summary());
+    assert!(git(&work, &["rev-parse", "--verify", "origin/gone"]).is_none());
+}

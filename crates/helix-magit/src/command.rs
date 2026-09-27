@@ -51,6 +51,8 @@ pub enum Seed {
     /// revision's whole message to edit, which replaces it when the commit
     /// is squashed in.
     Amend(String),
+    /// The message of a merge of this revision, as git would write it.
+    Merge(String),
 }
 
 impl Seed {
@@ -64,6 +66,7 @@ impl Seed {
         match self {
             Seed::Squash(rev) => Seed::Squash(fill(rev)),
             Seed::Amend(rev) => Seed::Amend(fill(rev)),
+            Seed::Merge(rev) => Seed::Merge(fill(rev)),
             other => other.clone(),
         }
     }
@@ -289,6 +292,9 @@ pub enum Special {
     /// A `fixup!` commit of `args[0]`, with the rest of `args` as `git
     /// commit`'s arguments, squashed in at once.
     InstantFixup,
+    /// A stash of the changes that leaves them where they are: `git stash
+    /// create`, then `git stash store`.
+    StashSnapshot,
     /// A shell command line, `args[0]`, run by `sh -c` in the repository.
     Shell,
 }
@@ -330,6 +336,12 @@ impl Plan {
             compose: None,
             fold_into: None,
         }
+    }
+
+    /// Another git command to run after the first, only if it succeeded.
+    fn then(mut self, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.then.push(args.into_iter().map(Into::into).collect());
+        self
     }
 
     /// Composes a message once the questions are answered.
@@ -381,7 +393,10 @@ impl Plan {
             .chain(self.then.iter().flatten())
             .chain(&self.fold_into)
             .any(|arg| arg.contains("{0}"))
-            || matches!(&self.compose, Some(Seed::Squash(rev) | Seed::Amend(rev)) if rev.contains("{0}"));
+            || matches!(
+                &self.compose,
+                Some(Seed::Squash(rev) | Seed::Amend(rev) | Seed::Merge(rev)) if rev.contains("{0}")
+            );
         let words: Vec<bool> = match &self.requirement {
             Requirement::Ask(asks) => asks.iter().map(|ask| ask.words).collect(),
             _ => Vec::new(),
@@ -743,6 +758,18 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
         )
         .asking([Ask::required(AskKind::Revision, "Files from")])
         .destructive(),
+        // The index as a revision has it, HEAD and the files left alone.
+        MagitCommand::ResetIndex => Plan::new(["reset", "{0}", "--", "."], "Reset the index")
+            .asking([Ask::required(AskKind::Revision, "Reset the index to").or("HEAD")]),
+        MagitCommand::ResetFile => Plan::new(
+            ["checkout", "{0}", "--", "{1}"],
+            "Put a file back as a revision has it, discarding its changes",
+        )
+        .asking([
+            Ask::required(AskKind::Revision, "From revision").or("HEAD"),
+            Ask::required(AskKind::Path, "File"),
+        ])
+        .destructive(),
         MagitCommand::ResetKeep => {
             Plan::new(["reset", "--keep"], "Reset HEAD, keeping local changes")
                 .asking([Ask::required(AskKind::Revision, "Reset to")])
@@ -848,6 +875,40 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
             }
         }
 
+        MagitCommand::PushOther => {
+            let mut push = with(["push"], args);
+            push.extend(["{1}".to_string(), "{0}".to_string()]);
+            let plan = Plan::new(push, "Push another branch").asking([
+                Ask::required(AskKind::Branch, "Push branch"),
+                Ask::required(AskKind::Remote, "To remote"),
+            ]);
+            if forced {
+                plan.destructive()
+            } else {
+                plan
+            }
+        }
+        // `:` pushes every branch that has one of the same name there.
+        MagitCommand::PushMatching => {
+            let mut push = with(["push"], args);
+            push.extend(["{0}".to_string(), ":".to_string()]);
+            let plan = Plan::new(push, "Push the matching branches")
+                .asking([Ask::required(AskKind::Remote, "To remote")]);
+            if forced {
+                plan.destructive()
+            } else {
+                plan
+            }
+        }
+        MagitCommand::PushTag => {
+            let mut push = with(["push"], args);
+            push.extend(["{1}".to_string(), "refs/tags/{0}".to_string()]);
+            Plan::new(push, "Push a tag").asking([
+                Ask::required(AskKind::Tag, "Push tag"),
+                Ask::required(AskKind::Remote, "To remote"),
+            ])
+        }
+
         MagitCommand::PushRefspecs => {
             let mut push = with(["push"], args);
             push.extend(["{0}".to_string(), "{1}".to_string()]);
@@ -943,6 +1004,19 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
                 ])
                 .destructive()
         }
+        // Shelving keeps the branch as `refs/shelved/<name>`, out of the
+        // way of the branch list, and unshelving brings it back.
+        MagitCommand::BranchShelve => Plan::new(
+            ["update-ref", "refs/shelved/{0}", "refs/heads/{0}"],
+            "Shelve a branch",
+        )
+        .then(["branch", "--delete", "--force", "{0}"])
+        .asking([Ask::required(AskKind::Branch, "Shelve branch")]),
+        MagitCommand::BranchUnshelve => {
+            Plan::new(["branch", "{0}", "refs/shelved/{0}"], "Unshelve a branch")
+                .then(["update-ref", "-d", "refs/shelved/{0}"])
+                .asking([Ask::required(AskKind::Text, "Unshelve branch")])
+        }
         MagitCommand::BranchSpinoff => Plan::new(["{0}"], "Spin off the unpushed commits")
             .asking([Ask::required(AskKind::Text, "New branch")])
             .special(Special::Spinoff { checkout: true }),
@@ -955,6 +1029,33 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
         MagitCommand::StashIndex => stash_push(args, &["--staged"], "Stash the index"),
         MagitCommand::StashWorktree => {
             stash_push(args, &[], "Stash the worktree").special(Special::StashWorktree)
+        }
+        MagitCommand::StashKeepIndex => {
+            stash_push(args, &["--keep-index"], "Stash, keeping the index")
+        }
+        MagitCommand::StashPaths => {
+            let mut stash = with(["stash", "push"], args);
+            stash.extend(["--".to_string(), "{0}".to_string()]);
+            Plan::new(stash, "Stash some paths").asking([Ask::required(
+                AskKind::Path,
+                "Stash paths",
+            )
+            .words()])
+        }
+        MagitCommand::StashSnapshot => {
+            Plan::new(Vec::<String>::new(), "Snapshot the changes").special(Special::StashSnapshot)
+        }
+        MagitCommand::StashBranchHere => {
+            Plan::new(["checkout", "-b", "{0}"], "Branch here from a stash")
+                .then(["stash", "pop", "{1}"])
+                .asking([
+                    Ask::required(AskKind::Text, "New branch"),
+                    Ask::optional(AskKind::Stash, "From stash (empty for the latest)"),
+                ])
+        }
+        MagitCommand::StashFormatPatch => {
+            Plan::new(["format-patch", "-1", "{0}"], "Format a stash as a patch")
+                .asking([Ask::required(AskKind::Stash, "Stash").or("stash@{0}")])
         }
         MagitCommand::StashPop => {
             Plan::new(["stash", "pop"], "Pop a stash").asking([Ask::optional(
@@ -991,6 +1092,38 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
             "Merge without committing",
         )
         .asking([Ask::required(AskKind::Revision, "Merge")]),
+        // The message is written first and handed to git with `-F`.
+        MagitCommand::MergeEdit => {
+            let mut merge = with(["merge", "--no-ff"], args);
+            merge.push("{0}".into());
+            Plan::new(merge, "Merge, with a message")
+                .asking([Ask::required(AskKind::Revision, "Merge")])
+                .composing(Seed::Merge("{0}".into()))
+        }
+        // Merge a branch, then delete it: Magit's absorb.
+        MagitCommand::MergeAbsorb => {
+            let mut merge = with(["merge", "--no-edit"], args);
+            merge.push("{0}".into());
+            Plan::new(merge, "Merge a branch and delete it")
+                .then(["branch", "--delete", "{0}"])
+                .asking([Ask::required(AskKind::Branch, "Absorb branch")])
+        }
+        // The current branch merged into another, which is checked out,
+        // and deleted: Magit's dissolve.
+        MagitCommand::MergeInto => {
+            let mut merge = with(["merge", "--no-edit"], args);
+            merge.push("{1}".into());
+            Plan::new(
+                ["checkout", "{0}"],
+                "Merge this branch into another and delete it",
+            )
+            .then(merge)
+            .then(["branch", "--delete", "{1}"])
+            .asking([
+                Ask::required(AskKind::Branch, "Merge into"),
+                Ask::required(AskKind::Branch, "Branch").from(Source::CurrentBranch),
+            ])
+        }
         MagitCommand::MergeContinue => Plan::new(["merge", "--continue"], "Commit the merge"),
         MagitCommand::MergeAbort => Plan::new(
             ["merge", "--abort"],
@@ -1007,6 +1140,18 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
                 Ask::optional(AskKind::Revision, "At (empty for HEAD)"),
             ])
         }
+        MagitCommand::TagRelease => Plan::new(
+            ["tag", "--annotate", "--message=Release {0}", "{0}"],
+            "Tag a release",
+        )
+        .asking([Ask::required(AskKind::Text, "Release (e.g. v1.2.0)")]),
+        // Local tags the remote no longer has.
+        MagitCommand::TagPrune => Plan::new(
+            ["fetch", "--prune", "--prune-tags", "{0}"],
+            "Delete the local tags a remote does not have",
+        )
+        .asking([Ask::required(AskKind::Remote, "Against remote")])
+        .destructive(),
         MagitCommand::TagDelete => Plan::new(["tag", "--delete"], "Delete a tag")
             .asking([Ask::required(AskKind::Tag, "Delete tag")])
             .destructive(),
@@ -1068,12 +1213,34 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
             Plan::new(["branch", "--set-upstream-to={0}"], "Set the upstream")
                 .asking([Ask::required(AskKind::Branch, "Upstream (remote/branch)")])
         }
+        MagitCommand::RemotePrune => Plan::new(
+            ["remote", "prune", "{0}"],
+            "Delete the remote branches gone from a remote",
+        )
+        .asking([Ask::required(AskKind::Remote, "Prune remote")]),
+        MagitCommand::RemoteSetHead => Plan::new(
+            ["remote", "set-head", "{0}", "--auto"],
+            "Update the default branch",
+        )
+        .asking([Ask::required(AskKind::Remote, "Of remote")]),
+        MagitCommand::RemoteUnshallow => {
+            Plan::new(["fetch", "--unshallow", "{0}"], "Fetch the whole history")
+                .asking([Ask::required(AskKind::Remote, "From remote")])
+        }
         MagitCommand::RemoteFetch => Plan::new(with(["fetch"], args), "Fetch a remote")
             .asking([Ask::required(AskKind::Remote, "Fetch remote")]),
 
         // ── Bisect ──
+        MagitCommand::BisectRun => Plan::new(["bisect", "run", "{0}"], "Bisect with a script")
+            .asking([
+                Ask::required(AskKind::Text, "Command (exit 0 good, 1-127 bad, 125 skip)").words(),
+            ]),
+        MagitCommand::BisectMark => Plan::new(["bisect", "{0}"], "Mark with a term")
+            .asking([Ask::required(AskKind::Text, "Term (as given to start)")]),
         MagitCommand::BisectStart => {
-            Plan::new(["bisect", "start", "{0}", "{1}"], "Start bisecting").asking([
+            let mut start = with(["bisect", "start"], args);
+            start.extend(["{0}".to_string(), "{1}".to_string()]);
+            Plan::new(start, "Start bisecting").asking([
                 Ask::required(AskKind::Revision, "Bad revision"),
                 Ask::required(AskKind::Revision, "Good revision"),
             ])
@@ -1093,6 +1260,21 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
             .asking([Ask::required(AskKind::Path, "Remove worktree")])
             .destructive(),
         MagitCommand::WorktreePrune => Plan::new(["worktree", "prune"], "Prune worktrees"),
+        MagitCommand::WorktreeAddBranch => Plan::new(
+            ["worktree", "add", "-b", "{1}", "{0}", "{2}"],
+            "Add a worktree with a new branch",
+        )
+        .asking([
+            Ask::required(AskKind::Path, "New worktree at"),
+            Ask::required(AskKind::Text, "New branch"),
+            Ask::optional(AskKind::Revision, "Starting at (empty for HEAD)"),
+        ]),
+        MagitCommand::WorktreeMove => {
+            Plan::new(["worktree", "move", "{0}", "{1}"], "Move a worktree").asking([
+                Ask::required(AskKind::Path, "Move worktree"),
+                Ask::required(AskKind::Path, "To"),
+            ])
+        }
         MagitCommand::SubmoduleAdd => {
             Plan::new(["submodule", "add", "{0}", "{1}"], "Add a submodule").asking([
                 Ask::required(AskKind::Text, "Submodule URL"),
@@ -1103,6 +1285,29 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
             ["submodule", "update", "--init", "--recursive"],
             "Update submodules",
         ),
+        MagitCommand::SubmoduleRegister => Plan::new(
+            ["submodule", "init", "--", "{0}"],
+            "Register submodules in the config",
+        )
+        .asking([Ask::optional(AskKind::Path, "Submodule (empty for all)")]),
+        MagitCommand::SubmodulePopulate => Plan::new(
+            ["submodule", "update", "--init", "--", "{0}"],
+            "Clone and check out submodules",
+        )
+        .asking([Ask::optional(AskKind::Path, "Submodule (empty for all)")]),
+        MagitCommand::SubmoduleUnpopulate => Plan::new(
+            ["submodule", "deinit", "--force", "--", "{0}"],
+            "Empty a submodule's directory, keeping it registered",
+        )
+        .asking([Ask::required(AskKind::Path, "Submodule")])
+        .destructive(),
+        MagitCommand::SubmoduleRemove => Plan::new(
+            ["submodule", "deinit", "--force", "--", "{0}"],
+            "Remove a submodule",
+        )
+        .then(["rm", "--force", "--", "{0}"])
+        .asking([Ask::required(AskKind::Path, "Remove submodule")])
+        .destructive(),
         MagitCommand::SubmoduleSync => {
             Plan::new(["submodule", "sync", "--recursive"], "Sync submodule URLs")
         }
@@ -1125,6 +1330,27 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
                 "Commits (e.g. origin/main..)",
             )]),
 
+        // What changed since `{0}`, as a pull request message on stdout.
+        MagitCommand::RequestPull => Plan::new(
+            ["request-pull", "{0}", "{1}", "{2}"],
+            "Summarize changes for a pull request",
+        )
+        .asking([
+            Ask::required(AskKind::Revision, "Since (e.g. origin/main)"),
+            Ask::required(AskKind::Text, "Pull from URL"),
+            Ask::optional(AskKind::Revision, "Up to (empty for HEAD)"),
+        ]),
+        // Mails the patches: behind a confirmation, as it cannot be undone.
+        MagitCommand::SendEmail => Plan::new(
+            ["send-email", "--confirm=never", "--to={1}", "{0}"],
+            "Send patches by email",
+        )
+        .asking([
+            Ask::required(AskKind::Path, "Patches").words(),
+            Ask::required(AskKind::Text, "To"),
+        ])
+        .destructive(),
+
         // ── Subtrees ──
         MagitCommand::SubtreeAdd => subtree("add", "Add a subtree"),
         MagitCommand::SubtreePull => subtree("pull", "Pull into a subtree"),
@@ -1140,7 +1366,7 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
 
         // ── Notes ──
         MagitCommand::NoteEdit => Plan::new(
-            ["notes", "add", "--force", "--message={0}", "{1}"],
+            notes(args, &["add", "--force", "--message={0}", "{1}"]),
             "Set a note",
         )
         .asking([
@@ -1148,20 +1374,24 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
             Ask::optional(AskKind::Revision, "On commit (empty for HEAD)"),
         ]),
         MagitCommand::NoteAppend => Plan::new(
-            ["notes", "append", "--message={0}", "{1}"],
+            notes(args, &["append", "--message={0}", "{1}"]),
             "Append to a note",
         )
         .asking([
             Ask::required(AskKind::Message, "Append"),
             Ask::optional(AskKind::Revision, "On commit (empty for HEAD)"),
         ]),
-        MagitCommand::NoteRemove => Plan::new(["notes", "remove"], "Remove a note")
+        MagitCommand::NoteRemove => Plan::new(notes(args, &["remove"]), "Remove a note")
             .asking([Ask::optional(
                 AskKind::Revision,
                 "From commit (empty for HEAD)",
             )])
             .destructive(),
-        MagitCommand::NotePrune => Plan::new(["notes", "prune"], "Prune notes of lost commits"),
+        MagitCommand::NotePrune => {
+            Plan::new(notes(args, &["prune"]), "Prune notes of lost commits")
+        }
+        MagitCommand::NoteMerge => Plan::new(notes(args, &["merge", "{0}"]), "Merge notes")
+            .asking([Ask::required(AskKind::Text, "Merge in notes ref")]),
 
         // ── Sparse checkout ──
         // Cone mode, the one git recommends: whole directories, named as
@@ -1433,6 +1663,15 @@ pub fn typed_shell(line: &str) -> Result<Plan, String> {
 }
 
 /// Appends the menu's arguments to a fixed prefix.
+/// `git notes`, with the menu's `--ref` before the subcommand, where git
+/// wants it.
+fn notes(args: &[String], rest: &[&str]) -> Vec<String> {
+    let mut command = vec!["notes".to_string()];
+    command.extend(args.iter().cloned());
+    command.extend(rest.iter().map(|arg| arg.to_string()));
+    command
+}
+
 /// The current branch's push-remote, asked (and kept) only when none is
 /// configured.
 fn push_remote_ask() -> Ask {
@@ -1675,6 +1914,21 @@ pub fn run_plan(workdir: &Path, plan: &Plan) -> std::io::Result<GitOutput> {
         Some(Special::EditCommit) => {
             let commit = plan.args.first().cloned().unwrap_or_default();
             edit_commit(workdir, &commit, &mut log)?;
+        }
+        Some(Special::StashSnapshot) => {
+            let output = GitCommand::new(workdir, args_of(&["stash", "create"])).run()?;
+            let hash = output.stdout.trim().to_string();
+            if !output.success {
+                log.stderr.push_str(&output.stderr);
+                log.fail("git stash create failed");
+            } else if hash.is_empty() {
+                log.fail("nothing to stash");
+            } else if log.run(
+                workdir,
+                &args_of(&["stash", "store", "--message=Snapshot", &hash]),
+            )? {
+                log.note = Some("Snapshot stashed; the changes are still here".into());
+            }
         }
         Some(Special::InstantFixup) => {
             let target = plan.args.first().cloned().unwrap_or_default();
@@ -2162,6 +2416,9 @@ pub fn commit_template_for(working_directory: &Path, seed: &Seed, verbose: bool)
                     .and_then(|message| message.lines().next().map(str::to_string))
                     .unwrap_or_else(|| rev.clone())
             ));
+        }
+        Seed::Merge(rev) => {
+            template.push_str(&format!("Merge {rev}\n"));
         }
         Seed::Amend(rev) => {
             let message = message_of(working_directory, rev).unwrap_or_default();
