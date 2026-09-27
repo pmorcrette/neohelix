@@ -2167,35 +2167,35 @@ Menu by menu, what Magit offers that the fork's transients do not.
       (`T`, which today pushes every tag), `--follow-tags`, push options
       (`-o`).
 - [x] Branch: `--recurse-submodules`; shelve and unshelve a branch.
-- [ ] Merge: merge and edit the message (`e`), preview (`p`), absorb — merge
+- [x] Merge: merge and edit the message (`e`), preview (`p`), absorb — merge
       then delete the branch (`a`), dissolve — merge the current branch into
       another (`i`); `--strategy`, `--strategy-option`, `--gpg-sign`.
-- [ ] Rebase: a subset of commits (`s`); modify (`m`), reword (`w`) or remove
+- [x] Rebase: a subset of commits (`s`); modify (`m`), reword (`w`) or remove
       (`k`) a single commit; edit the todo list of a rebase under way
       (`--edit-todo`); `--rebase-merges`, `--update-refs`,
       `--committer-date-is-author-date`, `--ignore-date`, `-X`, `--gpg-sign`.
-- [ ] Rebase todo buffer: insert `exec` and `break` lines; `label`, `reset`,
+- [x] Rebase todo buffer: insert `exec` and `break` lines; `label`, `reset`,
       `merge` and `update-ref`, which `--rebase-merges` and `--update-refs`
       produce.
-- [ ] Cherry-pick: harvest (`h`), donate (`d`), squash (`m`), spin out and
+- [x] Cherry-pick: harvest (`h`), donate (`d`), squash (`m`), spin out and
       spin off from commits (`n`, `s`); `--mainline`, `--edit`, `--signoff`,
       `--strategy`.
-- [ ] Revert: `--mainline`, `--edit` / `--no-edit`, `--signoff`.
+- [x] Revert: `--mainline`, `--edit` / `--no-edit`, `--signoff`.
 - [x] Reset: the index only (`i`), and a file from a revision (`f`).
-- [ ] Stash: keeping the index (`x`); snapshots that leave the changes in
+- [x] Stash: keeping the index (`x`); snapshots that leave the changes in
       place (`Z`, `I`, `W`); only some paths (`P`); a list buffer (`l`);
       create a branch here (`B`); turn a stash into a patch (`f`).
-- [ ] Tag: annotated and signed tags (`-a`, `-s`, `-u`); prune local and
+- [x] Tag: annotated and signed tags (`-a`, `-s`, `-u`); prune local and
       remote tags (`p`); create a release (`r`).
-- [ ] Remote: prune stale branches (`p`) and stale refspecs (`P`); update the
+- [x] Remote: prune stale branches (`p`) and stale refspecs (`P`); update the
       default branch (`b`); unshallow (`z`).
-- [ ] Worktree: move one; check out an existing branch as opposed to creating
+- [x] Worktree: move one; check out an existing branch as opposed to creating
       one; visit a worktree.
-- [ ] Submodule: register (`init`), populate, unpopulate (`deinit`), remove;
+- [x] Submodule: register (`init`), populate, unpopulate (`deinit`), remove;
       a list buffer.
 - [x] Bisect: run a script (`git bisect run`); custom terms
       (`--term-old` / `--term-new`).
-- [ ] Patches: `git request-pull`, `git send-email`, and save the diff on
+- [x] Patches: `git request-pull`, `git send-email`, and save the diff on
       screen as a patch file.
 - [x] Notes: choose the notes ref (`--ref`); merge notes.
 - [ ] Diff: dwim (`d d`); between two paths (`d p`); a stash (`d t`);
@@ -2203,26 +2203,35 @@ Menu by menu, what Magit offers that the fork's transients do not.
       (`-R`), `--no-ext-diff`; switch a range between `..` and `...`; flip the
       two revisions.
 
-*In progress.* Done so far, beyond the lines ticked: merge with an edited
-message (`e`, the message written first and given to `git merge -F`), absorb
-(`a`) and dissolve (`i`), with `--strategy`, `--strategy-option` and
-`--gpg-sign`; the rebase arguments (`-r --rebase-merges`, `-u --update-refs`,
-`-c`, `-D --ignore-date`, `-X`, `-G`); cherry-pick's and revert's
-`--mainline` and `--signoff`, and cherry-pick's `--strategy`; the stash's
-`x` (keeping the index), `P` (some paths), `Z` (a snapshot that leaves the
-changes: `git stash create` then `store`), `B` (branch here) and `f` (a
-stash as a patch); tags annotated, signed and signed as (`-a`, `-s`, `-u`),
-a release (`r`) and pruning the local tags a remote lacks (`P`); remote
-`p` (prune stale branches), `b` (update the default branch) and `z`
-(unshallow); worktree `c` (with a new branch) and `m` (move); submodule
-`r`, `p`, `d` and `k`; `git request-pull` and `git send-email` (behind a
-confirmation). Branch shelving keeps a branch as `refs/shelved/<name>`.
-Left: merge preview, the single-commit rebase actions and `--edit-todo`, the
-todo buffer's `exec` / `break` and merge commands, harvest, donate and the
-cherry spins, `--edit` for cherry-pick and revert (which need an editor
-during the command), index-only and worktree-only snapshots, the stash and
-submodule list buffers, pruning stale refspecs, visiting a worktree, saving
-a diff as a patch, and the diff menu's additions.
+*In progress.* Every menu but the diff's is done. Merge: an edited message
+(`e`, written first and given to `git merge -F`), a preview (`p`, the
+branch's changes since the merge base), absorb (`a`) and dissolve (`i`),
+with `--strategy`, `--strategy-option` and `--gpg-sign`. Rebase: a subset
+(`S`, `--onto`), and one commit modified (`m`), reworded (`w`, an `amend!`
+commit folded in at once) or removed (`k`, its `pick` made `drop`); `E`
+opens the todo list of a rebase under way; the arguments `-r`, `-u`, `-c`,
+`-D`, `-X`, `-G`. The todo buffer takes `:rebase-todo exec <command>` and
+`:rebase-todo break`; git's own `label`, `reset`, `merge` and `update-ref`
+lines go through unchanged. Cherry-pick: harvest (`h`, `A..B` taken here
+and B reset to A), donate (`d`), squash (`m`, uncommitted), spin out and
+off (`n`, `S`); moving commits is refused for pushed ones and across a
+merge. `--edit` on cherry-pick and revert writes the message first, then
+takes the changes with `--no-commit` and commits them with it. Stash: `x`,
+`P`, `Z`, `I` and `W` (snapshots of everything, the index, the worktree,
+the changes left in place), `B`, `f`, and a list (`l`, the stash reflog).
+Tags annotated, signed and signed as, a release (`r`), and pruning (`P`)
+the local tags a remote lacks; deleting the remote's tags missing here is
+left to an explicit push, as a list to confirm before it runs does not fit
+the menus' single confirmation yet. Remote: prune stale branches (`p`) and
+the one-branch fetch refspecs the remote no longer has (`P`), update the
+default branch (`b`), unshallow (`z`). Worktree: with a new branch (`c`),
+move (`m`), visit (`g`, its status). Submodule: `r`, `p`, `d`, `k`, and `l`
+(the status's submodule section). `git request-pull`, `git send-email`
+(behind a confirmation) and `:magit-save-patch <file>`, which writes the
+diff on screen, or the status's section at the cursor. `:` now opens the
+command line from a Magit view, and a buffer written by `:wq` or `:x` (a
+message, a todo list) acts as one written by `:w`. Left: the diff menu's
+additions.
 
 ### Task 2.28: The Status, Log and Blame Views
 

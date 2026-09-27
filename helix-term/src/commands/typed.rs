@@ -2622,6 +2622,27 @@ fn magit_message_diff(
     Ok(())
 }
 
+/// `:magit-save-patch <file>`: the diff shown, as a patch file.
+fn magit_save_patch(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let file = args[0].to_string();
+    cx.jobs.callback(async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                crate::magit::save_patch(compositor, editor, &file);
+            },
+        ));
+        Ok(call)
+    });
+    Ok(())
+}
+
 /// `:magit-find-file`: a file as it was at a revision.
 fn magit_find_file(
     cx: &mut compositor::Context,
@@ -2727,7 +2748,8 @@ fn rebase_todo(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> 
     if event != PromptEvent::Validate {
         return Ok(());
     }
-    crate::magit::rebase_todo(cx.editor, &args[0]).map_err(|err| anyhow::anyhow!(err))
+    let action = args.join(" ");
+    crate::magit::rebase_todo(cx.editor, &action).map_err(|err| anyhow::anyhow!(err))
 }
 
 fn roam_dailies_capture(
@@ -4572,6 +4594,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         },
     },
     TypableCommand {
+        name: "magit-save-patch",
+        aliases: &[],
+        doc: "Save the diff shown (a commit, a range, or the status section at the cursor) as a patch file, relative to the repository.",
+        fun: magit_save_patch,
+        completer: CommandCompleter::positional(&[completers::filename]),
+        signature: Signature {
+            positionals: (1, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
         name: "magit-find-file",
         aliases: &[],
         doc: "Visit a file as it was at a revision, read-only.",
@@ -4640,11 +4673,11 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "rebase-todo",
         aliases: &[],
-        doc: "In a rebase todo-list, set the selected lines to pick, reword, edit, squash, fixup or drop, or move them up or down.",
+        doc: "In a rebase todo-list, set the selected lines to pick, reword, edit, squash, fixup or drop, move them up or down, or add `exec <command>` or `break` below them.",
         fun: rebase_todo,
         completer: CommandCompleter::none(),
         signature: Signature {
-            positionals: (1, Some(1)),
+            positionals: (1, None),
             ..Signature::DEFAULT
         },
     },

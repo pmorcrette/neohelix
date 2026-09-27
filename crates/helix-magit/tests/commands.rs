@@ -980,3 +980,194 @@ fn remote_prune_drops_the_branches_gone_from_the_remote() {
     assert!(output.success, "{}", output.summary());
     assert!(git(&work, &["rev-parse", "--verify", "origin/gone"]).is_none());
 }
+
+#[test]
+fn a_commit_is_removed_and_a_subset_rebased_elsewhere() {
+    let (_dir, work) = fixture_or_skip!();
+    three_commits(&work);
+    let output = run_answered(&work, MagitCommand::RebaseRemove, &[], &["HEAD~1"]);
+    assert!(output.success, "{}", output.summary());
+    assert_eq!(subjects(&work), "Add c\nAdd a\n");
+    assert!(!work.join("b.txt").exists());
+
+    // A branch beside main; `c` alone moves onto it, `a` left behind.
+    git(&work, &["branch", "target", "origin/main"]).unwrap();
+    git(&work, &["checkout", "-q", "target"]).unwrap();
+    fs::write(work.join("t.txt"), "t\n").unwrap();
+    git(&work, &["add", "t.txt"]).unwrap();
+    git(&work, &["commit", "-m", "Add t"]).unwrap();
+    git(&work, &["checkout", "-q", "main"]).unwrap();
+    let output = run_answered(&work, MagitCommand::RebaseSubset, &[], &["target", "HEAD"]);
+    assert!(output.success, "{}", output.summary());
+    assert_eq!(
+        git(&work, &["log", "--format=%s", "origin/main..HEAD"]).unwrap(),
+        "Add c\nAdd t\n"
+    );
+}
+
+#[test]
+fn harvest_takes_commits_from_a_branch_and_donate_gives_them() {
+    let (_dir, work) = fixture_or_skip!();
+    git(&work, &["checkout", "-q", "-b", "other"]).unwrap();
+    for name in ["o1.txt", "o2.txt"] {
+        fs::write(work.join(name), "o\n").unwrap();
+        git(&work, &["add", name]).unwrap();
+        git(&work, &["commit", "-m", name]).unwrap();
+    }
+    git(&work, &["checkout", "-q", "main"]).unwrap();
+
+    let output = run_answered(&work, MagitCommand::CherryHarvest, &[], &["other~2..other"]);
+    assert!(output.success, "{}", output.summary());
+    assert_eq!(subjects(&work), "o2.txt\no1.txt\n");
+    assert_eq!(
+        git(&work, &["rev-parse", "other"]),
+        git(&work, &["rev-parse", "origin/main"]),
+        "the commits left the branch they came from"
+    );
+
+    // Donate: the last one goes back to `other`.
+    let output = run_answered(&work, MagitCommand::CherryDonate, &[], &["HEAD", "other"]);
+    assert!(output.success, "{}", output.summary());
+    assert_eq!(
+        git(&work, &["symbolic-ref", "--short", "HEAD"]).unwrap(),
+        "main\n"
+    );
+    assert_eq!(subjects(&work), "o1.txt\n");
+    assert_eq!(
+        git(&work, &["log", "--format=%s", "origin/main..other"]).unwrap(),
+        "o2.txt\n"
+    );
+
+    // Pushed commits are not moved.
+    let output = run_answered(
+        &work,
+        MagitCommand::CherryDonate,
+        &[],
+        &["origin/main", "other"],
+    );
+    assert!(!output.success);
+    assert!(
+        output.summary().contains("already pushed"),
+        "{}",
+        output.summary()
+    );
+}
+
+#[test]
+fn spinout_and_spinoff_move_commits_to_a_new_branch() {
+    let (_dir, work) = fixture_or_skip!();
+    three_commits(&work);
+    let output = run_answered(&work, MagitCommand::CherrySpinout, &[], &["spun", "HEAD~1"]);
+    assert!(output.success, "{}", output.summary());
+    assert_eq!(subjects(&work), "Add a\n");
+    assert_eq!(
+        git(&work, &["symbolic-ref", "--short", "HEAD"]).unwrap(),
+        "main\n"
+    );
+    assert_eq!(
+        git(&work, &["log", "--format=%s", "origin/main..spun"]).unwrap(),
+        "Add c\nAdd b\nAdd a\n"
+    );
+
+    let output = run_answered(&work, MagitCommand::CherrySpinoff, &[], &["off", "HEAD"]);
+    assert!(output.success, "{}", output.summary());
+    assert_eq!(
+        git(&work, &["symbolic-ref", "--short", "HEAD"]).unwrap(),
+        "off\n"
+    );
+    assert_eq!(
+        git(&work, &["log", "--format=%s", "origin/main..main"]).unwrap(),
+        ""
+    );
+}
+
+#[test]
+fn cherry_pick_and_revert_take_the_message_written_for_them() {
+    let (_dir, work) = fixture_or_skip!();
+    branch_on(&work, "feature", "feature.txt");
+    for (command, message) in [
+        (MagitCommand::CherryPick, "Take the feature\n"),
+        (MagitCommand::Revert, "Undo the feature\n"),
+    ] {
+        let plan = resolve(command, &["--edit".to_string()])
+            .unwrap()
+            .answered(&[if command == MagitCommand::CherryPick {
+                "feature".into()
+            } else {
+                "HEAD".into()
+            }]);
+        assert!(
+            matches!(plan.requirement, Requirement::CommitMessage { .. }),
+            "{command:?} composes a message first"
+        );
+        for prelude in &plan.prelude {
+            let output = GitCommand::new(&work, prelude.clone()).run().unwrap();
+            assert!(output.success, "{}", output.summary());
+        }
+        let output = commit_with(&work, &plan, message);
+        assert!(output.success, "{}", output.summary());
+        assert_eq!(head_message(&work).unwrap(), message.trim());
+    }
+    assert!(!work.join("feature.txt").exists());
+    assert_eq!(subjects(&work), "Undo the feature\nTake the feature\n");
+}
+
+#[test]
+fn snapshots_of_the_index_or_the_worktree_keep_the_changes() {
+    let (_dir, work) = fixture_or_skip!();
+    fs::write(work.join("g.txt"), "g\n").unwrap();
+    git(&work, &["add", "g.txt"]).unwrap();
+    git(&work, &["commit", "-m", "Add g"]).unwrap();
+    fs::write(work.join("f.txt"), "staged\n").unwrap();
+    git(&work, &["add", "f.txt"]).unwrap();
+    fs::write(work.join("g.txt"), "unstaged\n").unwrap();
+    let status = git(&work, &["status", "--porcelain"]).unwrap();
+
+    let output = run_answered(&work, MagitCommand::StashSnapshotIndex, &[], &[]);
+    assert!(output.success, "{}", output.summary());
+    assert_eq!(git(&work, &["status", "--porcelain"]).unwrap(), status);
+    assert_eq!(
+        git(&work, &["stash", "show", "--name-only", "stash@{0}"]).unwrap(),
+        "f.txt\n"
+    );
+
+    let output = run_answered(&work, MagitCommand::StashSnapshotWorktree, &[], &[]);
+    assert!(output.success, "{}", output.summary());
+    assert_eq!(git(&work, &["status", "--porcelain"]).unwrap(), status);
+    assert_eq!(
+        git(&work, &["stash", "show", "--name-only", "stash@{0}"]).unwrap(),
+        "g.txt\n"
+    );
+    assert_eq!(git(&work, &["stash", "list"]).unwrap().lines().count(), 2);
+}
+
+#[test]
+fn stale_fetch_refspecs_are_pruned_and_wildcards_kept() {
+    let (_dir, work) = fixture_or_skip!();
+    git(
+        &work,
+        &[
+            "config",
+            "--add",
+            "remote.origin.fetch",
+            "+refs/heads/gone:refs/remotes/origin/gone",
+        ],
+    )
+    .unwrap();
+    git(
+        &work,
+        &[
+            "config",
+            "--add",
+            "remote.origin.fetch",
+            "+refs/heads/main:refs/remotes/origin/main",
+        ],
+    )
+    .unwrap();
+    let output = run_answered(&work, MagitCommand::RemotePruneRefspecs, &[], &["origin"]);
+    assert!(output.success, "{}", output.summary());
+    assert_eq!(
+        git(&work, &["config", "--get-all", "remote.origin.fetch"]).unwrap(),
+        "+refs/heads/*:refs/remotes/origin/*\n+refs/heads/main:refs/remotes/origin/main\n"
+    );
+}

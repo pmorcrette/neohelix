@@ -4,6 +4,7 @@
 
 use helix_view::dock::Occupant;
 use helix_view::input::{KeyCode, MouseEventKind};
+use helix_view::keyboard::KeyModifiers;
 use helix_view::Editor;
 
 use crate::compositor::{Compositor, Event, EventResult};
@@ -88,6 +89,17 @@ pub fn route(
         Event::Key(key) if escape_leaves && key.code == KeyCode::Esc => {
             editor.dock.focus(None);
             Some(EventResult::Consumed(None))
+        }
+        // The command line stays at hand from Magit's views, as in Emacs
+        // `M-x` does from any buffer; the terminal wants its `:` itself.
+        Event::Key(key)
+            if id == MAGIT
+                && key.code == KeyCode::Char(':')
+                && !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            Some(EventResult::Ignored(None))
         }
         _ => None,
     }

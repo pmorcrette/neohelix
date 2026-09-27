@@ -237,6 +237,11 @@ pub fn rebase_todo(editor: &mut Editor, action: &str) -> Result<(), String> {
                 (first, last + 1, lines, shift)
             }
         }
+        // A line of its own below the selection: `exec <command>` or `break`.
+        action if action == "break" || action.starts_with("exec ") => {
+            let below = line_text(last);
+            (last, last, vec![below, action.to_string()], 0)
+        }
         action => {
             let mut changed = false;
             let lines = (first..=last)
@@ -1077,6 +1082,7 @@ fn compose(editor: &mut Editor, mut plan: Plan, workdir: PathBuf, seed: Seed) {
         working_directory: workdir,
         fold_into: plan.fold_into,
         checked: false,
+        prelude: plan.prelude,
     });
     editor.set_status("Write the message, then `:w` to commit (`:q!` aborts)");
 }
@@ -1151,6 +1157,22 @@ fn finish_commit(pending: PendingCommit) {
                 editor.set_error(format!("could not write the commit message: {err}"));
             });
             return;
+        }
+
+        // The cherry-pick or revert the message is for, taken uncommitted.
+        for prelude in &pending.prelude {
+            let line = format!("git {}", prelude.join(" "));
+            match GitCommand::new(&pending.working_directory, prelude.clone()).run() {
+                Ok(output) if output.success => {}
+                outcome => {
+                    remember_message(&body);
+                    crate::job::dispatch_blocking(move |editor, compositor| match outcome {
+                        Ok(output) => report(editor, compositor, &line, output),
+                        Err(err) => editor.set_error(format!("{line}: {err}")),
+                    });
+                    return;
+                }
+            }
         }
 
         let mut args = pending.args;
@@ -2369,4 +2391,129 @@ pub fn trace_lines(
     )
     .with_line(format!("{},{}", line + 1, line + 1), editor);
     compositor.push(Box::new(prompt));
+}
+
+/// The menus' actions that open a view or a buffer rather than run git:
+/// the todo list of a stopped rebase, a merge's preview, the stash list,
+/// another worktree, the submodules.
+pub fn open_list(
+    compositor: &mut Compositor,
+    editor: &mut Editor,
+    workdir: PathBuf,
+    command: helix_magit::transient::MagitCommand,
+) {
+    use helix_magit::transient::{JumpTarget, MagitCommand};
+    match command {
+        MagitCommand::RebaseEditTodo => {
+            let Some(todo) = helix_magit::status::git_dir(&workdir)
+                .map(|dir| dir.join("rebase-merge").join("git-rebase-todo"))
+                .filter(|todo| todo.exists())
+            else {
+                return editor.set_error("No interactive rebase is stopped");
+            };
+            step_aside(compositor, editor);
+            match editor.open(&todo, Action::HorizontalSplit) {
+                Ok(_) => editor
+                    .set_status("The commits still to do: edit, :w, then continue the rebase (C)"),
+                Err(err) => editor.set_error(err.to_string()),
+            }
+        }
+        // What the merge would bring: from the merge base to the branch.
+        MagitCommand::MergePreview => {
+            let names = helix_magit::refs::names(&workdir, AskKind::Revision);
+            choose(
+                compositor,
+                "Preview merging: ".to_string(),
+                names,
+                false,
+                move |editor, compositor, rev| {
+                    let base = GitCommand::new(
+                        &workdir,
+                        vec!["merge-base".into(), "HEAD".into(), rev.clone()],
+                    )
+                    .run();
+                    match base {
+                        Ok(output) if output.success => compositor.push(Box::new(DiffView::range(
+                            &workdir,
+                            output.stdout.trim().to_string(),
+                            Some(rev),
+                        ))),
+                        Ok(output) => editor.set_error(output.summary()),
+                        Err(err) => editor.set_error(err.to_string()),
+                    }
+                },
+            );
+        }
+        MagitCommand::StashList => {
+            let filter = helix_magit::log::LogFilter {
+                range: Some("refs/stash".into()),
+                reflog: true,
+                ..helix_magit::log::LogFilter::default()
+            };
+            compositor.push(Box::new(crate::ui::log_view::LogView::new(workdir, filter)));
+        }
+        MagitCommand::WorktreeVisit => {
+            let trees = helix_magit::status::read(&workdir).worktrees;
+            if trees.is_empty() {
+                return editor.set_error("No other worktree");
+            }
+            let paths: Vec<String> = trees
+                .iter()
+                .map(|tree| tree.path.display().to_string())
+                .collect();
+            choose(
+                compositor,
+                "Visit worktree: ".to_string(),
+                paths,
+                true,
+                |editor, compositor, path| match DiffView::new(std::path::Path::new(&path)) {
+                    Ok(view) => {
+                        compositor.remove(DiffView::ID);
+                        compositor.push(Box::new(view));
+                    }
+                    Err(err) => editor.set_error(err.to_string()),
+                },
+            );
+        }
+        MagitCommand::SubmoduleList => {
+            let shown = match compositor.find_id::<DiffView>(DiffView::ID) {
+                Some(view) => {
+                    view.refresh(editor);
+                    view.jump_to(JumpTarget::Submodules)
+                }
+                None => match DiffView::new(&workdir) {
+                    Ok(mut view) => {
+                        let shown = view.jump_to(JumpTarget::Submodules);
+                        compositor.push(Box::new(view));
+                        shown
+                    }
+                    Err(err) => return editor.set_error(err.to_string()),
+                },
+            };
+            if !shown {
+                editor.set_error("This repository has no submodules");
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `:magit-save-patch <file>`: writes the diff shown — a commit, a range,
+/// or the status's section at the cursor — as a patch file.
+pub fn save_patch(compositor: &mut Compositor, editor: &mut Editor, file: &str) {
+    let id = [DiffView::COMMIT_ID, DiffView::RANGE_ID, DiffView::ID]
+        .into_iter()
+        .find(|id| compositor.find_id::<DiffView>(id).is_some());
+    let Some(view) = id.and_then(|id| compositor.find_id::<DiffView>(id)) else {
+        return editor.set_error("No diff is shown");
+    };
+    let (workdir, patch) = view.patch_text();
+    if patch.is_empty() {
+        return editor.set_error("Nothing to save: move to a section with changes");
+    }
+    let path = workdir.join(helix_stdx::path::expand_tilde(std::path::Path::new(file)));
+    match std::fs::write(&path, patch) {
+        Ok(()) => editor.set_status(format!("Saved the diff to {}", path.display())),
+        Err(err) => editor.set_error(format!("could not write {}: {err}", path.display())),
+    }
 }

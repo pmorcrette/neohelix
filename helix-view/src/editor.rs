@@ -564,6 +564,9 @@ pub struct PendingCommit {
     /// Whether the message passed the style checks, or the user said to
     /// commit it anyway.
     pub checked: bool,
+    /// Git commands run before the commit, once the message is written: a
+    /// cherry-pick or revert taken uncommitted.
+    pub prelude: Vec<Vec<String>>,
 }
 
 /// An interactive rebase whose todo-list the user is editing.
@@ -1602,6 +1605,10 @@ pub struct Editor {
     pub saves: HashMap<DocumentId, UnboundedSender<Once<DocumentSavedEventFuture>>>,
     pub save_queue: SelectAll<Flatten<UnboundedReceiverStream<Once<DocumentSavedEventFuture>>>>,
     pub write_count: usize,
+    /// Saves [`Editor::flush_writes`] waited for itself, as `:wq` does:
+    /// they never reach the application's save handling, which takes them
+    /// from here instead once the command is done.
+    pub flushed_saves: Vec<crate::document::DocumentSavedEvent>,
 
     pub count: Option<std::num::NonZeroUsize>,
     pub selected_register: Option<char>,
@@ -1815,6 +1822,7 @@ impl Editor {
             saves: HashMap::new(),
             save_queue: SelectAll::new(),
             write_count: 0,
+            flushed_saves: Vec::new(),
             count: None,
             selected_register: None,
             macro_recording: None,
@@ -2928,6 +2936,7 @@ impl Editor {
 
                 let doc = doc_mut!(self, &save_event.doc_id);
                 doc.set_last_saved_revision(save_event.revision, save_event.save_time);
+                self.flushed_saves.push(save_event);
             }
         }
 

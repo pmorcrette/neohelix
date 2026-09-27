@@ -164,7 +164,8 @@ pub fn is_empty(todo: &str) -> bool {
 pub const HELP: &str = "\
 # Edit the list above, then write the buffer to start the rebase.
 # `:rebase-todo <action>` sets the action of the selected lines (pick,
-# reword, edit, squash, fixup, drop), `:rebase-todo up` / `down` moves them.
+# reword, edit, squash, fixup, drop), `:rebase-todo up` / `down` moves them,
+# `:rebase-todo exec <command>` and `:rebase-todo break` add a line below.
 # `reword` runs as `edit`: amend the message with the commit menu when the
 # rebase stops, then continue it. Deleting every line cancels the rebase,
 # as quitting without writing does.

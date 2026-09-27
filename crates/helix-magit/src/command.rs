@@ -53,6 +53,10 @@ pub enum Seed {
     Amend(String),
     /// The message of a merge of this revision, as git would write it.
     Merge(String),
+    /// A revision's own message, to edit: a cherry-pick with `--edit`.
+    Message(String),
+    /// A revert's message, as git would write it: a revert with `--edit`.
+    Revert(String),
 }
 
 impl Seed {
@@ -67,6 +71,8 @@ impl Seed {
             Seed::Squash(rev) => Seed::Squash(fill(rev)),
             Seed::Amend(rev) => Seed::Amend(fill(rev)),
             Seed::Merge(rev) => Seed::Merge(fill(rev)),
+            Seed::Message(rev) => Seed::Message(fill(rev)),
+            Seed::Revert(rev) => Seed::Revert(fill(rev)),
             other => other.clone(),
         }
     }
@@ -295,6 +301,22 @@ pub enum Special {
     /// A stash of the changes that leaves them where they are: `git stash
     /// create`, then `git stash store`.
     StashSnapshot,
+    /// A snapshot of the index alone (`index`) or the working tree alone:
+    /// stashed, then applied back.
+    SnapshotPart { index: bool },
+    /// An interactive rebase that drops the commit `args[0]`.
+    DropCommit,
+    /// The commits `args[0]` (`A..B`, B a branch) taken here, then removed
+    /// from B.
+    Harvest,
+    /// The commits from `args[0]` to HEAD moved onto the branch `args[1]`.
+    Donate,
+    /// The commits from `args[1]` to HEAD moved to a new branch `args[0]`,
+    /// checked out (`checkout`) or not.
+    SpinFrom { checkout: bool },
+    /// The fetch refspecs of the remote `args[0]` naming branches it no
+    /// longer has, removed from its config.
+    PruneRefspecs,
     /// A shell command line, `args[0]`, run by `sh -c` in the repository.
     Shell,
 }
@@ -322,6 +344,9 @@ pub struct Plan {
     /// A revision to fold the new commit into, with an autosquash rebase,
     /// once it is made: the instant fixup and squash.
     pub fold_into: Option<String>,
+    /// Git commands run once the message is written, before the commit:
+    /// the cherry-pick or revert whose changes it records.
+    pub prelude: Vec<Vec<String>>,
 }
 
 impl Plan {
@@ -335,6 +360,7 @@ impl Plan {
             special: None,
             compose: None,
             fold_into: None,
+            prelude: Vec::new(),
         }
     }
 
@@ -392,10 +418,17 @@ impl Plan {
             .iter()
             .chain(self.then.iter().flatten())
             .chain(&self.fold_into)
+            .chain(self.prelude.iter().flatten())
             .any(|arg| arg.contains("{0}"))
             || matches!(
                 &self.compose,
-                Some(Seed::Squash(rev) | Seed::Amend(rev) | Seed::Merge(rev)) if rev.contains("{0}")
+                Some(
+                    Seed::Squash(rev)
+                        | Seed::Amend(rev)
+                        | Seed::Merge(rev)
+                        | Seed::Message(rev)
+                        | Seed::Revert(rev)
+                ) if rev.contains("{0}")
             );
         let words: Vec<bool> = match &self.requirement {
             Requirement::Ask(asks) => asks.iter().map(|ask| ask.words).collect(),
@@ -456,6 +489,7 @@ impl Plan {
             };
         }
         plan.fold_into = self.fold_into.as_deref().map(fill_one);
+        plan.prelude = self.prelude.iter().map(|args| fill(args)).collect();
         plan.args = fill(&self.args);
         plan.then = self.then.iter().map(|args| fill(args)).collect();
         if !placeholders {
@@ -563,6 +597,11 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
         | MagitCommand::FileFind
         | MagitCommand::FileRename
         | MagitCommand::FileTrace
+        | MagitCommand::RebaseEditTodo
+        | MagitCommand::MergePreview
+        | MagitCommand::StashList
+        | MagitCommand::WorktreeVisit
+        | MagitCommand::SubmoduleList
         | MagitCommand::InsertRevision
         | MagitCommand::Mergetool
         | MagitCommand::RunGit
@@ -1163,6 +1202,14 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
         }
 
         // ── Cherry-pick and revert ──
+        // With `--edit`, the changes are taken uncommitted once the message
+        // is written, then committed with it.
+        MagitCommand::CherryPick if args.iter().any(|arg| arg == "--edit") => edited(
+            args,
+            "cherry-pick",
+            "Cherry-pick, editing the message",
+            Seed::Message("{0}".into()),
+        ),
         MagitCommand::CherryPick => Plan::new(with(["cherry-pick"], args), "Cherry-pick")
             .asking([Ask::required(AskKind::Revision, "Cherry-pick")]),
         MagitCommand::CherryApply => Plan::new(
@@ -1179,6 +1226,12 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
         MagitCommand::CherryPickAbort => {
             Plan::new(["cherry-pick", "--abort"], "Abort the cherry-pick").destructive()
         }
+        MagitCommand::Revert if args.iter().any(|arg| arg == "--edit") => edited(
+            args,
+            "revert",
+            "Revert, editing the message",
+            Seed::Revert("{0}".into()),
+        ),
         MagitCommand::Revert => Plan::new(with(["revert", "--no-edit"], args), "Revert")
             .asking([Ask::required(AskKind::Revision, "Revert")]),
         MagitCommand::RevertNoCommit => Plan::new(
@@ -1330,6 +1383,72 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
                 "Commits (e.g. origin/main..)",
             )]),
 
+        MagitCommand::RebaseSubset => {
+            let mut rebase = with(["rebase"], &without_interactive(args));
+            rebase.extend(["--onto", "{0}", "{1}^"].map(str::to_string));
+            Plan::new(rebase, "Rebase a subset of commits")
+                .asking([
+                    Ask::required(AskKind::Revision, "Onto"),
+                    Ask::required(AskKind::Revision, "From commit (the oldest to move)"),
+                ])
+                .destructive()
+        }
+        MagitCommand::RebaseModify => Plan::new(["{0}"], "Stop at a commit to change it")
+            .asking([Ask::required(AskKind::Revision, "Modify commit")])
+            .special(Special::EditCommit)
+            .destructive(),
+        // An `amend!` commit of the message alone, folded in at once.
+        MagitCommand::RebaseReword => {
+            Plan::new(["commit", "--only", "--allow-empty"], "Reword a commit")
+                .asking([fold_target("Reword commit")])
+                .composing(Seed::Amend("{0}".into()))
+                .folding_into("{0}")
+        }
+        MagitCommand::RebaseRemove => Plan::new(["{0}"], "Remove a commit")
+            .asking([Ask::required(AskKind::Revision, "Remove commit")])
+            .special(Special::DropCommit)
+            .destructive(),
+        MagitCommand::CherryHarvest => Plan::new(["{0}"], "Take commits from a branch")
+            .asking([Ask::required(
+                AskKind::Revision,
+                "Commits (e.g. other~2..other, ending at a branch)",
+            )])
+            .special(Special::Harvest)
+            .destructive(),
+        MagitCommand::CherryDonate => Plan::new(["{0}", "{1}"], "Move commits to a branch")
+            .asking([
+                Ask::required(AskKind::Revision, "From commit (the oldest to move)"),
+                Ask::required(AskKind::Branch, "To branch"),
+            ])
+            .special(Special::Donate)
+            .destructive(),
+        MagitCommand::CherrySquash => Plan::new(
+            with(["cherry-pick", "--no-commit"], args),
+            "Apply commits as one change, uncommitted",
+        )
+        .asking([Ask::required(
+            AskKind::Revision,
+            "Commits (e.g. other~3..other)",
+        )]),
+        MagitCommand::CherrySpinout | MagitCommand::CherrySpinoff => {
+            let checkout = command == MagitCommand::CherrySpinoff;
+            Plan::new(["{0}", "{1}"], "Move commits to a new branch")
+                .asking([
+                    Ask::required(AskKind::Text, "New branch"),
+                    Ask::required(AskKind::Revision, "From commit (the oldest to move)"),
+                ])
+                .special(Special::SpinFrom { checkout })
+                .destructive()
+        }
+        MagitCommand::StashSnapshotIndex => Plan::new(Vec::<String>::new(), "Snapshot the index")
+            .special(Special::SnapshotPart { index: true }),
+        MagitCommand::StashSnapshotWorktree => {
+            Plan::new(Vec::<String>::new(), "Snapshot the working tree")
+                .special(Special::SnapshotPart { index: false })
+        }
+        MagitCommand::RemotePruneRefspecs => Plan::new(["{0}"], "Prune stale fetch refspecs")
+            .asking([Ask::required(AskKind::Remote, "Of remote")])
+            .special(Special::PruneRefspecs),
         // What changed since `{0}`, as a pull request message on stdout.
         MagitCommand::RequestPull => Plan::new(
             ["request-pull", "{0}", "{1}", "{2}"],
@@ -1663,6 +1782,27 @@ pub fn typed_shell(line: &str) -> Result<Plan, String> {
 }
 
 /// Appends the menu's arguments to a fixed prefix.
+/// A cherry-pick or revert whose message is written first: its changes
+/// taken uncommitted (`prelude`), then committed with the message. The
+/// arguments git commit knows go to the commit.
+fn edited(args: &[String], verb: &str, summary: &str, seed: Seed) -> Plan {
+    let mut take = vec![verb.to_string(), "--no-commit".to_string()];
+    let mut commit = vec!["commit".to_string()];
+    for arg in args.iter().filter(|arg| *arg != "--edit") {
+        if arg == "--signoff" {
+            commit.push(arg.clone());
+        } else {
+            take.push(arg.clone());
+        }
+    }
+    take.push("{0}".into());
+    let mut plan = Plan::new(commit, summary)
+        .asking([Ask::required(AskKind::Revision, "Commit")])
+        .composing(seed);
+    plan.prelude.push(take);
+    plan
+}
+
 /// `git notes`, with the menu's `--ref` before the subcommand, where git
 /// wants it.
 fn notes(args: &[String], rest: &[&str]) -> Vec<String> {
@@ -1915,6 +2055,58 @@ pub fn run_plan(workdir: &Path, plan: &Plan) -> std::io::Result<GitOutput> {
             let commit = plan.args.first().cloned().unwrap_or_default();
             edit_commit(workdir, &commit, &mut log)?;
         }
+        Some(Special::SnapshotPart { index }) => {
+            let before = stash_count(workdir)?;
+            if index {
+                log.run(
+                    workdir,
+                    &args_of(&[
+                        "stash",
+                        "push",
+                        "--staged",
+                        "--message=Snapshot of the index",
+                    ]),
+                )?;
+            } else {
+                stash_worktree(
+                    workdir,
+                    &args_of(&["stash", "push", "--message=Snapshot of the worktree"]),
+                    &mut log,
+                )?;
+            }
+            if log.success && stash_count(workdir)? > before {
+                if log.run(
+                    workdir,
+                    &args_of(&["stash", "apply", "--index", "stash@{0}"]),
+                )? {
+                    log.note = Some("Snapshot stashed; the changes are still here".into());
+                }
+            } else if log.success {
+                log.fail("nothing to snapshot");
+            }
+        }
+        Some(Special::DropCommit) => {
+            let commit = plan.args.first().cloned().unwrap_or_default();
+            rebase_one(workdir, &commit, "drop", &mut log)?;
+        }
+        Some(Special::Harvest) => {
+            let range = plan.args.first().cloned().unwrap_or_default();
+            harvest(workdir, &range, &mut log)?;
+        }
+        Some(Special::Donate) => {
+            let from = plan.args.first().cloned().unwrap_or_default();
+            let to = plan.args.get(1).cloned().unwrap_or_default();
+            donate(workdir, &from, &to, &mut log)?;
+        }
+        Some(Special::SpinFrom { checkout }) => {
+            let branch = plan.args.first().cloned().unwrap_or_default();
+            let from = plan.args.get(1).cloned().unwrap_or_default();
+            spin_from(workdir, &branch, &from, checkout, &mut log)?;
+        }
+        Some(Special::PruneRefspecs) => {
+            let remote = plan.args.first().cloned().unwrap_or_default();
+            prune_refspecs(workdir, &remote, &mut log)?;
+        }
         Some(Special::StashSnapshot) => {
             let output = GitCommand::new(workdir, args_of(&["stash", "create"])).run()?;
             let hash = output.stdout.trim().to_string();
@@ -1966,6 +2158,20 @@ pub fn run_plan(workdir: &Path, plan: &Plan) -> std::io::Result<GitOutput> {
 /// Refused for a commit already on a remote, whose rewriting would rewrite
 /// published history, and for a merge, which the rebase would drop.
 fn edit_commit(workdir: &Path, commit: &str, log: &mut Transcript) -> std::io::Result<()> {
+    rebase_one(workdir, commit, "edit", log)
+}
+
+/// An interactive rebase from `commit`'s parent with its `pick` made
+/// `action`: `edit` stops at it, `drop` removes it.
+///
+/// Refused for a commit already on a remote, whose rewriting would rewrite
+/// published history, and for a merge, which the rebase would drop.
+fn rebase_one(
+    workdir: &Path,
+    commit: &str,
+    action: &str,
+    log: &mut Transcript,
+) -> std::io::Result<()> {
     let Some(full) = rev_parse(workdir, &format!("{commit}^{{commit}}")) else {
         log.fail(&format!("{commit} is not a commit"));
         return Ok(());
@@ -1990,21 +2196,184 @@ fn edit_commit(workdir: &Path, commit: &str, log: &mut Transcript) -> std::io::R
     // The first line of the list is the commit itself: the rebase starts at
     // its parent. `p` is how git writes `pick` with abbreviated commands.
     // Git appends the list's path to this line, which the final `:` takes.
-    let editor =
-        r#"sed -e '1s/^pick /edit /' -e '1s/^p /e /' "$1" > "$1.helix" && mv "$1.helix" "$1" && :"#;
+    let short = &action[..1];
+    let editor = format!(
+        r#"sed -e '1s/^pick /{action} /' -e '1s/^p /{short} /' "$1" > "$1.helix" && mv "$1.helix" "$1" && :"#
+    );
     let output = GitCommand::new(workdir, args_of(&["rebase", "--interactive", &base]))
-        .with_env("GIT_SEQUENCE_EDITOR", editor)
+        .with_env("GIT_SEQUENCE_EDITOR", &editor)
         .run()?;
     log.stdout.push_str(&output.stdout);
     log.stderr.push_str(&output.stderr);
     log.ran = true;
     log.success = output.success;
     if output.success {
+        let short = &full[..full.len().min(7)];
+        log.note = Some(if action == "edit" {
+            format!("Stopped at {short}: change it, amend (c a), then continue (C)")
+        } else {
+            format!("Removed {short}")
+        });
+    }
+    Ok(())
+}
+
+/// Refuses what the moving commands cannot do safely: commits already
+/// pushed, or a merge among them. Returns the full hash of `first`.
+fn movable(workdir: &Path, first: &str, log: &mut Transcript) -> Option<String> {
+    let Some(full) = rev_parse(workdir, &format!("{first}^{{commit}}")) else {
+        log.fail(&format!("{first} is not a commit"));
+        return None;
+    };
+    if is_pushed(workdir, &full) {
+        log.fail(&format!(
+            "{first} is already pushed; moving it would rewrite published history"
+        ));
+        return None;
+    }
+    let merges = GitCommand::new(
+        workdir,
+        args_of(&["rev-list", "--merges", &format!("{full}^..HEAD")]),
+    )
+    .run()
+    .map(|output| output.stdout)
+    .unwrap_or_default();
+    if !merges.trim().is_empty() {
+        log.fail("a merge lies among those commits");
+        return None;
+    }
+    Some(full)
+}
+
+/// Magit's harvest: the commits of `range` (`A..B`, B a branch not checked
+/// out) cherry-picked here, then B reset to A, so they are moved rather
+/// than copied.
+fn harvest(workdir: &Path, range: &str, log: &mut Transcript) -> std::io::Result<()> {
+    let Some((from, branch)) = range.split_once("..") else {
+        log.fail("give the commits as A..B, B the branch they are taken from");
+        return Ok(());
+    };
+    if rev_parse(workdir, &format!("refs/heads/{branch}")).is_none() {
+        log.fail(&format!("{branch} is not a local branch"));
+        return Ok(());
+    }
+    if crate::status::current_branch(workdir).as_deref() == Some(branch) {
+        log.fail(&format!(
+            "{branch} is checked out; harvest from another branch"
+        ));
+        return Ok(());
+    }
+    if is_pushed(workdir, branch) {
+        log.fail(&format!("{branch}'s tip is already pushed; removing commits from it would rewrite published history"));
+        return Ok(());
+    }
+    if log.run(workdir, &args_of(&["cherry-pick", range]))?
+        && log.run(workdir, &args_of(&["branch", "--force", branch, from]))?
+    {
+        log.note = Some(format!("Took {range} here and removed it from {branch}"));
+    }
+    Ok(())
+}
+
+/// Magit's donate: the commits from `from` to HEAD cherry-picked onto
+/// `branch`, then taken off the current branch.
+fn donate(workdir: &Path, from: &str, branch: &str, log: &mut Transcript) -> std::io::Result<()> {
+    let Some(current) = crate::status::current_branch(workdir) else {
+        log.fail("HEAD is detached");
+        return Ok(());
+    };
+    let Some(full) = movable(workdir, from, log) else {
+        return Ok(());
+    };
+    let range = format!("{full}^..{current}");
+    if !log.run(workdir, &args_of(&["checkout", branch]))? {
+        return Ok(());
+    }
+    if !log.run(workdir, &args_of(&["cherry-pick", &range]))? {
+        log.fail(&format!(
+            "stopped on {branch}: resolve and continue there; {current} still has the commits"
+        ));
+        return Ok(());
+    }
+    if log.run(workdir, &args_of(&["checkout", &current]))?
+        && log.run(workdir, &args_of(&["reset", "--keep", &format!("{full}^")]))?
+    {
         log.note = Some(format!(
-            "Stopped at {}: change it, amend (c a), then continue (C)",
+            "Moved {} onto {branch}",
             &full[..full.len().min(7)]
         ));
     }
+    Ok(())
+}
+
+/// The commits from `from` to HEAD moved to a new branch, which is checked
+/// out or not; the current branch goes back to before them.
+fn spin_from(
+    workdir: &Path,
+    branch: &str,
+    from: &str,
+    checkout: bool,
+    log: &mut Transcript,
+) -> std::io::Result<()> {
+    let Some(full) = movable(workdir, from, log) else {
+        return Ok(());
+    };
+    if !log.run(workdir, &args_of(&["branch", branch, "HEAD"]))? {
+        return Ok(());
+    }
+    if !log.run(workdir, &args_of(&["reset", "--keep", &format!("{full}^")]))? {
+        return Ok(());
+    }
+    if checkout && !log.run(workdir, &args_of(&["checkout", branch]))? {
+        return Ok(());
+    }
+    log.note = Some(format!(
+        "Moved the commits from {} to {branch}",
+        &full[..full.len().min(7)]
+    ));
+    Ok(())
+}
+
+/// Removes the fetch refspecs of `remote` that name one branch the remote
+/// no longer has; wildcard refspecs stay.
+fn prune_refspecs(workdir: &Path, remote: &str, log: &mut Transcript) -> std::io::Result<()> {
+    let key = format!("remote.{remote}.fetch");
+    let refspecs = GitCommand::new(workdir, args_of(&["config", "--get-all", &key])).run()?;
+    let heads = GitCommand::new(workdir, args_of(&["ls-remote", "--heads", remote])).run()?;
+    if !heads.success {
+        log.fail(&heads.summary());
+        return Ok(());
+    }
+    let mut pruned = Vec::new();
+    for refspec in refspecs.stdout.lines() {
+        let source = refspec
+            .trim_start_matches('+')
+            .split(':')
+            .next()
+            .unwrap_or("");
+        if source.contains('*') || source.is_empty() {
+            continue;
+        }
+        let gone = !heads
+            .stdout
+            .lines()
+            .any(|line| line.ends_with(&format!("\t{source}")));
+        if gone
+            && log.run(
+                workdir,
+                &args_of(&["config", "--unset", "--fixed-value", &key, refspec]),
+            )?
+        {
+            pruned.push(source.to_string());
+        }
+    }
+    log.ran = true;
+    log.success = true;
+    log.note = Some(if pruned.is_empty() {
+        "No stale refspec".to_string()
+    } else {
+        format!("Removed the refspecs of {}", pruned.join(", "))
+    });
     Ok(())
 }
 
@@ -2419,6 +2788,28 @@ pub fn commit_template_for(working_directory: &Path, seed: &Seed, verbose: bool)
         }
         Seed::Merge(rev) => {
             template.push_str(&format!("Merge {rev}\n"));
+        }
+        Seed::Message(rev) => {
+            if let Some(message) = message_of(working_directory, rev) {
+                template.push_str(&message);
+                template.push('\n');
+            }
+        }
+        Seed::Revert(rev) => {
+            let subject = message_of(working_directory, rev)
+                .and_then(|message| message.lines().next().map(str::to_string))
+                .unwrap_or_default();
+            let hash = GitCommand::new(
+                working_directory,
+                vec!["rev-parse".into(), format!("{rev}^{{commit}}")],
+            )
+            .run()
+            .ok()
+            .filter(|output| output.success)
+            .map_or_else(|| rev.clone(), |output| output.stdout.trim().to_string());
+            template.push_str(&format!(
+                "Revert \"{subject}\"\n\nThis reverts commit {hash}.\n"
+            ));
         }
         Seed::Amend(rev) => {
             let message = message_of(working_directory, rev).unwrap_or_default();

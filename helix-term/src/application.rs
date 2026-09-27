@@ -9,7 +9,7 @@ use helix_lsp::{
 use helix_stdx::path::get_relative_path;
 use helix_view::{
     align_view,
-    document::{DocumentOpenError, DocumentSavedEventResult},
+    document::{DocumentOpenError, DocumentSavedEvent, DocumentSavedEventResult},
     editor::{ConfigEvent, EditorEvent},
     graphics::Rect,
     theme,
@@ -632,21 +632,7 @@ impl Application {
 
         doc.set_last_saved_revision(doc_save_event.revision, doc_save_event.save_time);
 
-        crate::roam::reindex_saved_file(
-            &self.editor,
-            &doc_save_event.path,
-            doc_save_event.text.to_string(),
-        );
-
-        crate::magit::commit_if_written(&mut self.editor, &doc_save_event.path);
-        crate::magit::index_if_written(&mut self.editor, &doc_save_event.path);
-        crate::magit::rebase_if_written(&mut self.editor, &doc_save_event.path);
-        crate::magit::wip_after_save(&self.editor, &doc_save_event.path);
-        crate::roam::sync_src_edit(
-            &mut self.editor,
-            &doc_save_event.path,
-            doc_save_event.text.to_string(),
-        );
+        self.after_save(&doc_save_event);
 
         let lines = doc_save_event.text.len_lines();
         let size = doc_save_event.text.len_bytes();
@@ -685,6 +671,29 @@ impl Application {
             "'{}' written, {lines}L {size}",
             get_relative_path(&doc_save_event.path).to_string_lossy(),
         ));
+    }
+
+    /// What follows a file written: the fork's buffers that act when
+    /// written (a commit message, a todo-list, the index's version of a
+    /// file), and the indexes kept of what is on disk.
+    fn after_save(&mut self, event: &DocumentSavedEvent) {
+        crate::roam::reindex_saved_file(&self.editor, &event.path, event.text.to_string());
+
+        crate::magit::commit_if_written(&mut self.editor, &event.path);
+        crate::magit::index_if_written(&mut self.editor, &event.path);
+        crate::magit::rebase_if_written(&mut self.editor, &event.path);
+        crate::magit::wip_after_save(&self.editor, &event.path);
+        crate::roam::sync_src_edit(&mut self.editor, &event.path, event.text.to_string());
+    }
+
+    /// The saves a command waited for itself (`:wq`, `:x`): the buffer may
+    /// be closed by now, but what its writing starts must still happen.
+    fn after_flushed_saves(&mut self) -> bool {
+        let saves = std::mem::take(&mut self.editor.flushed_saves);
+        for event in &saves {
+            self.after_save(event);
+        }
+        !saves.is_empty()
     }
 
     #[inline(always)]
@@ -799,6 +808,7 @@ impl Application {
             event if event.is_escape() => false,
             event => self.compositor.handle_event(&event.into(), &mut cx),
         };
+        let should_redraw = self.after_flushed_saves() || should_redraw;
 
         if should_redraw && !self.editor.should_close() {
             self.render().await;

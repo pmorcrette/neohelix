@@ -1907,6 +1907,26 @@ impl DiffView {
         }
     }
 
+    /// The diff shown, as a patch: every file of a commit or range, or the
+    /// files of the status's section at the cursor. With the repository.
+    pub fn patch_text(&self) -> (PathBuf, String) {
+        let sections: Vec<&Section> = match self.kind {
+            ViewKind::Status | ViewKind::File(_) => self
+                .current_row()
+                .and_then(Row::section)
+                .and_then(|section| self.sections.get(section))
+                .into_iter()
+                .collect(),
+            _ => self.sections.iter().collect(),
+        };
+        let patch: String = sections
+            .iter()
+            .flat_map(|section| &section.files)
+            .map(helix_magit::diff::render_patch)
+            .collect();
+        (self.workdir.clone(), patch)
+    }
+
     /// The most lines any one file shown here changes, which the summary's
     /// bars are scaled to.
     fn largest_change(&self) -> usize {

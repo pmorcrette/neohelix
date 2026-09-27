@@ -392,6 +392,17 @@ impl TransientOverlay {
                     }
                 })))
             }
+            MagitCommand::RebaseEditTodo
+            | MagitCommand::MergePreview
+            | MagitCommand::StashList
+            | MagitCommand::WorktreeVisit
+            | MagitCommand::SubmoduleList => {
+                let workdir = self.workdir.clone();
+                EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                    compositor.remove(TransientOverlay::ID);
+                    crate::magit::open_list(compositor, cx.editor, workdir, command);
+                })))
+            }
             MagitCommand::FileFind | MagitCommand::FileRename | MagitCommand::FileTrace => {
                 let path = match self.target.clone() {
                     Some((path, AskKind::Path)) => Some(path),
@@ -822,6 +833,11 @@ mod tests {
                         | MagitCommand::FileFind
                         | MagitCommand::FileRename
                         | MagitCommand::FileTrace
+                        | MagitCommand::RebaseEditTodo
+                        | MagitCommand::MergePreview
+                        | MagitCommand::StashList
+                        | MagitCommand::WorktreeVisit
+                        | MagitCommand::SubmoduleList
                         | MagitCommand::InsertRevision
                         | MagitCommand::Mergetool
                         | MagitCommand::ApplyDiffSettings

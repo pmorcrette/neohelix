@@ -64,13 +64,14 @@
 | `:magit-message-previous` | In the commit message buffer: replace the message with an earlier one (uncommitted ones first, then recent commits'). |
 | `:magit-message-next` | In the commit message buffer: go back to a later message, and then to the draft. |
 | `:magit-message-diff` | While writing a commit message: show the staged changes the commit records. |
+| `:magit-save-patch` | Save the diff shown (a commit, a range, or the status section at the cursor) as a patch file, relative to the repository. |
 | `:magit-find-file` | Visit a file as it was at a revision, read-only. |
 | `:magit-blob-previous` | In a file shown at a revision: the version before, from the commit that changed it before. |
 | `:magit-blob-next` | In a file shown at a revision: the version after. |
 | `:magit-blob-commit` | In a file shown at a revision: show the commit it comes from. |
 | `:magit-insert-revision` | Insert a revision looked at recently (a commit opened or copied) as `hash ("subject")`. |
 | `:conflict-take` | Resolve the merge conflict under the cursor with ours, theirs, base or both. |
-| `:rebase-todo` | In a rebase todo-list, set the selected lines to pick, reword, edit, squash, fixup or drop, or move them up or down. |
+| `:rebase-todo` | In a rebase todo-list, set the selected lines to pick, reword, edit, squash, fixup or drop, move them up or down, or add `exec <command>` or `break` below them. |
 | `:roam-node-find`, `:rnf` | Open the Org-Roam node picker. |
 | `:roam-backlinks-toggle`, `:roam-backlinks` | Show or hide the Org-Roam backlinks panel. |
 | `:roam-promote-buffer`, `:roam-promote` | Turn a buffer holding one heading into an Org-Roam file node. |

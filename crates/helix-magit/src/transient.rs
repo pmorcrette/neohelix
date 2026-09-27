@@ -255,6 +255,23 @@ pub enum MagitCommand {
     RequestPull,
     SendEmail,
     NoteMerge,
+    RebaseSubset,
+    RebaseModify,
+    RebaseReword,
+    RebaseRemove,
+    RebaseEditTodo,
+    MergePreview,
+    CherryHarvest,
+    CherryDonate,
+    CherrySquash,
+    CherrySpinout,
+    CherrySpinoff,
+    StashSnapshotIndex,
+    StashSnapshotWorktree,
+    StashList,
+    RemotePruneRefspecs,
+    WorktreeVisit,
+    SubmoduleList,
     /// Insert a revision from the ones looked at recently.
     InsertRevision,
 
@@ -1101,11 +1118,18 @@ pub fn rebase_menu() -> TransientMenu {
             TransientAction::new('e', "Elsewhere", MagitCommand::RebaseElsewhere),
             TransientAction::new('r', "Interactively", MagitCommand::RebaseInteractive),
             TransientAction::new('o', "Onto a revision", MagitCommand::RebaseOnto),
+            TransientAction::new('S', "A subset, onto a revision", MagitCommand::RebaseSubset),
             TransientAction::new('d', "Reshelve: new dates since", MagitCommand::Reshelve),
+        ]),
+        TransientGroup::new("One commit").with_actions([
+            TransientAction::new('m', "Modify (stop at it)", MagitCommand::RebaseModify),
+            TransientAction::new('w', "Reword", MagitCommand::RebaseReword),
+            TransientAction::new('k', "Remove", MagitCommand::RebaseRemove),
         ]),
         TransientGroup::new("In progress").with_actions([
             TransientAction::new('c', "Continue", MagitCommand::RebaseContinue),
             TransientAction::new('s', "Skip", MagitCommand::RebaseSkip),
+            TransientAction::new('E', "Edit the todo list", MagitCommand::RebaseEditTodo),
             TransientAction::new('z', "Abort", MagitCommand::RebaseAbort),
         ]),
     ])
@@ -1123,11 +1147,11 @@ pub fn stash_menu() -> TransientMenu {
             TransientAction::new('w', "Worktree", MagitCommand::StashWorktree),
             TransientAction::new('x', "Keeping the index", MagitCommand::StashKeepIndex),
             TransientAction::new('P', "Some paths", MagitCommand::StashPaths),
-            TransientAction::new(
-                'Z',
-                "Snapshot (keep the changes)",
-                MagitCommand::StashSnapshot,
-            ),
+        ]),
+        TransientGroup::new("Snapshot (keep the changes)").with_actions([
+            TransientAction::new('Z', "Both", MagitCommand::StashSnapshot),
+            TransientAction::new('I', "Index", MagitCommand::StashSnapshotIndex),
+            TransientAction::new('W', "Worktree", MagitCommand::StashSnapshotWorktree),
         ]),
         TransientGroup::new("Use").with_actions([
             TransientAction::new('p', "Pop", MagitCommand::StashPop),
@@ -1136,6 +1160,7 @@ pub fn stash_menu() -> TransientMenu {
             TransientAction::new('B', "Branch here", MagitCommand::StashBranchHere),
             TransientAction::new('f', "Format a patch", MagitCommand::StashFormatPatch),
             TransientAction::new('k', "Drop", MagitCommand::StashDrop),
+            TransientAction::new('l', "List", MagitCommand::StashList),
         ]),
     ])
 }
@@ -1152,6 +1177,7 @@ pub fn merge_menu() -> TransientMenu {
         TransientGroup::new("Merge").with_actions([
             TransientAction::new('m', "Merge", MagitCommand::Merge),
             TransientAction::new('e', "Merge, editing the message", MagitCommand::MergeEdit),
+            TransientAction::new('p', "Preview", MagitCommand::MergePreview),
             TransientAction::new('s', "Squash", MagitCommand::MergeSquash),
             TransientAction::new('n', "Without committing", MagitCommand::MergeNoCommit),
         ]),
@@ -1192,11 +1218,19 @@ pub fn cherry_pick_menu() -> TransientMenu {
             switch('f', "--ff", "Fast-forward when possible"),
             option('m', "--mainline=", "Mainline parent (of a merge)"),
             switch('s', "--signoff", "Add Signed-off-by line"),
+            switch('e', "--edit", "Edit the message"),
             option('S', "--strategy=", "Strategy"),
         ]),
         TransientGroup::new("Apply here").with_actions([
             TransientAction::new('A', "Pick", MagitCommand::CherryPick),
             TransientAction::new('a', "Apply", MagitCommand::CherryApply),
+            TransientAction::new('h', "Harvest from a branch", MagitCommand::CherryHarvest),
+            TransientAction::new('m', "Squash (as one change)", MagitCommand::CherrySquash),
+        ]),
+        TransientGroup::new("Move elsewhere").with_actions([
+            TransientAction::new('d', "Donate to a branch", MagitCommand::CherryDonate),
+            TransientAction::new('n', "Spin out to a new branch", MagitCommand::CherrySpinout),
+            TransientAction::new('S', "Spin off to a new branch", MagitCommand::CherrySpinoff),
         ]),
         TransientGroup::new("In progress").with_actions([
             TransientAction::new('c', "Continue", MagitCommand::CherryPickContinue),
@@ -1211,6 +1245,7 @@ pub fn revert_menu() -> TransientMenu {
         TransientGroup::new("Arguments").with_arguments([
             option('m', "--mainline=", "Mainline parent (of a merge)"),
             switch('s', "--signoff", "Add Signed-off-by line"),
+            switch('e', "--edit", "Edit the message"),
         ]),
         TransientGroup::new("Revert").with_actions([
             TransientAction::new('V', "Revert", MagitCommand::Revert),
@@ -1231,6 +1266,11 @@ pub fn remote_menu() -> TransientMenu {
             TransientAction::new('r', "Rename", MagitCommand::RemoteRename),
             TransientAction::new('k', "Remove", MagitCommand::RemoteRemove),
             TransientAction::new('p', "Prune stale branches", MagitCommand::RemotePrune),
+            TransientAction::new(
+                'P',
+                "Prune stale refspecs",
+                MagitCommand::RemotePruneRefspecs,
+            ),
             TransientAction::new('b', "Update default branch", MagitCommand::RemoteSetHead),
             TransientAction::new('z', "Unshallow", MagitCommand::RemoteUnshallow),
         ]),
@@ -1278,6 +1318,7 @@ pub fn worktree_menu() -> TransientMenu {
             MagitCommand::WorktreeAddBranch,
         ),
         TransientAction::new('m', "Move", MagitCommand::WorktreeMove),
+        TransientAction::new('g', "Visit", MagitCommand::WorktreeVisit),
         TransientAction::new('k', "Remove", MagitCommand::WorktreeRemove),
         TransientAction::new('p', "Prune", MagitCommand::WorktreePrune),
     ])])
@@ -1304,6 +1345,7 @@ pub fn submodule_menu() -> TransientMenu {
             MagitCommand::SubmoduleUnpopulate,
         ),
         TransientAction::new('k', "Remove", MagitCommand::SubmoduleRemove),
+        TransientAction::new('l', "List", MagitCommand::SubmoduleList),
     ])])
 }
 
