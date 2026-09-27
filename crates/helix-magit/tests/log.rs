@@ -310,3 +310,128 @@ fn the_reflog_lists_where_head_has_been() {
     let entries = read_log(work, &topic).unwrap();
     assert_eq!(entries[0].refs, ["topic@{0}"]);
 }
+
+#[test]
+fn the_new_filters_and_starting_points_narrow_the_log() {
+    let Some(dir) = fixture() else { return };
+    let work = dir.path();
+    let by = |filter: LogFilter| -> Vec<String> {
+        subjects(&read_log(work, &filter).unwrap())
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    };
+    let from = |args: &[&str]| {
+        LogFilter::from_args(&args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>())
+    };
+
+    let mut no_merges = by(from(&["--no-merges"]));
+    no_merges.sort();
+    assert_eq!(no_merges, ["First commit", "Fix the bee", "Topic work"]);
+    assert_eq!(by(from(&["-Sbee"])), ["Fix the bee"]);
+    assert_eq!(by(from(&["-Gtop.c"])), ["Topic work"]);
+    assert_eq!(by(from(&["--until=1970-01-02"])), Vec::<String>::new());
+
+    // Oldest first, without a graph: every line is a commit.
+    let reversed = read_log(work, &from(&["--reverse"])).unwrap();
+    assert_eq!(subjects(&reversed).first(), Some(&"First commit"));
+    assert!(reversed.iter().all(|entry| entry.hash.is_some()));
+    let plain = read_log(work, &from(&["--no-graph", "--no-decorate"])).unwrap();
+    assert!(plain
+        .iter()
+        .all(|entry| entry.graph.is_empty() && entry.refs.is_empty()));
+
+    // `-L`: the file after the last colon, the lines before it.
+    let traced = from(&["-L1,1:b.txt"]);
+    assert_eq!(traced.lines.as_deref(), Some("1,1"));
+    assert_eq!(traced.path, Some(PathBuf::from("b.txt")));
+    assert_eq!(by(traced), ["Fix the bee"]);
+
+    // Another branch as a starting point, from main.
+    git(work, &["branch", "side", "v1"]).unwrap();
+    git(work, &["checkout", "-q", "side"]).unwrap();
+    commit(work, "Ann", "s.txt", "s\n", "Side work").unwrap();
+    git(work, &["checkout", "-q", "main"]).unwrap();
+    let branches = LogFilter {
+        revs: vec!["HEAD".into(), "--branches".into()],
+        ..LogFilter::default()
+    };
+    assert!(by(branches).contains(&"Side work".to_string()));
+
+    // The merge that brought a topic commit into main.
+    let topic = git(work, &["rev-parse", "topic"]).unwrap();
+    let merge = helix_magit::log::merged_by(work, topic.trim(), "main").unwrap();
+    assert_eq!(merge, git(work, &["rev-parse", "main"]).unwrap().trim());
+    assert!(helix_magit::log::merged_by(work, "side", "main")
+        .unwrap_err()
+        .contains("does not contain"));
+    let bee = git(work, &["rev-parse", "main^1"]).unwrap();
+    assert!(helix_magit::log::merged_by(work, bee.trim(), "main")
+        .unwrap_err()
+        .contains("without a merge"));
+}
+
+#[test]
+fn blame_follows_moved_lines_and_blames_in_reverse() {
+    use helix_magit::blame::{blame_with, BlameOptions};
+    let Some(dir) = fixture() else { return };
+    let work = dir.path();
+    let block = "fn a_moved_function_with_a_long_name() {\n    call_something_long_enough();\n}\n";
+    // More lines stay than move, so the diff moves the block.
+    let rest: String = (1..=5)
+        .map(|n| format!("// the rest, line {n}\n"))
+        .collect();
+    commit(work, "Ann", "m.rs", &format!("{block}{rest}"), "Write m").unwrap();
+    let first = git(work, &["rev-parse", "--short=7", "HEAD"]).unwrap();
+    commit(
+        work,
+        "Bob",
+        "m.rs",
+        &format!("{rest}{block}"),
+        "Move the block",
+    )
+    .unwrap();
+    let moved = git(work, &["rev-parse", "--short=7", "HEAD"]).unwrap();
+    commit(work, "Bob", "m.rs", &rest, "Drop the block").unwrap();
+
+    let commits = |options: &BlameOptions, rev: Option<&str>| -> Vec<String> {
+        blame_with(work, std::path::Path::new("m.rs"), rev, options)
+            .unwrap()
+            .iter()
+            .map(|line| line.short().to_string())
+            .collect()
+    };
+    let plain = commits(&BlameOptions::default(), Some("HEAD~1"));
+    assert_eq!(plain[5], moved.trim(), "moved lines belong to the move");
+    let with_moves = BlameOptions {
+        moves: true,
+        ..BlameOptions::default()
+    };
+    assert_eq!(
+        commits(&with_moves, Some("HEAD~1"))[5],
+        first.trim(),
+        "with -M, to the commit that wrote them"
+    );
+
+    // Reverse: since the first version, each line's last commit in its
+    // place. The move took the block from there; the rest is still at HEAD.
+    let reverse = BlameOptions {
+        reverse_from: Some(first.trim().to_string()),
+        ..BlameOptions::default()
+    };
+    let lines = commits(&reverse, None);
+    let head = git(work, &["rev-parse", "--short=7", "HEAD"]).unwrap();
+    assert_eq!(
+        lines[0],
+        first.trim(),
+        "the block left its place in the move"
+    );
+    assert_eq!(lines[3], head.trim(), "the rest is still there");
+    assert_eq!(with_moves.describe(), "-M");
+    let empty = BlameOptions {
+        reverse_from: Some("HEAD".into()),
+        ..BlameOptions::default()
+    };
+    let err = blame_with(work, std::path::Path::new("m.rs"), None, &empty).unwrap_err();
+    assert!(err.contains("older commit"), "{err}");
+}

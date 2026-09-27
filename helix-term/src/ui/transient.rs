@@ -129,7 +129,9 @@ impl TransientOverlay {
             MenuKind::Ediff => return String::new(),
             MenuKind::Fetch => "git fetch",
             MenuKind::DiffSettings => "diff settings:",
-            MenuKind::Jump | MenuKind::Views | MenuKind::Setup => return String::new(),
+            MenuKind::Jump | MenuKind::Views | MenuKind::Setup | MenuKind::Margin => {
+                return String::new()
+            }
         };
 
         if args.is_empty() {
@@ -628,6 +630,27 @@ impl TransientOverlay {
                     compositor.push(Box::new(crate::ui::log_view::range_prompt(workdir, filter)));
                 })))
             }
+            MagitCommand::Margin(choice) => {
+                EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                    compositor.remove(TransientOverlay::ID);
+                    let message = crate::magit::set_margin(compositor, choice);
+                    cx.editor.set_status(message);
+                })))
+            }
+            MagitCommand::LogRelated
+            | MagitCommand::LogLocalBranches
+            | MagitCommand::LogBranches
+            | MagitCommand::LogMatchingBranches
+            | MagitCommand::LogMerged => {
+                let filter = LogFilter::from_args(&self.menu.args());
+                let (workdir, target) = (self.workdir.clone(), self.target.clone());
+                EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                    compositor.remove(TransientOverlay::ID);
+                    crate::magit::log_action(
+                        compositor, cx.editor, workdir, command, filter, target,
+                    );
+                })))
+            }
             MagitCommand::LogOther => {
                 let filter = LogFilter::from_args(&self.menu.args());
                 let workdir = self.workdir.clone();
@@ -865,6 +888,12 @@ mod tests {
                         | MagitCommand::DiffStash
                         | MagitCommand::DiffToggleRange
                         | MagitCommand::DiffFlip
+                        | MagitCommand::Margin(_)
+                        | MagitCommand::LogRelated
+                        | MagitCommand::LogLocalBranches
+                        | MagitCommand::LogBranches
+                        | MagitCommand::LogMatchingBranches
+                        | MagitCommand::LogMerged
                 ) || helix_magit::resolve(action.command, &[]).is_some();
                 assert!(handled, "{kind:?} binds '{}' to nothing", action.key);
             }

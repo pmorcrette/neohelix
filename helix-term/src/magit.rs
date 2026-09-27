@@ -417,10 +417,23 @@ fn ask_next(
     };
 
     let names = helix_magit::refs::names(&workdir, ask.kind);
+    // A commit can be picked from the log instead of typed: with `?`, or
+    // with nothing when nothing else would do.
+    let pickable = ask.kind == AskKind::Revision && ask.source.is_none();
     let label = match (ask.optional, ask.fallback, ask.source) {
         (_, _, Some(source)) => format!("{}: ", source.label(&workdir)),
+        (_, Some(fallback), _) if pickable => {
+            format!(
+                "{} (empty for {fallback}, ? to pick from the log): ",
+                ask.label
+            )
+        }
         (_, Some(fallback), _) => format!("{} (empty for {fallback}): ", ask.label),
+        (true, None, _) if pickable => format!("{} (? to pick from the log): ", ask.label),
         (true, None, _) => format!("{}: ", ask.label),
+        (false, None, _) if pickable => {
+            format!("{} (empty to pick from the log): ", ask.label)
+        }
         (false, None, _) => format!("{} (required): ", ask.label),
     };
     let kind = ask.kind;
@@ -441,6 +454,37 @@ fn ask_next(
                 return;
             }
             let input = input.trim().to_string();
+            // A commit to pick from the log, then go on.
+            if pickable
+                && (input == "?" || (input.is_empty() && !ask.optional && ask.fallback.is_none()))
+            {
+                let log_dir = workdir.clone();
+                let (plan, workdir, asks, answers) =
+                    (plan.clone(), workdir.clone(), asks.clone(), answers.clone());
+                let pick: crate::ui::log_view::Pick =
+                    std::sync::Arc::new(move |editor, compositor, hash| {
+                        let mut answers = answers.clone();
+                        answers.push(hash);
+                        ask_next(
+                            compositor,
+                            editor,
+                            plan.clone(),
+                            workdir.clone(),
+                            asks.clone(),
+                            answers,
+                        );
+                    });
+                cx.jobs.callback(async move {
+                    Ok(Callback::EditorCompositor(Box::new(
+                        move |_: &mut Editor, compositor: &mut Compositor| {
+                            compositor.push(Box::new(crate::ui::log_view::LogView::select(
+                                log_dir, pick,
+                            )));
+                        },
+                    )))
+                });
+                return;
+            }
             if let Some(refusal) = ask.refuse(&input) {
                 cx.editor.set_error(refusal);
                 return;
@@ -2662,4 +2706,162 @@ fn diff_paths_prompt(
         None => prompt,
     };
     compositor.push(Box::new(prompt));
+}
+
+// ── The log menu's logs of several branches ──────────────────────────────
+
+/// The log menu's `u`, `L`, `b`, `B` and `m`, with the menu's own
+/// arguments in `filter`. `target` is what the menu was opened on.
+pub fn log_action(
+    compositor: &mut Compositor,
+    editor: &mut Editor,
+    workdir: PathBuf,
+    command: helix_magit::transient::MagitCommand,
+    mut filter: helix_magit::log::LogFilter,
+    target: Option<(String, AskKind)>,
+) {
+    use crate::ui::log_view::LogView;
+    use helix_magit::transient::MagitCommand;
+
+    let exists = |rev: &str| {
+        GitCommand::new(
+            &workdir,
+            vec![
+                "rev-parse".into(),
+                "--verify".into(),
+                "--quiet".into(),
+                rev.into(),
+            ],
+        )
+        .run()
+        .is_ok_and(|output| output.success)
+    };
+    match command {
+        MagitCommand::LogRelated => {
+            filter.revs = ["HEAD", "@{upstream}", "@{push}"]
+                .into_iter()
+                .filter(|rev| *rev == "HEAD" || exists(rev))
+                .map(str::to_string)
+                .collect();
+            filter.revs.dedup();
+            filter.title = Some("HEAD, its upstream and push branches".into());
+            compositor.push(Box::new(LogView::new(workdir, filter)));
+        }
+        MagitCommand::LogLocalBranches | MagitCommand::LogBranches => {
+            filter.revs = vec!["HEAD".into(), "--branches".into()];
+            filter.title = Some("local branches".into());
+            if command == MagitCommand::LogBranches {
+                filter.revs.push("--remotes".into());
+                filter.title = Some("all branches".into());
+            }
+            compositor.push(Box::new(LogView::new(workdir, filter)));
+        }
+        MagitCommand::LogMatchingBranches => {
+            let branches = helix_magit::refs::names(&workdir, AskKind::Branch);
+            choose(
+                compositor,
+                "Branches matching (a glob, e.g. feature/*): ".into(),
+                branches,
+                false,
+                move |_, compositor, glob| {
+                    let mut filter = filter.clone();
+                    filter.revs = vec![format!("--branches={glob}"), format!("--remotes=*/{glob}")];
+                    filter.title = Some(format!("branches matching {glob}"));
+                    compositor.push(Box::new(LogView::new(workdir.clone(), filter)));
+                },
+            );
+        }
+        MagitCommand::LogMerged => {
+            let revisions = helix_magit::refs::names(&workdir, AskKind::Revision);
+            let branches = helix_magit::refs::names(&workdir, AskKind::Branch);
+            let current = helix_magit::status::current_branch(&workdir);
+            // The branch checked out first: the usual answer.
+            let branches: Vec<String> = current
+                .iter()
+                .cloned()
+                .chain(branches.into_iter().filter(|b| Some(b) != current.as_ref()))
+                .collect();
+            let ask_branch =
+                move |editor: &mut Editor, compositor: &mut Compositor, commit: String| {
+                    let (workdir, filter, branches) =
+                        (workdir.clone(), filter.clone(), branches.clone());
+                    if let Err(err) = helix_magit::log::LogFilter::valid_range(&commit) {
+                        return editor.set_error(err);
+                    }
+                    choose(
+                        compositor,
+                        format!("Where {commit} was merged into: "),
+                        branches,
+                        false,
+                        move |editor, compositor, branch| match helix_magit::log::merged_by(
+                            &workdir, &commit, &branch,
+                        ) {
+                            Ok(merge) => {
+                                let mut filter = filter.clone();
+                                filter.range = Some(format!("{merge}^1..{merge}"));
+                                filter.title = Some(format!(
+                                    "{commit} merged into {branch} by {}",
+                                    &merge[..merge.len().min(7)]
+                                ));
+                                compositor.push(Box::new(LogView::new(workdir.clone(), filter)));
+                            }
+                            Err(err) => editor.set_error(err),
+                        },
+                    );
+                };
+            match target {
+                Some((commit, AskKind::Revision)) => ask_branch(editor, compositor, commit),
+                _ => choose(
+                    compositor,
+                    "Where was this commit merged: ".into(),
+                    revisions,
+                    false,
+                    ask_branch,
+                ),
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The margin menu's choice, for the log and the status alike (each keeps
+/// its own style, as `Z` sets it). Returns what the margin is now.
+pub fn set_margin(
+    compositor: &mut Compositor,
+    choice: helix_magit::transient::MarginChoice,
+) -> String {
+    use crate::ui::log_view::LogView;
+    use crate::ui::margin::{self, Margin, LOG_MARGIN, STATUS_MARGIN};
+    use helix_magit::transient::MarginChoice;
+
+    let style = match choice {
+        MarginChoice::Author => {
+            let shown = margin::toggle_author();
+            return if shown {
+                "Authors shown"
+            } else {
+                "Authors hidden"
+            }
+            .into();
+        }
+        MarginChoice::Age => Some(Margin::Age),
+        MarginChoice::ShortAge => Some(Margin::ShortAge),
+        MarginChoice::Date => Some(Margin::Date),
+        MarginChoice::Toggle => None,
+    };
+    let (log, status) = match style {
+        Some(style) => {
+            LOG_MARGIN.set(style);
+            STATUS_MARGIN.set(style);
+            (style, style)
+        }
+        None => (LOG_MARGIN.toggle(), STATUS_MARGIN.toggle()),
+    };
+    if let Some(view) = compositor.find_id::<LogView>(LogView::ID) {
+        view.set_margin(log);
+    }
+    if let Some(view) = compositor.find_id::<DiffView>(DiffView::ID) {
+        view.set_margin(status);
+    }
+    log.describe().to_string()
 }

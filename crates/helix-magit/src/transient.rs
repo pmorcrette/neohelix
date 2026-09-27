@@ -295,6 +295,13 @@ pub enum MagitCommand {
     DiffRange,
     DiffWorktree,
     DiffCommit,
+    /// The margin menu's choices, for the log and the status.
+    Margin(MarginChoice),
+    LogRelated,
+    LogLocalBranches,
+    LogBranches,
+    LogMatchingBranches,
+    LogMerged,
     /// What is at point: a commit, a range, a file's changes, or else
     /// everything uncommitted.
     DiffDwim,
@@ -439,6 +446,8 @@ pub enum MenuKind {
     /// Which diff to show (`d`), and how to show diffs (`D`).
     Diff,
     DiffSettings,
+    /// The log's and the status's margin (`L` in the log).
+    Margin,
     /// Versions of a file side by side (`E`).
     Ediff,
     /// The status buffer's sections, to jump to (`'`).
@@ -449,8 +458,20 @@ pub enum MenuKind {
     Setup,
 }
 
+/// What the margin menu (`L`) does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MarginChoice {
+    /// Hide it, or show it again as it was.
+    Toggle,
+    Age,
+    ShortAge,
+    Date,
+    /// Show or hide the authors.
+    Author,
+}
+
 impl MenuKind {
-    pub const ALL: [MenuKind; 36] = [
+    pub const ALL: [MenuKind; 37] = [
         MenuKind::Main,
         MenuKind::Commit,
         MenuKind::Push,
@@ -483,6 +504,7 @@ impl MenuKind {
         MenuKind::File,
         MenuKind::Diff,
         MenuKind::DiffSettings,
+        MenuKind::Margin,
         MenuKind::Ediff,
         MenuKind::Jump,
         MenuKind::Views,
@@ -529,7 +551,9 @@ impl MenuKind {
             MenuKind::BranchConfig
             | MenuKind::RemoteConfig
             | MenuKind::Resolve
-            | MenuKind::File => return None,
+            | MenuKind::File
+            // `L` in the log, as in Magit; the status's `L` is the log.
+            | MenuKind::Margin => return None,
         })
     }
 
@@ -575,6 +599,7 @@ impl MenuKind {
             MenuKind::File => file_menu(),
             MenuKind::Diff => diff_menu(),
             MenuKind::DiffSettings => diff_settings_menu(&crate::diff::DiffOptions::default()),
+            MenuKind::Margin => margin_menu(),
             MenuKind::Ediff => ediff_menu(),
             MenuKind::Jump => jump_menu(),
             MenuKind::Views => views_menu(&GitView::ALL.map(|(_, view, _)| view)),
@@ -925,6 +950,7 @@ pub fn main_menu() -> TransientMenu {
             open(MenuKind::Log, "Log"),
             open(MenuKind::Diff, "Diff"),
             open(MenuKind::DiffSettings, "Diff settings"),
+            TransientAction::new('Z', "Margin", MagitCommand::OpenMenu(MenuKind::Margin)),
             open(MenuKind::Ediff, "Ediff"),
             TransientAction::new('y', "Show refs", MagitCommand::ShowRefs),
             TransientAction::new('Y', "Cherries", MagitCommand::ShowCherries),
@@ -1732,11 +1758,31 @@ pub fn log_menu() -> TransientMenu {
             option('A', "--author=", "Author matches"),
             option('G', "--grep=", "Message matches"),
             option('F', crate::log::PATH_FLAG, "Touches file"),
+            option('c', "-G", "Changes match (regex)"),
+            option('S', "-S", "Adds or removes a string"),
+            option('L', "-L", "Trace lines (10,20:file or :function:file)"),
+            switch('m', "--no-merges", "No merges"),
+            option('s', "--since=", "Since date"),
+            option('u', "--until=", "Until date"),
+        ]),
+        TransientGroup::new("Show").with_arguments([
+            switch('r', "--reverse", "Oldest first (no graph)"),
+            switch('g', crate::log::NO_GRAPH_FLAG, "Hide the graph"),
+            switch('d', "--no-decorate", "Hide branch and tag names"),
         ]),
         TransientGroup::new("Log").with_actions([
             TransientAction::new('l', "Current", MagitCommand::LogCurrent),
-            TransientAction::new('a', "All references", MagitCommand::LogAll),
             TransientAction::new('o', "Other", MagitCommand::LogOther),
+            TransientAction::new('u', "Related: upstream and push", MagitCommand::LogRelated),
+            TransientAction::new('L', "Local branches", MagitCommand::LogLocalBranches),
+            TransientAction::new('b', "All branches", MagitCommand::LogBranches),
+            TransientAction::new('B', "Matching branches", MagitCommand::LogMatchingBranches),
+            TransientAction::new('a', "All references", MagitCommand::LogAll),
+            TransientAction::new(
+                'm',
+                "Merged: where a commit came in",
+                MagitCommand::LogMerged,
+            ),
             TransientAction::new('s', "Shortlog", MagitCommand::Shortlog),
         ]),
         TransientGroup::new("Reflog").with_actions([
@@ -1744,6 +1790,23 @@ pub fn log_menu() -> TransientMenu {
             TransientAction::new('R', "Another ref's reflog", MagitCommand::ReflogOther),
             TransientAction::new('w', "Working tree saves (wip)", MagitCommand::WipLog),
             TransientAction::new('W', "Index saves (wip)", MagitCommand::WipIndexLog),
+        ]),
+    ])
+}
+
+pub fn margin_menu() -> TransientMenu {
+    let choice = |key, description, choice| {
+        TransientAction::new(key, description, MagitCommand::Margin(choice))
+    };
+    TransientMenu::new(MenuKind::Margin, "Margin").with_groups([
+        TransientGroup::new("Margin").with_actions([
+            choice('L', "Show or hide", MarginChoice::Toggle),
+            choice('u', "Show or hide the authors", MarginChoice::Author),
+        ]),
+        TransientGroup::new("Style").with_actions([
+            choice('a', "Age (3 days)", MarginChoice::Age),
+            choice('s', "Short age (3d)", MarginChoice::ShortAge),
+            choice('d', "Date", MarginChoice::Date),
         ]),
     ])
 }

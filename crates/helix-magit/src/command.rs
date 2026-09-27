@@ -617,7 +617,13 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
         | MagitCommand::DiffPaths
         | MagitCommand::DiffStash
         | MagitCommand::DiffToggleRange
-        | MagitCommand::DiffFlip => return None,
+        | MagitCommand::DiffFlip
+        | MagitCommand::Margin(_)
+        | MagitCommand::LogRelated
+        | MagitCommand::LogLocalBranches
+        | MagitCommand::LogBranches
+        | MagitCommand::LogMatchingBranches
+        | MagitCommand::LogMerged => return None,
 
         // Run from the editor's directory rather than a repository's.
         MagitCommand::Clone => Plan::new(["clone", "{0}", "{1}"], "Clone").asking([

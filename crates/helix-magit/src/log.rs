@@ -34,6 +34,25 @@ pub struct LogFilter {
     /// where the ref has pointed, newest first, and why it moved.
     pub reflog: bool,
     pub limit: usize,
+    /// Commits whose changes add or remove lines matching this regex
+    /// (`-G`), or change how often this string occurs (`-S`).
+    pub changes: Option<String>,
+    pub occurrences: Option<String>,
+    pub no_merges: bool,
+    /// Dates as git takes them: `2024-01-31`, `2 weeks ago`.
+    pub since: Option<String>,
+    pub until: Option<String>,
+    /// Oldest first; git draws no graph then.
+    pub reverse: bool,
+    pub graph: bool,
+    /// Branch and tag names beside the commits.
+    pub decorate: bool,
+    /// More starting points, as git's own arguments: `--branches`,
+    /// `--remotes=origin/*`, several revisions.
+    pub revs: Vec<String>,
+    /// What these starting points are, for the title, when `revs` says it
+    /// better than `range`.
+    pub title: Option<String>,
 }
 
 impl Default for LogFilter {
@@ -48,9 +67,23 @@ impl Default for LogFilter {
             lines: None,
             reflog: false,
             limit: DEFAULT_LIMIT,
+            changes: None,
+            occurrences: None,
+            no_merges: false,
+            since: None,
+            until: None,
+            reverse: false,
+            graph: true,
+            decorate: true,
+            revs: Vec::new(),
+            title: None,
         }
     }
 }
+
+/// The log menu's switch that hides the graph. git has no such flag: the
+/// graph is this log's own `--graph`, left out.
+pub const NO_GRAPH_FLAG: &str = "--no-graph";
 
 /// The pseudo-flag the log menu uses for a path. git takes paths after
 /// `--`, not as a flag, so [`LogFilter::from_args`] moves it there.
@@ -69,6 +102,30 @@ impl LogFilter {
                 filter.path = Some(PathBuf::from(path));
             } else if arg == "--all" {
                 filter.all = true;
+            } else if let Some(regex) = arg.strip_prefix("-G") {
+                filter.changes = Some(regex.to_string());
+            } else if let Some(string) = arg.strip_prefix("-S") {
+                filter.occurrences = Some(string.to_string());
+            } else if let Some(trace) = arg.strip_prefix("-L") {
+                // `10,20:file` or `:function:file`: the file after the last colon.
+                if let Some((lines, path)) = trace.rsplit_once(':') {
+                    if !lines.is_empty() && !path.is_empty() {
+                        filter.lines = Some(lines.to_string());
+                        filter.path = Some(PathBuf::from(path));
+                    }
+                }
+            } else if arg == "--no-merges" {
+                filter.no_merges = true;
+            } else if let Some(date) = arg.strip_prefix("--since=") {
+                filter.since = Some(date.to_string());
+            } else if let Some(date) = arg.strip_prefix("--until=") {
+                filter.until = Some(date.to_string());
+            } else if arg == "--reverse" {
+                filter.reverse = true;
+            } else if arg == NO_GRAPH_FLAG {
+                filter.graph = false;
+            } else if arg == "--no-decorate" {
+                filter.decorate = false;
             }
         }
         filter
@@ -107,18 +164,40 @@ impl LogFilter {
             args.push("--".into());
             return args;
         }
-        let mut args: Vec<String> = [
-            "log",
-            "--graph",
-            "--color=never",
-            "--decorate=short",
-            "--date=short",
-            LOG_FORMAT,
-        ]
-        .iter()
-        .map(|arg| arg.to_string())
-        .collect();
+        let mut args: Vec<String> = vec!["log".into()];
+        // git refuses to draw a graph backwards.
+        if self.graph && !self.reverse {
+            args.push("--graph".into());
+        }
+        args.extend(["--color=never", "--decorate=short", "--date=short"].map(str::to_string));
+        args.push(
+            if self.decorate {
+                LOG_FORMAT
+            } else {
+                LOG_FORMAT_PLAIN
+            }
+            .to_string(),
+        );
         args.push(format!("--max-count={}", self.limit));
+        if let Some(regex) = &self.changes {
+            args.push(format!("-G{regex}"));
+        }
+        if let Some(string) = &self.occurrences {
+            args.push(format!("-S{string}"));
+        }
+        if self.no_merges {
+            args.push("--no-merges".into());
+        }
+        if let Some(date) = &self.since {
+            args.push(format!("--since={date}"));
+        }
+        if let Some(date) = &self.until {
+            args.push(format!("--until={date}"));
+        }
+        if self.reverse {
+            args.push("--reverse".into());
+        }
+        args.extend(self.revs.iter().cloned());
         if self.author.is_some() || self.grep.is_some() {
             args.push("--regexp-ignore-case".into());
         }
@@ -161,6 +240,8 @@ impl LogFilter {
         }
         let mut parts = vec![if self.all {
             "all references".to_string()
+        } else if let Some(title) = &self.title {
+            title.clone()
         } else {
             self.range.clone().unwrap_or_else(|| "HEAD".to_string())
         }];
@@ -176,12 +257,34 @@ impl LogFilter {
                 None => format!("touching {}", path.display()),
             });
         }
+        if let Some(regex) = &self.changes {
+            parts.push(format!("changes ~ {regex}"));
+        }
+        if let Some(string) = &self.occurrences {
+            parts.push(format!("adding or removing {string}"));
+        }
+        if self.no_merges {
+            parts.push("no merges".into());
+        }
+        match (&self.since, &self.until) {
+            (Some(since), Some(until)) => parts.push(format!("{since} to {until}")),
+            (Some(since), None) => parts.push(format!("since {since}")),
+            (None, Some(until)) => parts.push(format!("until {until}")),
+            (None, None) => {}
+        }
+        if self.reverse {
+            parts.push("oldest first".into());
+        }
         parts.join(", ")
     }
 }
 
 /// Hash, refs, date, author and subject, NUL-separated after the graph.
 const LOG_FORMAT: &str = "--format=%x00%h%x00%D%x00%ad%x00%an%x00%at%x00%s";
+
+/// The same without the refs, for a log that hides them: `%D` is filled
+/// whatever `--decorate` says.
+const LOG_FORMAT_PLAIN: &str = "--format=%x00%h%x00%x00%ad%x00%an%x00%at%x00%s";
 
 /// The reflog's lines in the same shape: the selector (`HEAD@{2}`) where
 /// the refs go, and why the ref moved (`reset: moving to HEAD~1`) as the
@@ -345,6 +448,39 @@ pub fn show_with(
         return Err(output.summary());
     }
     parse_show(&output.stdout).ok_or_else(|| format!("could not read {rev}"))
+}
+
+/// The merge that brought `commit` into `branch`: on the way from one to
+/// the other, the first merge whose own branch had it. `Err` when `branch`
+/// does not contain it, or got it without a merge.
+pub fn merged_by(workdir: &Path, commit: &str, branch: &str) -> Result<String, String> {
+    LogFilter::valid_range(commit)?;
+    LogFilter::valid_range(branch)?;
+    let git = |args: &[&str]| {
+        GitCommand::new(workdir, args.iter().map(|arg| arg.to_string()).collect())
+            .run()
+            .map_err(|err| err.to_string())
+    };
+    let contains = git(&["merge-base", "--is-ancestor", commit, branch])?;
+    if !contains.success {
+        return Err(format!("{branch} does not contain {commit}"));
+    }
+    let merges = git(&[
+        "rev-list",
+        "--ancestry-path",
+        "--merges",
+        "--reverse",
+        &format!("{commit}..{branch}"),
+    ])?;
+    // The merge it came in through: the first whose first parent did not
+    // have it yet. One whose first parent had it merely passed it along.
+    for merge in merges.stdout.lines() {
+        let before = git(&["merge-base", "--is-ancestor", commit, &format!("{merge}^1")])?;
+        if !before.success {
+            return Ok(merge.to_string());
+        }
+    }
+    Err(format!("{commit} reached {branch} without a merge"))
 }
 
 /// The diff between two revisions, or between one and the working tree

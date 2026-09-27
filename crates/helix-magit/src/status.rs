@@ -125,6 +125,61 @@ pub struct Overview {
     /// With a sparse checkout, the directories in the working tree (none:
     /// the top-level files only); `None` when everything is checked out.
     pub sparse: Option<Vec<String>>,
+    /// The last tag HEAD contains, and the first tag that contains HEAD.
+    pub tag: Option<NearTag>,
+    pub next_tag: Option<NearTag>,
+    /// The steps of the rebase, `am`, cherry-pick or revert under way,
+    /// newest first: still to do, the current one, done, and where a
+    /// rebase started.
+    pub sequence: Vec<Step>,
+    /// What each step of a bisect found, in order.
+    pub bisect_log: Vec<BisectEntry>,
+    /// Files git is told to ignore changes to (`update-index
+    /// --assume-unchanged`), and files left out of the working tree
+    /// (`--skip-worktree`; not listed under a sparse checkout, which
+    /// leaves out whole directories that way).
+    pub assumed: Vec<String>,
+    pub skipped: Vec<String>,
+}
+
+/// A tag, and how many commits lie between it and HEAD.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NearTag {
+    pub name: String,
+    pub distance: usize,
+}
+
+/// Where a step of an operation under way stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepState {
+    Todo,
+    /// The step the operation stopped at.
+    Current,
+    Done,
+    /// The commit a rebase starts from.
+    Onto,
+}
+
+/// A step of a rebase, `am`, cherry-pick or revert.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Step {
+    pub state: StepState,
+    /// `pick`, `fixup`, `exec`, … as the todo list names it.
+    pub action: String,
+    /// The commit, abbreviated; empty for a step that is not about one
+    /// (`exec`, `break`, a patch being applied).
+    pub hash: String,
+    pub subject: String,
+}
+
+/// A line of `git bisect log`: a commit and what it was found to be.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BisectEntry {
+    /// `good`, `bad`, `skip`, or the custom terms; `first bad commit` for
+    /// the answer.
+    pub verdict: String,
+    pub hash: String,
+    pub subject: String,
 }
 
 /// Another working tree of the same repository.
@@ -344,6 +399,26 @@ pub fn read(workdir: &Path) -> Overview {
     };
 
     let sparse = sparse_directories(workdir);
+    let (tag, next_tag) = if head.is_some() {
+        near_tags(workdir)
+    } else {
+        (None, None)
+    };
+    let sequence = git_dir(workdir)
+        .map(|git_dir| sequence(workdir, &git_dir))
+        .unwrap_or_default();
+    let bisect_log = match &in_progress {
+        Some(InProgress {
+            operation: Operation::Bisect,
+            ..
+        }) => git(workdir, &["bisect", "log"])
+            .map(|text| parse_bisect_log(&text))
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    };
+    let (assumed, skipped) = git(workdir, &["ls-files", "-v"])
+        .map(|text| parse_index_flags(&text, sparse.is_some()))
+        .unwrap_or_default();
 
     Overview {
         branch,
@@ -360,7 +435,234 @@ pub fn read(workdir: &Path) -> Overview {
         worktrees,
         submodules,
         sparse,
+        tag,
+        next_tag,
+        sequence,
+        bisect_log,
+        assumed,
+        skipped,
     }
+}
+
+/// The last tag HEAD contains and the first one containing HEAD, each with
+/// its distance; the second is left out when it is the first (HEAD tagged).
+fn near_tags(workdir: &Path) -> (Option<NearTag>, Option<NearTag>) {
+    let count = |range: String| -> usize {
+        git(workdir, &["rev-list", "--count", &range])
+            .and_then(|count| count.trim().parse().ok())
+            .unwrap_or(0)
+    };
+    let tag = git(workdir, &["describe", "--tags", "--abbrev=0", "HEAD"])
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .map(|name| NearTag {
+            distance: count(format!("{name}..HEAD")),
+            name,
+        });
+    // `v1.2~3`, or `v1.2^2~1` through a merge: the tag is the name before.
+    let next_tag = git(
+        workdir,
+        &["describe", "--tags", "--contains", "--match=*", "HEAD"],
+    )
+    .map(|name| {
+        name.trim()
+            .split(['~', '^'])
+            .next()
+            .unwrap_or("")
+            .to_string()
+    })
+    .filter(|name| !name.is_empty())
+    .filter(|name| tag.as_ref().is_none_or(|tag| &tag.name != name))
+    .map(|name| NearTag {
+        distance: count(format!("HEAD..{name}")),
+        name,
+    });
+    (tag, next_tag)
+}
+
+/// Reads a todo list: its steps as `(action, hash, subject)`, comments
+/// left out. A step that names no commit (`exec`, `break`, `label`, …)
+/// has no hash and keeps the rest of its line as its subject.
+pub fn parse_todo(text: &str) -> Vec<(String, String, String)> {
+    const TAKES_COMMIT: [&str; 12] = [
+        "pick", "p", "reword", "r", "edit", "e", "squash", "s", "fixup", "f", "drop", "d",
+    ];
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| {
+            let mut words = line.splitn(2, char::is_whitespace);
+            let action = words.next().unwrap_or("").to_string();
+            let mut rest = words.next().unwrap_or("").trim_start();
+            if !TAKES_COMMIT.contains(&action.as_str()) {
+                return (action, String::new(), rest.to_string());
+            }
+            // `fixup -C <commit>`: the option is not the commit.
+            if rest.starts_with('-') {
+                rest = rest
+                    .split_once(char::is_whitespace)
+                    .map_or("", |(_, after)| after.trim_start());
+            }
+            let (hash, subject) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            let subject = subject.trim_start();
+            let subject = subject.strip_prefix("# ").unwrap_or(subject);
+            (
+                action,
+                short_hash(hash).to_string(),
+                subject.trim().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// The steps of the operation under way, newest first; empty when none, or
+/// for a single cherry-pick or revert, whose header line says it all.
+fn sequence(workdir: &Path, git_dir: &Path) -> Vec<Step> {
+    let step = |state, (action, hash, subject): (String, String, String)| Step {
+        state,
+        action,
+        hash,
+        subject,
+    };
+    let mut steps = Vec::new();
+
+    let merge_dir = git_dir.join("rebase-merge");
+    if merge_dir.is_dir() {
+        let todo = std::fs::read_to_string(merge_dir.join("git-rebase-todo")).unwrap_or_default();
+        let done = std::fs::read_to_string(merge_dir.join("done")).unwrap_or_default();
+        steps.extend(
+            parse_todo(&todo)
+                .into_iter()
+                .rev()
+                .map(|entry| step(StepState::Todo, entry)),
+        );
+        // The last step done is the one the rebase stopped at.
+        let mut done = parse_todo(&done);
+        if let Some(current) = done.pop() {
+            steps.push(step(StepState::Current, current));
+        }
+        steps.extend(
+            done.into_iter()
+                .rev()
+                .map(|entry| step(StepState::Done, entry)),
+        );
+        if let Some(onto) = read_trimmed(&merge_dir.join("onto")) {
+            let subject = log(workdir, &onto, 1)
+                .pop()
+                .map(|commit| commit.subject)
+                .unwrap_or_default();
+            steps.push(Step {
+                state: StepState::Onto,
+                action: "onto".into(),
+                hash: short_hash(&onto).to_string(),
+                subject,
+            });
+        }
+        return steps;
+    }
+
+    let apply_dir = git_dir.join("rebase-apply");
+    if apply_dir.is_dir() {
+        let number = |name: &str| -> usize {
+            read_trimmed(&apply_dir.join(name))
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(0)
+        };
+        let (next, last) = (number("next"), number("last"));
+        for patch in (1..=last).rev() {
+            let text =
+                std::fs::read_to_string(apply_dir.join(format!("{patch:04}"))).unwrap_or_default();
+            let subject = text
+                .lines()
+                .find_map(|line| line.strip_prefix("Subject: "))
+                .map(|subject| {
+                    // `[PATCH 2/5] Subject`: the bracket is mail's, not the commit's.
+                    match subject.strip_prefix('[') {
+                        Some(rest) => rest.split_once("] ").map_or(subject, |(_, s)| s),
+                        None => subject,
+                    }
+                })
+                .unwrap_or("")
+                .to_string();
+            let state = match patch.cmp(&next) {
+                std::cmp::Ordering::Less => StepState::Done,
+                std::cmp::Ordering::Equal => StepState::Current,
+                std::cmp::Ordering::Greater => StepState::Todo,
+            };
+            steps.push(Step {
+                state,
+                action: format!("patch {patch}"),
+                hash: String::new(),
+                subject,
+            });
+        }
+        return steps;
+    }
+
+    let sequencer = git_dir.join("sequencer");
+    if sequencer.join("todo").is_file() {
+        let todo = std::fs::read_to_string(sequencer.join("todo")).unwrap_or_default();
+        let mut todo = parse_todo(&todo);
+        // The step git stopped at stays first in its list until committed.
+        let stopped =
+            git_dir.join("CHERRY_PICK_HEAD").exists() || git_dir.join("REVERT_HEAD").exists();
+        let current = (stopped && !todo.is_empty()).then(|| todo.remove(0));
+        steps.extend(
+            todo.into_iter()
+                .rev()
+                .map(|entry| step(StepState::Todo, entry)),
+        );
+        steps.extend(current.map(|entry| step(StepState::Current, entry)));
+        if let Some(head) = read_trimmed(&sequencer.join("head")) {
+            steps.extend(
+                log(workdir, &format!("{head}..HEAD"), DIVERGENCE_LIMIT)
+                    .into_iter()
+                    .map(|commit| Step {
+                        state: StepState::Done,
+                        action: "done".into(),
+                        hash: commit.hash,
+                        subject: commit.subject,
+                    }),
+            );
+        }
+    }
+    steps
+}
+
+/// Reads `git bisect log`: the comment lines git writes for each verdict,
+/// `# good: [<hash>] <subject>`.
+pub fn parse_bisect_log(text: &str) -> Vec<BisectEntry> {
+    text.lines()
+        .filter_map(|line| {
+            let line = line.strip_prefix("# ")?;
+            let (verdict, rest) = line.split_once(": [")?;
+            let (hash, subject) = rest.split_once("] ")?;
+            Some(BisectEntry {
+                verdict: verdict.to_string(),
+                hash: short_hash(hash).to_string(),
+                subject: subject.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Reads `git ls-files -v`: the assume-unchanged files (a lowercase tag)
+/// and the skip-worktree ones (`S`), the latter only when `sparse` is off.
+pub fn parse_index_flags(text: &str, sparse: bool) -> (Vec<String>, Vec<String>) {
+    let mut assumed = Vec::new();
+    let mut skipped = Vec::new();
+    for line in text.lines() {
+        let Some((tag, path)) = line.split_once(' ') else {
+            continue;
+        };
+        if tag.chars().all(|c| c.is_ascii_lowercase()) {
+            assumed.push(path.to_string());
+        }
+        if !sparse && tag.eq_ignore_ascii_case("s") {
+            skipped.push(path.to_string());
+        }
+    }
+    (assumed, skipped)
 }
 
 /// The directories a sparse checkout includes, or `None` without one. In
@@ -381,8 +683,6 @@ pub fn sparse_directories(workdir: &Path) -> Option<Vec<String>> {
     )
 }
 
-/// The repository's git directory — `.git`, or elsewhere for a linked
-/// worktree or a submodule.
 /// The checked-out branch, `None` when HEAD is detached.
 pub fn current_branch(workdir: &Path) -> Option<String> {
     git(workdir, &["symbolic-ref", "--quiet", "--short", "HEAD"])
@@ -401,6 +701,8 @@ pub fn push_remote(workdir: &Path, branch: &str) -> Option<String> {
     config(&format!("branch.{branch}.pushRemote")).or_else(|| config("remote.pushDefault"))
 }
 
+/// The repository's git directory — `.git`, or elsewhere for a linked
+/// worktree or a submodule.
 pub fn git_dir(workdir: &Path) -> Option<PathBuf> {
     git(workdir, &["rev-parse", "--absolute-git-dir"])
         .map(|dir| PathBuf::from(dir.trim()))
@@ -541,6 +843,46 @@ pub fn in_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn todo_lists_bisect_logs_and_index_flags_are_read() {
+        let todo = "pick 1234567890 First\n\
+                    fixup -C abcdef0123 # Second\n\
+                    exec make test\n\
+                    # a comment\n\
+                    \n\
+                    break\n";
+        assert_eq!(
+            parse_todo(todo),
+            [
+                ("pick".into(), "1234567".into(), "First".into()),
+                ("fixup".into(), "abcdef0".into(), "Second".into()),
+                ("exec".into(), String::new(), "make test".into()),
+                ("break".into(), String::new(), String::new()),
+            ]
+        );
+
+        let log = "git bisect start\n\
+                   # bad: [1234567890abcdef] Broke it\n\
+                   git bisect bad 1234567890abcdef\n\
+                   # first bad commit: [1234567890abcdef] Broke it\n";
+        let entries = parse_bisect_log(log);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].verdict, "bad");
+        assert_eq!(entries[0].hash, "1234567");
+        assert_eq!(entries[1].verdict, "first bad commit");
+        assert_eq!(entries[1].subject, "Broke it");
+
+        let flags = "H tracked.txt\nh assumed.txt\nS skipped.txt\ns both.txt\n";
+        assert_eq!(
+            parse_index_flags(flags, false),
+            (
+                vec!["assumed.txt".to_string(), "both.txt".to_string()],
+                vec!["skipped.txt".to_string(), "both.txt".to_string()]
+            )
+        );
+        assert!(parse_index_flags(flags, true).1.is_empty());
+    }
 
     #[test]
     fn log_and_stash_output_is_read() {

@@ -2247,22 +2247,54 @@ the views parse git's own output.
 
 ### Task 2.28: The Status, Log and Blame Views
 
-- [ ] Status: tags in the head section (the tag at HEAD and the next one,
+- [x] Status: tags in the head section (the tag at HEAD and the next one,
       with distances).
-- [ ] Status: during a rebase, a cherry-pick, a revert or an `am`, list the
+- [x] Status: during a rebase, a cherry-pick, a revert or an `am`, list the
       commits done and still to do, not only a one-line summary.
-- [ ] Status: the bisect log as a section.
-- [ ] Status: sections for files marked assume-unchanged and skip-worktree.
-- [ ] Log: trace (`-L`), pickaxe (`-G`, `-S`), `--no-merges`,
+- [x] Status: the bisect log as a section.
+- [x] Status: sections for files marked assume-unchanged and skip-worktree.
+- [x] Log: trace (`-L`), pickaxe (`-G`, `-S`), `--no-merges`,
       `--since` / `--until`, `--reverse`; toggles for the graph and the
       decorations.
-- [ ] Log: logs of branches (`l b`), of local or all branches (`l L`, `l B`),
+- [x] Log: logs of branches (`l b`), of local or all branches (`l L`, `l B`),
       of related refs (`l h`), of what was merged (`l m`).
-- [ ] Log: a margin menu (`L`) to toggle the margin and choose its style.
-- [ ] Log select: pick a commit in a log for another command to use (the
+- [x] Log: a margin menu (`L`) to toggle the margin and choose its style.
+- [x] Log select: pick a commit in a log for another command to use (the
       target of a rebase, a fixup), instead of typing a revision.
-- [ ] Blame: reverse blame (`r`), move and copy detection (`-M`, `-C`), and a
+- [x] Blame: reverse blame (`r`), move and copy detection (`-M`, `-C`), and a
       choice of styles (`c`).
+
+*Done.* Status: the head section names the last tag HEAD contains and the
+first one containing it, with their distances. During a rebase, an `am`,
+or a cherry-pick or revert of several commits, a section lists the steps,
+newest first: those still to do, the one it stopped at, those done (for a
+cherry-pick, the commits made since it started), and the commit a rebase
+is onto; `RET` shows a step's commit. A bisect's log (each verdict and
+the commit it was given for) is a section while it lasts, and so are the
+files marked assume-unchanged and skip-worktree (the latter not under a
+sparse checkout, which leaves out whole directories that way). These are
+stored after the other sections and drawn before them, so the sections
+above keep their places. Log: `-c` (`-G`, changes matching a regex), `-S`
+(adding or removing a string), `-L` (`10,20:file` or `:function:file`),
+`-m --no-merges`, `-s --since=`, `-u --until=`, `-r --reverse` (git draws
+no graph backwards), and `-g` / `-d` to hide the graph and the branch and
+tag names; the dispatch keys stay those already taken (`-G` is the message,
+as before). `l u` logs HEAD with its upstream and push branches (Magit's
+related refs), `l L` the local branches, `l b` all branches, `l B` those
+matching a glob, and `l m` asks for a commit and a branch and logs the
+merge that brought one into the other: the first merge on the way whose
+own first parent did not have it yet. The margin menu is `L` in the log
+(the status's `L` is the log itself) and `? Z` anywhere: show or hide it
+(it comes back as it was), its style (age, a short age such as `3d`, the
+date), and the authors; `Z` still cycles the style, now through the short
+age too. Log select: wherever a command asks for a commit, `?` opens the
+log to pick one, as does an empty answer when there is no default; `RET`
+picks, `q` gives up, and the command goes on with the commit picked. Blame:
+`M` follows lines moved within the file, `C` cycles through following
+copies (`-C`, `-C -C`, `-C -C -C`), `r` blames in reverse since a commit
+(for each line of that version, the last commit that still had it; `r`
+again goes back), and `c` cycles the style: a heading per change, every
+line with its commit, or hashes only.
 
 ### Task 2.29: Transient Persistence
 

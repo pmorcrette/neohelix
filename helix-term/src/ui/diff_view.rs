@@ -52,6 +52,14 @@ enum SectionKind {
     /// The other worktrees of the repository.
     Worktrees,
     Submodules,
+    /// The steps of a rebase, `am`, cherry-pick or revert under way.
+    Sequence,
+    /// What a bisect found so far.
+    BisectLog,
+    /// Files whose changes git is told to ignore, or leaves out of the
+    /// working tree.
+    Assumed,
+    Skipped,
     /// The refs view's three lists.
     LocalBranches,
     RemoteBranches,
@@ -140,6 +148,28 @@ fn header_lines(overview: &Overview) -> Vec<HeaderLine> {
         parts: head,
     });
 
+    for (label, tag, relation) in [
+        ("Tag:", &overview.tag, "since"),
+        ("Next tag:", &overview.next_tag, "to go"),
+    ] {
+        if let Some(tag) = tag {
+            lines.push(HeaderLine {
+                label,
+                parts: vec![
+                    (tag.name.clone(), Tone::Emphasis),
+                    (
+                        format!(
+                            "  ({} commit{} {relation})",
+                            tag.distance,
+                            if tag.distance == 1 { "" } else { "s" }
+                        ),
+                        Tone::Dim,
+                    ),
+                ],
+            });
+        }
+    }
+
     for (label, tracked) in [("Upstream:", &overview.upstream), ("Push:", &overview.push)] {
         if let Some(tracked) = tracked {
             let mut parts = vec![
@@ -192,6 +222,35 @@ fn header_lines(overview: &Overview) -> Vec<HeaderLine> {
         });
     }
     lines
+}
+
+/// A step of an operation under way, as its section lists it: the commit,
+/// then what is done with it and where the operation stands.
+fn step_item(step: &helix_magit::status::Step) -> Item {
+    use helix_magit::status::StepState;
+    let action = match step.state {
+        StepState::Done if step.action == "pick" => "done".to_string(),
+        _ => step.action.clone(),
+    };
+    let mut text = format!("{action:<6} {}", step.subject);
+    if step.state == StepState::Current {
+        text.push_str("  ← stopped here");
+    }
+    Item {
+        label: step.hash.clone(),
+        text,
+        ..Item::default()
+    }
+}
+
+fn path_items(paths: &[String]) -> Vec<Item> {
+    paths
+        .iter()
+        .map(|path| Item {
+            label: path.clone(),
+            ..Item::default()
+        })
+        .collect()
 }
 
 /// Every section, in Magit's order. Empty ones are kept, and skipped when
@@ -326,6 +385,46 @@ fn build_sections(
                     ..Item::default()
                 })
                 .collect(),
+        ),
+        // Shown first (see `display_order`), stored last so the sections
+        // above keep their places.
+        items(
+            SectionKind::Sequence,
+            {
+                // The header's state line says where it stands.
+                use helix_magit::status::Operation;
+                match overview.in_progress.as_ref().map(|state| state.operation) {
+                    Some(Operation::Am) => "Patches",
+                    Some(Operation::CherryPick) => "Cherry-picks",
+                    Some(Operation::Revert) => "Reverts",
+                    _ => "Rebase steps",
+                }
+                .to_string()
+            },
+            overview.sequence.iter().map(step_item).collect(),
+        ),
+        items(
+            SectionKind::BisectLog,
+            "Bisect log".to_string(),
+            overview
+                .bisect_log
+                .iter()
+                .map(|entry| Item {
+                    label: entry.hash.clone(),
+                    text: format!("{:<6} {}", entry.verdict, entry.subject),
+                    ..Item::default()
+                })
+                .collect(),
+        ),
+        items(
+            SectionKind::Assumed,
+            "Assumed unchanged".to_string(),
+            path_items(&overview.assumed),
+        ),
+        items(
+            SectionKind::Skipped,
+            "Skipped in the working tree".to_string(),
+            path_items(&overview.skipped),
         ),
     ]
 }
@@ -670,6 +769,11 @@ impl DiffView {
             },
         }
         self.rebuild_rows();
+    }
+
+    /// Draws the margin in `margin`, as the margin menu asks.
+    pub fn set_margin(&mut self, margin: Margin) {
+        self.margin = margin;
     }
 
     /// Switches a range between `..` and `...`, Magit's `D r`.
@@ -1099,7 +1203,8 @@ impl DiffView {
             .map(|line| Row::Header { line })
             .collect();
 
-        for (section_index, section) in self.sections.iter().enumerate() {
+        for section_index in self.display_order() {
+            let section = &self.sections[section_index];
             if section.len() == 0 {
                 continue;
             }
@@ -1175,6 +1280,17 @@ impl DiffView {
                 }
             }
         }
+    }
+
+    /// The sections in the order they are shown: what is under way first,
+    /// as in Magit, then the rest as stored.
+    fn display_order(&self) -> Vec<usize> {
+        let first =
+            |kind: SectionKind| matches!(kind, SectionKind::Sequence | SectionKind::BisectLog);
+        let (mut order, rest): (Vec<usize>, Vec<usize>) =
+            (0..self.sections.len()).partition(|&index| first(self.sections[index].kind));
+        order.extend(rest);
+        order
     }
 
     fn current_row(&self) -> Option<Row> {
@@ -1706,6 +1822,10 @@ impl DiffView {
                     "Resolve the conflict in the file (RET visits it)".into()
                 ))
             }
+            (SectionKind::Assumed | SectionKind::Skipped, _) => {
+                return Some(Err("A file, not a commit".into()))
+            }
+            _ if label.is_empty() => return Some(Err("This step is not a commit".into())),
             (SectionKind::Stashes, false) => (&["stash", "apply"], "Apply stash"),
             (SectionKind::Stashes, true) => {
                 return Some(Err(
@@ -1736,14 +1856,22 @@ impl DiffView {
                 | SectionKind::PushUnpushed
                 | SectionKind::PushUnpulled
                 | SectionKind::Recent
-                | SectionKind::Cherries => AskKind::Revision,
+                | SectionKind::Cherries
+                | SectionKind::Sequence
+                | SectionKind::BisectLog
+                    if !item.label.is_empty() =>
+                {
+                    AskKind::Revision
+                }
                 SectionKind::Stashes => AskKind::Stash,
                 SectionKind::LocalBranches | SectionKind::RemoteBranches => AskKind::Branch,
                 SectionKind::Tags => AskKind::Tag,
                 SectionKind::Worktrees | SectionKind::Unmerged => {
                     return Some((item.text.clone(), AskKind::Path))
                 }
-                SectionKind::Submodules => return Some((item.label.clone(), AskKind::Path)),
+                SectionKind::Submodules | SectionKind::Assumed | SectionKind::Skipped => {
+                    return Some((item.label.clone(), AskKind::Path))
+                }
                 _ => return None,
             };
             return Some((item.label.clone(), kind));
@@ -1776,8 +1904,11 @@ impl DiffView {
                 | SectionKind::Worktrees
                 | SectionKind::Submodules
                 | SectionKind::Repositories
+                | SectionKind::Assumed
+                | SectionKind::Skipped
         ))
         .then(|| section.items.get(item).map(|item| item.label.clone()))?
+        .filter(|label| !label.is_empty())
     }
 
     /// Moves the cursor to a section's header. Returns false when the
@@ -3312,7 +3443,79 @@ mod tests {
             worktrees: Vec::new(),
             submodules: Vec::new(),
             sparse: None,
+            ..Overview::default()
         }
+    }
+
+    #[test]
+    fn the_steps_under_way_come_first_and_tags_head_the_status() {
+        use helix_magit::status::{NearTag, Step, StepState};
+        let mut overview = overview();
+        overview.tag = Some(NearTag {
+            name: "v1.0".into(),
+            distance: 3,
+        });
+        overview.sequence = vec![
+            Step {
+                state: StepState::Todo,
+                action: "pick".into(),
+                hash: "1111111".into(),
+                subject: "Next".into(),
+            },
+            Step {
+                state: StepState::Current,
+                action: "edit".into(),
+                hash: "2222222".into(),
+                subject: "Here".into(),
+            },
+            Step {
+                state: StepState::Todo,
+                action: "exec".into(),
+                hash: String::new(),
+                subject: "make".into(),
+            },
+        ];
+        overview.assumed = vec!["local.cfg".into()];
+        let mut view = make_full_view(vec![], vec![], vec![], vec![], &overview);
+
+        let header = header_lines(&overview);
+        let tag = header.iter().find(|line| line.label == "Tag:").unwrap();
+        assert_eq!(tag.parts[0].0, "v1.0");
+        assert!(tag.parts[1].0.contains("3 commits since"));
+
+        let first_section = view
+            .rows
+            .iter()
+            .find_map(|row| match row {
+                Row::Section { section } => Some(view.sections[*section].kind),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(first_section, SectionKind::Sequence);
+        let item = |view: &DiffView, index: usize| {
+            view.rows
+                .iter()
+                .position(|row| matches!(row, Row::Item { section, item } if view.sections[*section].kind == SectionKind::Sequence && *item == index))
+                .unwrap()
+        };
+        view.cursor = item(&view, 1);
+        assert_eq!(view.revision_at_cursor().as_deref(), Some("2222222"));
+        assert!(view
+            .sections
+            .iter()
+            .any(|section| section.kind == SectionKind::Sequence
+                && section.items[1].text.contains("stopped here")));
+        // An `exec` step is no commit.
+        view.cursor = item(&view, 2);
+        assert_eq!(view.revision_at_cursor(), None);
+        assert!(view.item_command(false).unwrap().is_err());
+
+        let assumed = view
+            .sections
+            .iter()
+            .find(|section| section.kind == SectionKind::Assumed)
+            .unwrap();
+        assert_eq!(assumed.items[0].label, "local.cfg");
     }
 
     #[test]

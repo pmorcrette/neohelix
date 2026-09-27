@@ -28,7 +28,12 @@ pub struct LogView {
     /// git's complaint, when the log could not be read.
     error: Option<String>,
     margin: Margin,
+    /// In a log opened to pick a commit, what the chosen one is for.
+    pick: Option<Pick>,
 }
+
+/// What a commit picked from the log is handed to.
+pub type Pick = std::sync::Arc<dyn Fn(&mut Editor, &mut Compositor, String) + Send + Sync>;
 
 /// Which filter a prompt sets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +46,21 @@ enum Refine {
 
 impl LogView {
     pub const ID: &'static str = "magit-log";
+    /// A log opened to pick a commit, over any other log.
+    pub const SELECT_ID: &'static str = "magit-log-select";
+
+    /// A log to pick a commit from, instead of typing a revision: `RET`
+    /// hands it to `pick`, `q` gives up. Magit's log select mode.
+    pub fn select(workdir: PathBuf, pick: Pick) -> Self {
+        let mut view = Self::new(workdir, LogFilter::default());
+        view.pick = Some(pick);
+        view
+    }
+
+    /// Draws the margin in `margin`, as the margin menu asks.
+    pub fn set_margin(&mut self, margin: Margin) {
+        self.margin = margin;
+    }
 
     pub fn new(workdir: PathBuf, filter: LogFilter) -> Self {
         let mut view = Self {
@@ -51,6 +71,7 @@ impl LogView {
             scroll: 0,
             error: None,
             margin: LOG_MARGIN.get(),
+            pick: None,
         };
         view.reload();
         view
@@ -135,6 +156,9 @@ impl LogView {
     }
 
     fn title(&self) -> String {
+        if self.pick.is_some() && self.error.is_none() {
+            return "Pick a commit: RET chooses it, q gives up".to_string();
+        }
         match &self.error {
             Some(error) => format!("Log: {error}"),
             None => format!(
@@ -367,13 +391,36 @@ impl Component for LogView {
     fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
         // Docked, the keys are Magit's only while it has the focus; `Esc`
         // gives them back to the documents and `q` still closes.
-        if let Some(result) = crate::ui::dock::route(crate::ui::dock::MAGIT, event, cx.editor, true)
+        // Picking, `Esc` gives up rather than leaving the log.
+        let picking = self.pick.is_some();
+        if let Some(result) =
+            crate::ui::dock::route(crate::ui::dock::MAGIT, event, cx.editor, !picking)
         {
             return result;
         }
         let Event::Key(key) = event else {
             return EventResult::Consumed(None);
         };
+        if let Some(pick) = self.pick.clone() {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    return EventResult::Consumed(Some(Box::new(|compositor, cx| {
+                        compositor.remove(LogView::SELECT_ID);
+                        cx.editor.set_status("No commit picked");
+                    })));
+                }
+                KeyCode::Enter => {
+                    let Some(hash) = self.current_hash().map(str::to_string) else {
+                        return EventResult::Consumed(None);
+                    };
+                    return EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                        compositor.remove(LogView::SELECT_ID);
+                        pick(cx.editor, compositor, hash);
+                    })));
+                }
+                _ => {}
+            }
+        }
 
         let refine = |what: Refine, current: Option<String>| {
             EventResult::Consumed(Some(Box::new(
@@ -425,6 +472,16 @@ impl Component for LogView {
                     ),
                     None => cx.editor.set_error("No commit here"),
                 }
+            }
+            (KeyCode::Char('L'), _) => {
+                let overlay = TransientOverlay::new(
+                    helix_magit::transient::margin_menu(),
+                    self.filter.describe(),
+                    self.workdir.clone(),
+                );
+                return EventResult::Consumed(Some(Box::new(move |compositor, _| {
+                    compositor.push(Box::new(overlay));
+                })));
             }
             (KeyCode::Char('Z'), _) => {
                 self.margin = self.margin.next();
@@ -493,7 +550,11 @@ impl Component for LogView {
     }
 
     fn id(&self) -> Option<&'static str> {
-        Some(Self::ID)
+        Some(if self.pick.is_some() {
+            Self::SELECT_ID
+        } else {
+            Self::ID
+        })
     }
 }
 
@@ -519,6 +580,7 @@ mod tests {
             scroll: 0,
             error: None,
             margin: Margin::Off,
+            pick: None,
         }
     }
 

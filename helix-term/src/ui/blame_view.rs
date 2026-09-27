@@ -3,11 +3,13 @@
 //! Each run of lines from one commit is headed by that commit — hash, date,
 //! author, subject — and `b` blames the revision before the one under the
 //! cursor, so a line's history can be walked back one change at a time; `q`
-//! walks forward again.
+//! walks forward again. `M` and `C` follow lines moved or copied, `r`
+//! blames in reverse (when each line was last there), `c` changes how the
+//! commits are shown.
 
 use std::path::{Path, PathBuf};
 
-use helix_magit::blame::{blame, BlameLine};
+use helix_magit::blame::{blame_with, BlameLine, BlameOptions};
 use helix_magit::log::LogFilter;
 use helix_view::graphics::Rect;
 use helix_view::input::{KeyCode, KeyModifiers};
@@ -37,6 +39,37 @@ pub struct BlameView {
     error: Option<String>,
     /// The revisions `b` stepped back from, most recent last.
     history: Vec<Place>,
+    options: BlameOptions,
+    style: BlameStyle,
+}
+
+/// How the commits are shown beside the lines (`c` cycles).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlameStyle {
+    /// Each run of lines headed by its commit: hash, date, author, subject.
+    Headings,
+    /// Every line with its commit's hash, date and author.
+    EveryLine,
+    /// The hash alone at each run, leaving the room to the code.
+    Compact,
+}
+
+impl BlameStyle {
+    fn next(self) -> Self {
+        match self {
+            BlameStyle::Headings => BlameStyle::EveryLine,
+            BlameStyle::EveryLine => BlameStyle::Compact,
+            BlameStyle::Compact => BlameStyle::Headings,
+        }
+    }
+
+    fn describe(self) -> &'static str {
+        match self {
+            BlameStyle::Headings => "Blame style: a heading per change",
+            BlameStyle::EveryLine => "Blame style: every line",
+            BlameStyle::Compact => "Blame style: hashes only",
+        }
+    }
 }
 
 /// The width of the commit column beside the code.
@@ -56,13 +89,27 @@ impl BlameView {
             scroll: 0,
             error: None,
             history: Vec::new(),
+            options: BlameOptions::default(),
+            style: BlameStyle::Headings,
         };
         view.load();
         view
     }
 
+    /// Reverse blame since `from`, or back to a plain one with `None`.
+    pub fn set_reverse(&mut self, from: Option<String>) {
+        self.options.reverse_from = from;
+        self.history.clear();
+        self.load();
+    }
+
     fn load(&mut self) {
-        match blame(&self.workdir, &self.path, self.rev.as_deref()) {
+        match blame_with(
+            &self.workdir,
+            &self.path,
+            self.rev.as_deref(),
+            &self.options,
+        ) {
             Ok(lines) => {
                 self.lines = lines;
                 self.error = None;
@@ -118,6 +165,10 @@ impl BlameView {
         let Some(line) = self.current().cloned() else {
             return;
         };
+        if self.options.reverse_from.is_some() {
+            self.error = Some("A reverse blame looks forward: r goes back to a plain one".into());
+            return;
+        }
         if line.is_uncommitted() {
             // The working tree's own edit: its "before" is HEAD.
             self.go_to(Some("HEAD".to_string()), self.path.clone(), self.cursor);
@@ -186,7 +237,41 @@ impl BlameView {
         } else {
             format!(" ({} back; q returns)", self.history.len())
         };
-        format!("Blame: {}{at}{depth}", self.path.display())
+        let options = self.options.describe();
+        let options = if options.is_empty() {
+            String::new()
+        } else {
+            format!(" {options}")
+        };
+        match &self.options.reverse_from {
+            Some(from) => format!(
+                "Reverse blame: {} since {from}, the last commit each line was in{options}",
+                self.path.display()
+            ),
+            None => format!("Blame: {}{at}{depth}{options}", self.path.display()),
+        }
+    }
+
+    /// What the commit column shows on line `index`, in the style chosen.
+    fn left(&self, index: usize) -> Option<String> {
+        let line = &self.lines[index];
+        let starts = self.starts_chunk(index);
+        match self.style {
+            BlameStyle::Headings if starts => Some(Self::heading(line)),
+            BlameStyle::EveryLine if line.is_uncommitted() => Some("Not committed yet".into()),
+            BlameStyle::EveryLine => {
+                Some(format!("{} {} {}", line.short(), line.date(), line.author))
+            }
+            BlameStyle::Compact if starts => Some(line.short().to_string()),
+            _ => None,
+        }
+    }
+
+    fn column_width(&self, width: usize) -> usize {
+        match self.style {
+            BlameStyle::Compact => 9,
+            _ => COMMIT_COLUMN.min(width / 3),
+        }
     }
 
     /// The heading of a run: short hash, date, author, subject.
@@ -235,7 +320,7 @@ impl Component for BlameView {
         let rule_style = theme.get("ui.virtual");
         let code_style = theme.get("ui.text");
         let renderer = RowRenderer::new(cx.editor);
-        let column = COMMIT_COLUMN.min(inner.width as usize / 3);
+        let column = self.column_width(inner.width as usize);
         let number_width = self.lines.len().to_string().len();
 
         for (index, line) in self
@@ -258,10 +343,9 @@ impl Component for BlameView {
                 surface.set_style(Rect::new(inner.x, y, inner.width, 1), cursor_style);
             }
 
-            let (left, style) = if self.starts_chunk(index) {
-                (Self::heading(line), heading_style)
-            } else {
-                ("│".to_string(), rule_style)
+            let (left, style) = match self.left(index) {
+                Some(left) => (left, heading_style),
+                None => ("│".to_string(), rule_style),
             };
             surface.set_string_truncated(
                 inner.x,
@@ -329,6 +413,41 @@ impl Component for BlameView {
             (KeyCode::Char('b'), KeyModifiers::NONE) => {
                 self.error = None;
                 self.step_back();
+            }
+            (KeyCode::Char('c'), KeyModifiers::NONE) => {
+                self.style = self.style.next();
+                cx.editor.set_status(self.style.describe());
+            }
+            // Lines moved within the file, then copied from others, keep
+            // the commit that wrote them.
+            (KeyCode::Char('M'), _) => {
+                self.options.moves = !self.options.moves;
+                self.load();
+            }
+            (KeyCode::Char('C'), _) => {
+                self.options.copies = (self.options.copies + 1) % 4;
+                self.load();
+                cx.editor.set_status(match self.options.copies {
+                    0 => "Copies not followed",
+                    1 => "Following lines copied from files the same commit changed (-C)",
+                    2 => "… and from the files that created this one (-C -C)",
+                    _ => "… and from any commit (-C -C -C, slow)",
+                });
+            }
+            // Reverse: since a revision, when each line was last there.
+            (KeyCode::Char('r'), KeyModifiers::NONE) => {
+                if self.options.reverse_from.is_some() {
+                    self.set_reverse(None);
+                    return EventResult::Consumed(None);
+                }
+                let workdir = self.workdir.clone();
+                let start = self
+                    .current()
+                    .filter(|line| !line.is_uncommitted())
+                    .map(|line| line.short().to_string());
+                return EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                    compositor.push(Box::new(reverse_prompt(workdir, start, cx.editor)));
+                })));
             }
             (KeyCode::Enter, _) => {
                 let Some(line) = self.current() else {
@@ -409,6 +528,50 @@ impl Component for BlameView {
     }
 }
 
+/// Asks since which revision to blame in reverse, then does.
+fn reverse_prompt(
+    workdir: PathBuf,
+    start: Option<String>,
+    editor: &helix_view::Editor,
+) -> crate::ui::Prompt {
+    let names = helix_magit::refs::names(&workdir, helix_magit::AskKind::Revision);
+    let prompt = crate::ui::Prompt::new(
+        "Reverse blame since (a commit): ".into(),
+        None,
+        move |_, input| {
+            names
+                .iter()
+                .filter(|name| name.contains(input))
+                .map(|name| (0.., name.clone().into()))
+                .collect()
+        },
+        move |cx, input, event| {
+            if event != crate::ui::PromptEvent::Validate {
+                return;
+            }
+            let from = input.trim().to_string();
+            if let Err(err) = LogFilter::valid_range(&from) {
+                cx.editor.set_error(err);
+                return;
+            }
+            cx.jobs.callback(async move {
+                Ok(crate::job::Callback::EditorCompositor(Box::new(
+                    move |_: &mut helix_view::Editor,
+                          compositor: &mut crate::compositor::Compositor| {
+                        if let Some(view) = compositor.find_id::<BlameView>(BlameView::ID) {
+                            view.set_reverse(Some(from));
+                        }
+                    },
+                )))
+            });
+        },
+    );
+    match start {
+        Some(start) => prompt.with_line(start, editor),
+        None => prompt,
+    }
+}
+
 /// The path of `file` inside the repository at `workdir`.
 pub fn relative_to(workdir: &Path, file: &Path) -> Option<PathBuf> {
     let workdir = std::fs::canonicalize(workdir).unwrap_or_else(|_| workdir.to_path_buf());
@@ -439,7 +602,27 @@ mod tests {
             scroll: 0,
             error: None,
             history: Vec::new(),
+            options: BlameOptions::default(),
+            style: BlameStyle::Headings,
         }
+    }
+
+    #[test]
+    fn the_styles_show_headings_every_line_or_hashes() {
+        let mut blame = view(vec![
+            line('a', None, 1),
+            line('a', None, 2),
+            line('b', None, 3),
+        ]);
+        assert!(blame.left(0).unwrap().starts_with("aaaaaaa "));
+        assert_eq!(blame.left(1), None);
+        blame.style = blame.style.next();
+        assert!(blame.left(1).unwrap().starts_with("aaaaaaa "));
+        blame.style = blame.style.next();
+        assert_eq!(blame.left(0).as_deref(), Some("aaaaaaa"));
+        assert_eq!(blame.left(1), None);
+        assert_eq!(blame.column_width(200), 9);
+        assert_eq!(blame.style.next(), BlameStyle::Headings);
     }
 
     #[test]

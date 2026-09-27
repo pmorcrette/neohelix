@@ -280,3 +280,94 @@ fn a_sparse_checkout_lists_its_directories() {
     git(&work, &["sparse-checkout", "disable"]).unwrap();
     assert_eq!(status::read(&work).sparse, None);
 }
+
+#[test]
+fn tags_around_head_are_found_with_their_distances() {
+    let Some((_dir, work, _other)) = fixture() else {
+        return;
+    };
+    git(&work, &["tag", "v1"]).unwrap();
+    commit(&work, "f.txt", "two\n", "two").unwrap();
+    commit(&work, "f.txt", "three\n", "three").unwrap();
+    git(&work, &["tag", "-a", "-m", "v2", "v2"]).unwrap();
+    git(&work, &["checkout", "-q", "HEAD~1"]).unwrap();
+
+    let overview = status::read(&work);
+    let tag = overview.tag.unwrap();
+    assert_eq!((tag.name.as_str(), tag.distance), ("v1", 1));
+    let next = overview.next_tag.unwrap();
+    assert_eq!((next.name.as_str(), next.distance), ("v2", 1));
+
+    // HEAD tagged: that tag, and no next one.
+    git(&work, &["checkout", "-q", "v2"]).unwrap();
+    let overview = status::read(&work);
+    assert_eq!(overview.tag.unwrap().distance, 0);
+    assert_eq!(overview.next_tag, None);
+}
+
+#[test]
+fn a_stopped_rebase_lists_its_steps_newest_first() {
+    use helix_magit::status::StepState;
+    let Some((_dir, work, _other)) = fixture() else {
+        return;
+    };
+    for n in 1..=3 {
+        commit(&work, &format!("{n}.txt"), "x\n", &format!("c{n}")).unwrap();
+    }
+    // Stop at the second of the three.
+    let out = Command::new("git")
+        .current_dir(&work)
+        .args(["rebase", "-q", "-i", "HEAD~3"])
+        .env("GIT_SEQUENCE_EDITOR", "sed -i '2s/^pick/edit/'")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+
+    let overview = status::read(&work);
+    let steps: Vec<(StepState, &str, &str)> = overview
+        .sequence
+        .iter()
+        .map(|step| (step.state, step.action.as_str(), step.subject.as_str()))
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            (StepState::Todo, "pick", "c3"),
+            (StepState::Current, "edit", "c2"),
+            (StepState::Done, "pick", "c1"),
+            (StepState::Onto, "onto", "initial"),
+        ]
+    );
+    assert!(overview.sequence[0].hash.len() >= 7);
+    git(&work, &["rebase", "--abort"]).unwrap();
+    assert!(status::read(&work).sequence.is_empty());
+}
+
+#[test]
+fn a_bisect_log_and_flagged_files_are_listed() {
+    let Some((_dir, work, _other)) = fixture() else {
+        return;
+    };
+    for n in 1..=4 {
+        commit(&work, "f.txt", &format!("{n}\n"), &format!("c{n}")).unwrap();
+    }
+    git(&work, &["bisect", "start", "HEAD", "HEAD~4"]).unwrap();
+    git(&work, &["bisect", "good"]).unwrap();
+    let overview = status::read(&work);
+    let verdicts: Vec<&str> = overview
+        .bisect_log
+        .iter()
+        .map(|entry| entry.verdict.as_str())
+        .collect();
+    assert_eq!(verdicts, ["bad", "good", "good"]);
+    assert_eq!(overview.bisect_log[0].subject, "c4");
+    git(&work, &["bisect", "reset"]).unwrap();
+    assert!(status::read(&work).bisect_log.is_empty());
+
+    commit(&work, "g.txt", "g\n", "g").unwrap();
+    git(&work, &["update-index", "--assume-unchanged", "f.txt"]).unwrap();
+    git(&work, &["update-index", "--skip-worktree", "g.txt"]).unwrap();
+    let overview = status::read(&work);
+    assert_eq!(overview.assumed, ["f.txt"]);
+    assert_eq!(overview.skipped, ["g.txt"]);
+}

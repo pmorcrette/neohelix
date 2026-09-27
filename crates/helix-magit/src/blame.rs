@@ -84,12 +84,84 @@ pub fn parse(text: &str) -> Vec<BlameLine> {
     lines
 }
 
+/// How a blame looks for where lines come from.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BlameOptions {
+    /// Lines moved within the file keep their older commit (`-M`).
+    pub moves: bool,
+    /// Lines copied or moved from other files keep theirs: from the files
+    /// the same commit changed (1, `-C`), also from where the file was
+    /// created (2, `-C -C`), or from any commit (3, `-C -C -C`).
+    pub copies: u8,
+    /// Reverse blame since this revision: for each line as it was there,
+    /// the last commit that still had it (`--reverse`).
+    pub reverse_from: Option<String>,
+}
+
+impl BlameOptions {
+    /// What differs from a plain blame, for the view's title.
+    pub fn describe(&self) -> String {
+        let mut parts = Vec::new();
+        if self.moves {
+            parts.push("-M".to_string());
+        }
+        if self.copies > 0 {
+            parts.push(vec!["-C"; self.copies as usize].join(" "));
+        }
+        parts.join(" ")
+    }
+}
+
 /// Blames `path` as of `rev`, or as it is in the working tree.
 pub fn blame(workdir: &Path, path: &Path, rev: Option<&str>) -> Result<Vec<BlameLine>, String> {
+    blame_with(workdir, path, rev, &BlameOptions::default())
+}
+
+/// [`blame`] with `options`. Reversed, `rev` is where the history ends
+/// (HEAD when `None`, as the working tree has no history).
+pub fn blame_with(
+    workdir: &Path,
+    path: &Path,
+    rev: Option<&str>,
+    options: &BlameOptions,
+) -> Result<Vec<BlameLine>, String> {
     let mut args = vec!["blame".to_string(), "--line-porcelain".to_string()];
+    if options.moves {
+        args.push("-M".into());
+    }
+    args.extend((0..options.copies.min(3)).map(|_| "-C".to_string()));
     if let Some(rev) = rev {
         crate::log::LogFilter::valid_range(rev)?;
-        args.push(rev.to_string());
+    }
+    match &options.reverse_from {
+        Some(from) => {
+            crate::log::LogFilter::valid_range(from)?;
+            // git's own words for an empty range are "More than one commit
+            // to dig up from".
+            let end = rev.unwrap_or("HEAD");
+            let commit = |rev: &str| {
+                GitCommand::new(
+                    workdir,
+                    vec![
+                        "rev-parse".into(),
+                        "--verify".into(),
+                        format!("{rev}^{{commit}}"),
+                    ],
+                )
+                .run()
+                .ok()
+                .filter(|output| output.success)
+                .map(|output| output.stdout.trim().to_string())
+            };
+            if commit(from).is_some() && commit(from) == commit(end) {
+                return Err(format!(
+                    "{from} is {end}: a reverse blame starts from an older commit"
+                ));
+            }
+            args.push("--reverse".into());
+            args.push(format!("{from}..{}", rev.unwrap_or("HEAD")));
+        }
+        None => args.extend(rev.map(str::to_string)),
     }
     args.push("--".into());
     args.push(path.display().to_string());
