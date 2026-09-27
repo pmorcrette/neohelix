@@ -2517,3 +2517,149 @@ pub fn save_patch(compositor: &mut Compositor, editor: &mut Editor, file: &str) 
         Err(err) => editor.set_error(format!("could not write {}: {err}", path.display())),
     }
 }
+
+// ── The diff menu's additions ────────────────────────────────────────────
+
+/// The diff menu's `d`, `p` and `t`, and the diff settings' `r` and `f`.
+/// `target` is what the menu was opened on.
+pub fn diff_action(
+    compositor: &mut Compositor,
+    editor: &mut Editor,
+    workdir: PathBuf,
+    command: helix_magit::transient::MagitCommand,
+    target: Option<(String, AskKind)>,
+) {
+    use helix_magit::transient::MagitCommand;
+
+    match command {
+        MagitCommand::DiffDwim => match target {
+            Some((path, AskKind::Path)) => match DiffView::file(&workdir, PathBuf::from(path)) {
+                Ok(view) => compositor.push(Box::new(view)),
+                Err(err) => editor.set_error(err.to_string()),
+            },
+            Some((rev, _)) if rev.contains("..") => {
+                let symmetric = rev.contains("...");
+                let (from, to) = rev
+                    .split_once(if symmetric { "..." } else { ".." })
+                    .unwrap_or((&rev, ""));
+                let (from, to) = (
+                    if from.is_empty() { "HEAD" } else { from },
+                    if to.is_empty() { "HEAD" } else { to },
+                );
+                let mut view = DiffView::range(&workdir, from.into(), Some(to.into()));
+                if symmetric {
+                    let _ = view.toggle_range();
+                }
+                compositor.push(Box::new(view));
+            }
+            Some((rev, _)) => match DiffView::commit(&workdir, &rev) {
+                Ok(view) => compositor.push(Box::new(view)),
+                Err(err) => editor.set_error(err),
+            },
+            // Nothing at point: everything not committed yet.
+            None => compositor.push(Box::new(DiffView::range(&workdir, "HEAD".into(), None))),
+        },
+        MagitCommand::DiffStash => {
+            let stashes = helix_magit::refs::names(&workdir, AskKind::Stash);
+            if stashes.is_empty() {
+                return editor.set_error("There is no stash");
+            }
+            choose(
+                compositor,
+                "Show stash: ".into(),
+                stashes,
+                true,
+                move |editor, compositor, stash| match DiffView::commit(&workdir, &stash) {
+                    Ok(view) => compositor.push(Box::new(view)),
+                    Err(err) => editor.set_error(err),
+                },
+            );
+        }
+        MagitCommand::DiffPaths => {
+            let first = target
+                .filter(|(_, kind)| *kind == AskKind::Path)
+                .map(|(path, _)| path);
+            diff_paths_prompt(compositor, editor, workdir, first);
+        }
+        MagitCommand::DiffToggleRange | MagitCommand::DiffFlip => {
+            let Some(view) = compositor.find_id::<DiffView>(DiffView::RANGE_ID) else {
+                return editor.set_error("No diff between revisions is open");
+            };
+            let done = if command == MagitCommand::DiffFlip {
+                view.flip()
+            } else {
+                view.toggle_range()
+            };
+            if let Err(err) = done {
+                editor.set_error(err);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Asks for two files, one after the other, and shows the diff between
+/// them. Relative names are the command line's, from the editor's working
+/// directory.
+fn diff_paths_prompt(
+    compositor: &mut Compositor,
+    editor: &Editor,
+    workdir: PathBuf,
+    first: Option<String>,
+) {
+    // Inside the repository, as the repository names them; else whole.
+    let place = |workdir: &std::path::Path, input: &str| -> PathBuf {
+        let path = helix_stdx::path::expand_tilde(std::path::Path::new(input));
+        let path = helix_stdx::env::current_working_dir().join(path);
+        let path = helix_stdx::path::normalize(path);
+        path.strip_prefix(workdir)
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or(path)
+    };
+    let prompt = crate::ui::Prompt::new(
+        "Diff file: ".into(),
+        None,
+        crate::ui::completers::filename,
+        move |cx, input, event| {
+            if event != crate::ui::PromptEvent::Validate || input.trim().is_empty() {
+                return;
+            }
+            let a = place(&workdir, input.trim());
+            let workdir = workdir.clone();
+            cx.jobs.callback(async move {
+                Ok(Callback::EditorCompositor(Box::new(
+                    move |_: &mut Editor, compositor: &mut Compositor| {
+                        let prompt = crate::ui::Prompt::new(
+                            format!("Diff {} against: ", a.display()).into(),
+                            None,
+                            crate::ui::completers::filename,
+                            move |cx, input, event| {
+                                if event != crate::ui::PromptEvent::Validate
+                                    || input.trim().is_empty()
+                                {
+                                    return;
+                                }
+                                let b = place(&workdir, input.trim());
+                                let (workdir, a) = (workdir.clone(), a.clone());
+                                cx.jobs.callback(async move {
+                                    Ok(Callback::EditorCompositor(Box::new(
+                                        move |_: &mut Editor, compositor: &mut Compositor| {
+                                            compositor
+                                                .push(Box::new(DiffView::paths(&workdir, a, b)));
+                                        },
+                                    )))
+                                });
+                            },
+                        );
+                        compositor.push(Box::new(prompt));
+                    },
+                )))
+            });
+        },
+    );
+    let prompt = match first {
+        Some(first) => prompt.with_line(first, editor),
+        None => prompt,
+    };
+    compositor.push(Box::new(prompt));
+}

@@ -2198,12 +2198,12 @@ Menu by menu, what Magit offers that the fork's transients do not.
 - [x] Patches: `git request-pull`, `git send-email`, and save the diff on
       screen as a patch file.
 - [x] Notes: choose the notes ref (`--ref`); merge notes.
-- [ ] Diff: dwim (`d d`); between two paths (`d p`); a stash (`d t`);
+- [x] Diff: dwim (`d d`); between two paths (`d p`); a stash (`d t`);
       `--function-context`, `--color-moved`, rename detection (`-M`), reverse
       (`-R`), `--no-ext-diff`; switch a range between `..` and `...`; flip the
       two revisions.
 
-*In progress.* Every menu but the diff's is done. Merge: an edited message
+*Done.* Merge: an edited message
 (`e`, written first and given to `git merge -F`), a preview (`p`, the
 branch's changes since the merge base), absorb (`a`) and dissolve (`i`),
 with `--strategy`, `--strategy-option` and `--gpg-sign`. Rebase: a subset
@@ -2230,8 +2230,20 @@ move (`m`), visit (`g`, its status). Submodule: `r`, `p`, `d`, `k`, and `l`
 (behind a confirmation) and `:magit-save-patch <file>`, which writes the
 diff on screen, or the status's section at the cursor. `:` now opens the
 command line from a Magit view, and a buffer written by `:wq` or `:x` (a
-message, a todo list) acts as one written by `:w`. Left: the diff menu's
-additions.
+message, a todo list) acts as one written by `:w`. Diff: `d d` shows
+what is at point (a commit, a range, a file's changes, or else everything
+uncommitted), `d p` two files (`git diff --no-index`, tracked or not), `d t`
+a stash. The diff settings (`D`) add `-F --function-context`,
+`-M --no-renames` (git detects renames by default; the switch turns it off),
+`-R`, and `-m --color-moved`, which the view computes itself: runs of deleted
+lines that reappear as added lines elsewhere, with at least 20 letters or
+digits as git's zebra mode asks, drawn in the theme's `diff.delta.moved`
+(else `diff.delta`). `D r` switches a range between `..` and `...`, `D f`
+swaps its revisions (against the working tree, it reverses the diff). The
+status's own diffs are computed in-process by gix and keep context,
+whitespace and algorithm only; the options above apply to the diffs git
+computes (commits, stashes, ranges, files). `--no-ext-diff` is always on:
+the views parse git's own output.
 
 ### Task 2.28: The Status, Log and Blame Views
 

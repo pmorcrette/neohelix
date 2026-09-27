@@ -355,17 +355,30 @@ pub fn diff_range(
     to: Option<&str>,
     options: &DiffOptions,
 ) -> Result<Vec<FileDiff>, String> {
+    diff_revisions(workdir, from, to, false, options)
+}
+
+/// [`diff_range`], or with `symmetric` what `to` changed since it forked
+/// from `from`: git's `from...to`, the diff from their merge base.
+pub fn diff_revisions(
+    workdir: &Path,
+    from: &str,
+    to: Option<&str>,
+    symmetric: bool,
+    options: &DiffOptions,
+) -> Result<Vec<FileDiff>, String> {
     LogFilter::valid_range(from)?;
     if let Some(to) = to {
         LogFilter::valid_range(to)?;
     }
-    let mut args: Vec<String> = ["diff", "--color=never", "--no-ext-diff"]
-        .iter()
-        .map(|arg| arg.to_string())
-        .collect();
-    args.extend(options.git_args());
-    args.push(from.to_string());
-    args.extend(to.map(str::to_string));
+    let mut args = diff_args(options);
+    match to {
+        Some(to) if symmetric => args.push(format!("{from}...{to}")),
+        _ => {
+            args.push(from.to_string());
+            args.extend(to.map(str::to_string));
+        }
+    }
     args.push("--".into());
     let output = GitCommand::new(workdir, args)
         .run()
@@ -375,6 +388,38 @@ pub fn diff_range(
     } else {
         Err(output.summary())
     }
+}
+
+/// The diff between two files, tracked or not: `git diff --no-index`.
+pub fn diff_paths(
+    workdir: &Path,
+    a: &Path,
+    b: &Path,
+    options: &DiffOptions,
+) -> Result<Vec<FileDiff>, String> {
+    let mut args = diff_args(options);
+    args.push("--no-index".into());
+    args.push("--".into());
+    args.push(a.display().to_string());
+    args.push(b.display().to_string());
+    let output = GitCommand::new(workdir, args)
+        .run()
+        .map_err(|err| err.to_string())?;
+    // `--no-index` exits with 1 when the files differ, as `diff` does.
+    if output.success || (output.stderr.trim().is_empty() && !output.stdout.is_empty()) {
+        Ok(parse_unified_diff(&output.stdout))
+    } else {
+        Err(output.summary())
+    }
+}
+
+fn diff_args(options: &DiffOptions) -> Vec<String> {
+    let mut args: Vec<String> = ["diff", "--color=never", "--no-ext-diff"]
+        .iter()
+        .map(|arg| arg.to_string())
+        .collect();
+    args.extend(options.git_args());
+    args
 }
 
 #[cfg(test)]

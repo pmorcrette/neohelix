@@ -245,6 +245,16 @@ pub struct DiffOptions {
     pub word_diff: bool,
     /// Show each file's size of change instead of its hunks.
     pub stat: bool,
+    /// Each hunk widened to the whole function it is in.
+    pub function_context: bool,
+    /// A renamed file shown as one, not as a deletion and an addition:
+    /// git's default, which can be turned off.
+    pub renames: bool,
+    /// The diff the other way round, as if its two sides were swapped.
+    pub reverse: bool,
+    /// Blocks of lines moved elsewhere in the diff, marked as moved rather
+    /// than as deleted and added.
+    pub color_moved: bool,
 }
 
 impl Default for DiffOptions {
@@ -255,13 +265,17 @@ impl Default for DiffOptions {
             algorithm: DiffAlgorithm::Histogram,
             word_diff: false,
             stat: false,
+            function_context: false,
+            renames: true,
+            reverse: false,
+            color_moved: false,
         }
     }
 }
 
 impl DiffOptions {
     /// The arguments that make `git diff` / `git show` compute the same
-    /// diff; word marking and the summary are the view's own.
+    /// diff; word marking, moved lines and the summary are the view's own.
     pub fn git_args(&self) -> Vec<String> {
         let mut args = vec![
             format!("--unified={}", self.context),
@@ -271,6 +285,15 @@ impl DiffOptions {
             Whitespace::Exact => {}
             Whitespace::IgnoreChange => args.push("--ignore-space-change".into()),
             Whitespace::IgnoreAll => args.push("--ignore-all-space".into()),
+        }
+        if self.function_context {
+            args.push("--function-context".into());
+        }
+        if !self.renames {
+            args.push("--no-renames".into());
+        }
+        if self.reverse {
+            args.push("-R".into());
         }
         args
     }
@@ -296,6 +319,14 @@ impl DiffOptions {
                 options.word_diff = true;
             } else if arg == "--stat" {
                 options.stat = true;
+            } else if arg == "--function-context" {
+                options.function_context = true;
+            } else if arg == "--no-renames" {
+                options.renames = false;
+            } else if arg == "-R" {
+                options.reverse = true;
+            } else if arg == "--color-moved" {
+                options.color_moved = true;
             }
         }
         options
@@ -321,6 +352,18 @@ impl DiffOptions {
         }
         if self.stat {
             parts.push("stat".to_string());
+        }
+        if self.function_context {
+            parts.push("functions".to_string());
+        }
+        if !self.renames {
+            parts.push("no-renames".to_string());
+        }
+        if self.reverse {
+            parts.push("reversed".to_string());
+        }
+        if self.color_moved {
+            parts.push("moved".to_string());
         }
         parts.join(" ")
     }
@@ -398,6 +441,83 @@ fn words(line: &str) -> Vec<Range<usize>> {
         out.push(start..end);
     }
     out
+}
+
+/// Where a line of a diff is: its file, its hunk and its place in the hunk.
+pub type LinePlace = (usize, usize, usize);
+
+/// How many letters and digits a moved block needs, as git's
+/// `--color-moved=zebra` asks: fewer and a moved `}` or blank line would
+/// count.
+const MOVED_MIN_ALNUM: usize = 20;
+
+/// The lines of `files` that were moved rather than changed: a run of
+/// deleted lines that reappears, in order, as added lines elsewhere, and
+/// those added lines. Runs are matched greedily, longest first, and kept
+/// when they carry at least 20 letters or digits.
+pub fn moved_lines(files: &[FileDiff]) -> std::collections::HashSet<LinePlace> {
+    use std::collections::{HashMap, HashSet};
+
+    // Runs of consecutive lines of one kind, within a hunk.
+    let runs = |kind: DiffLineKind| -> Vec<Vec<(LinePlace, &str)>> {
+        let mut runs = Vec::new();
+        for (f, file) in files.iter().enumerate() {
+            for (h, hunk) in file.hunks.iter().enumerate() {
+                let mut run: Vec<(LinePlace, &str)> = Vec::new();
+                for (l, line) in hunk.lines.iter().enumerate() {
+                    if line.kind == kind {
+                        run.push(((f, h, l), line.content.as_str()));
+                    } else if !run.is_empty() {
+                        runs.push(std::mem::take(&mut run));
+                    }
+                }
+                if !run.is_empty() {
+                    runs.push(run);
+                }
+            }
+        }
+        runs
+    };
+    let deleted = runs(DiffLineKind::Deletion);
+    let added = runs(DiffLineKind::Addition);
+    let mut starts: HashMap<&str, Vec<(usize, usize)>> = HashMap::new();
+    for (r, run) in added.iter().enumerate() {
+        for (o, (_, text)) in run.iter().enumerate() {
+            starts.entry(text).or_default().push((r, o));
+        }
+    }
+    let alnum = |text: &str| text.chars().filter(|c| c.is_alphanumeric()).count();
+
+    let mut moved = HashSet::new();
+    for run in &deleted {
+        let mut i = 0;
+        while i < run.len() {
+            let best = starts
+                .get(run[i].1)
+                .into_iter()
+                .flatten()
+                .map(|&(r, o)| {
+                    let length = run[i..]
+                        .iter()
+                        .zip(&added[r][o..])
+                        .take_while(|((_, old), (_, new))| old == new)
+                        .count();
+                    (length, r, o)
+                })
+                .max_by_key(|&(length, _, _)| length);
+            let Some((length, r, o)) = best else {
+                i += 1;
+                continue;
+            };
+            let block = &run[i..i + length];
+            if block.iter().map(|(_, text)| alnum(text)).sum::<usize>() >= MOVED_MIN_ALNUM {
+                moved.extend(block.iter().map(|(place, _)| *place));
+                moved.extend(added[r][o..o + length].iter().map(|(place, _)| *place));
+            }
+            i += length;
+        }
+    }
+    moved
 }
 
 /// For each changed line of a hunk that has a counterpart, the ranges of
@@ -934,6 +1054,65 @@ diff --git a/a.txt b/a.txt
         );
         assert_eq!(options.describe(), "-U7 -b patience words");
         assert_eq!(DiffOptions::default().describe(), "");
+
+        let options = DiffOptions::from_args(&[
+            "--function-context".into(),
+            "--no-renames".into(),
+            "-R".into(),
+            "--color-moved".into(),
+        ]);
+        assert_eq!(
+            options.git_args(),
+            [
+                "--unified=3",
+                "--diff-algorithm=histogram",
+                "--function-context",
+                "--no-renames",
+                "-R"
+            ]
+        );
+        assert_eq!(options.describe(), "functions no-renames reversed moved");
+    }
+
+    #[test]
+    fn moved_blocks_are_found_across_files_and_short_ones_left() {
+        let a = "\
+diff --git a/a.rs b/a.rs
+--- a/a.rs
++++ b/a.rs
+@@ -1,5 +1,2 @@
+ fn a() {}
+-fn moved_function() {
+-    do_something_long();
+-}
++}
+ x
+diff --git a/b.rs b/b.rs
+--- a/b.rs
++++ b/b.rs
+@@ -1,1 +1,4 @@
+ fn b() {}
++fn moved_function() {
++    do_something_long();
++}
+";
+        let files = parse_unified_diff(a);
+        let moved = moved_lines(&files);
+        let mut moved: Vec<LinePlace> = moved.into_iter().collect();
+        moved.sort();
+        // The three deleted lines of a.rs and the three added to b.rs; the
+        // lone `}` added to a.rs is too short to count as moved.
+        assert_eq!(
+            moved,
+            [
+                (0, 0, 1),
+                (0, 0, 2),
+                (0, 0, 3),
+                (1, 0, 1),
+                (1, 0, 2),
+                (1, 0, 3)
+            ]
+        );
     }
 
     #[test]

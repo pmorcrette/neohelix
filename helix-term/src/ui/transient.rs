@@ -502,6 +502,17 @@ impl TransientOverlay {
                     }
                 })))
             }
+            MagitCommand::DiffDwim
+            | MagitCommand::DiffPaths
+            | MagitCommand::DiffStash
+            | MagitCommand::DiffToggleRange
+            | MagitCommand::DiffFlip => {
+                let (workdir, target) = (self.workdir.clone(), self.target.clone());
+                EventResult::Consumed(Some(Box::new(move |compositor, cx| {
+                    compositor.remove(TransientOverlay::ID);
+                    crate::magit::diff_action(compositor, cx.editor, workdir, command, target);
+                })))
+            }
             MagitCommand::DiffRange | MagitCommand::DiffWorktree | MagitCommand::DiffCommit => {
                 let workdir = self.workdir.clone();
                 let start = self
@@ -849,6 +860,11 @@ mod tests {
                         | MagitCommand::DiffRange
                         | MagitCommand::DiffWorktree
                         | MagitCommand::DiffCommit
+                        | MagitCommand::DiffDwim
+                        | MagitCommand::DiffPaths
+                        | MagitCommand::DiffStash
+                        | MagitCommand::DiffToggleRange
+                        | MagitCommand::DiffFlip
                 ) || helix_magit::resolve(action.command, &[]).is_some();
                 assert!(handled, "{kind:?} binds '{}' to nothing", action.key);
             }

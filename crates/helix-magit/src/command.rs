@@ -612,7 +612,12 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
         | MagitCommand::ApplyDiffSettings
         | MagitCommand::DiffRange
         | MagitCommand::DiffWorktree
-        | MagitCommand::DiffCommit => return None,
+        | MagitCommand::DiffCommit
+        | MagitCommand::DiffDwim
+        | MagitCommand::DiffPaths
+        | MagitCommand::DiffStash
+        | MagitCommand::DiffToggleRange
+        | MagitCommand::DiffFlip => return None,
 
         // Run from the editor's directory rather than a repository's.
         MagitCommand::Clone => Plan::new(["clone", "{0}", "{1}"], "Clone").asking([

@@ -295,6 +295,15 @@ pub enum MagitCommand {
     DiffRange,
     DiffWorktree,
     DiffCommit,
+    /// What is at point: a commit, a range, a file's changes, or else
+    /// everything uncommitted.
+    DiffDwim,
+    DiffPaths,
+    DiffStash,
+    /// A range diff between `..` and `...`.
+    DiffToggleRange,
+    /// A range diff's two ends swapped.
+    DiffFlip,
 
     /// Views the editor opens rather than commands it runs: every branch
     /// and tag against HEAD, the commits one branch has that another does
@@ -1581,6 +1590,9 @@ pub fn diff_menu() -> TransientMenu {
                 MagitCommand::DiffWorktree,
             ),
             TransientAction::new('c', "A commit", MagitCommand::DiffCommit),
+            TransientAction::new('d', "What is at point", MagitCommand::DiffDwim),
+            TransientAction::new('p', "Between two files", MagitCommand::DiffPaths),
+            TransientAction::new('t', "A stash", MagitCommand::DiffStash),
         ])])
 }
 
@@ -1625,12 +1637,36 @@ pub fn diff_settings_menu(options: &crate::diff::DiffOptions) -> TransientMenu {
                 TransientSwitch::new('s', "--stat", "Summary: files and sizes only"),
                 options.stat,
             ),
+            on(
+                TransientSwitch::new('F', "--function-context", "Show whole functions"),
+                options.function_context,
+            ),
+            on(
+                TransientSwitch::new('M', "--no-renames", "Renames as delete and add"),
+                !options.renames,
+            ),
+            on(
+                TransientSwitch::new('R', "-R", "Reverse: swap the two sides"),
+                options.reverse,
+            ),
+            on(
+                TransientSwitch::new('m', "--color-moved", "Mark moved lines"),
+                options.color_moved,
+            ),
         ]),
-        TransientGroup::new("Diff").with_actions([TransientAction::new(
-            'g',
-            "Apply to the open diffs",
-            MagitCommand::ApplyDiffSettings,
-        )]),
+        TransientGroup::new("Diff").with_actions([
+            TransientAction::new(
+                'g',
+                "Apply to the open diffs",
+                MagitCommand::ApplyDiffSettings,
+            ),
+            TransientAction::new(
+                'r',
+                "Switch the range between .. and ...",
+                MagitCommand::DiffToggleRange,
+            ),
+            TransientAction::new('f', "Flip the range's revisions", MagitCommand::DiffFlip),
+        ]),
     ])
 }
 

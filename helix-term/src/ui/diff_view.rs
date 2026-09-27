@@ -5,7 +5,7 @@
 //! repository changes. That keeps "what is under the cursor", "what does a
 //! keypress act on" and "what is on screen" one and the same question.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
@@ -435,6 +435,8 @@ pub struct DiffView {
     /// With word marking on: the changed words of each changed line that
     /// has a counterpart, by section, file, hunk and line.
     word_ranges: HashMap<(usize, usize, usize, usize), Vec<Range<usize>>>,
+    /// The lines moved rather than changed, with `--color-moved`.
+    moved: HashSet<(usize, usize, usize, usize)>,
     /// What the margin of commit lines shows.
     margin: Margin,
     /// Where a selection started (`C-Space`), as a row: the region runs
@@ -448,10 +450,17 @@ enum ViewKind {
     Status,
     /// The status of one file: its unstaged and staged changes.
     File(PathBuf),
-    /// Between two revisions, or a revision and the working tree.
+    /// Between two revisions, or a revision and the working tree; with
+    /// `symmetric`, what `to` changed since it forked from `from` (`...`).
     Range {
         from: String,
         to: Option<String>,
+        symmetric: bool,
+    },
+    /// Between two files, tracked or not.
+    Paths {
+        a: PathBuf,
+        b: PathBuf,
     },
     Commit,
     Refs,
@@ -532,6 +541,7 @@ impl DiffView {
             kind: ViewKind::Commit,
             options,
             word_ranges: HashMap::new(),
+            moved: HashSet::new(),
             margin: STATUS_MARGIN.get(),
             mark: None,
         };
@@ -555,25 +565,64 @@ impl DiffView {
     /// The diff between `from` and `to`, or between `from` and the working
     /// tree: Magit's `d r`.
     pub fn range(workdir: &Path, from: String, to: Option<String>) -> Self {
-        let title = format!("Diff {from}..{}", to.as_deref().unwrap_or("working tree"));
-        let mut view = Self::empty(workdir, title, ViewKind::Range { from, to });
+        let kind = ViewKind::Range {
+            from,
+            to,
+            symmetric: false,
+        };
+        let mut view = Self::empty(workdir, String::new(), kind);
+        view.read_range();
+        view
+    }
+
+    /// The diff between two files: Magit's `d p`.
+    pub fn paths(workdir: &Path, a: PathBuf, b: PathBuf) -> Self {
+        let head = format!("Diff {} {}", a.display(), b.display());
+        let mut view = Self::empty(workdir, head, ViewKind::Paths { a, b });
         view.read_range();
         view
     }
 
     fn read_range(&mut self) {
-        let ViewKind::Range { from, to } = &self.kind else {
-            return;
+        let (files, described) = match &self.kind {
+            ViewKind::Range {
+                from,
+                to,
+                symmetric,
+            } => {
+                let dots = if *symmetric { "..." } else { ".." };
+                self.head = format!(
+                    "Diff {from}{dots}{}",
+                    to.as_deref().unwrap_or("working tree")
+                );
+                let described = match to {
+                    Some(to) if *symmetric => format!("{to} since it forked from {from}"),
+                    Some(to) => format!("{from} → {to}"),
+                    None => format!("{from} → the working tree"),
+                };
+                (
+                    helix_magit::log::diff_revisions(
+                        &self.workdir,
+                        from,
+                        to.as_deref(),
+                        *symmetric,
+                        &self.options,
+                    ),
+                    described,
+                )
+            }
+            ViewKind::Paths { a, b } => (
+                helix_magit::log::diff_paths(&self.workdir, a, b, &self.options),
+                format!("{} → {}", a.display(), b.display()),
+            ),
+            _ => return,
         };
-        match helix_magit::log::diff_range(&self.workdir, from, to.as_deref(), &self.options) {
+        match files {
             Ok(files) => {
                 self.error = None;
                 self.header = vec![HeaderLine {
                     label: "Diff:",
-                    parts: vec![(
-                        format!("{from} → {}", to.as_deref().unwrap_or("the working tree")),
-                        Tone::Emphasis,
-                    )],
+                    parts: vec![(described, Tone::Emphasis)],
                 }];
                 self.replace_sections(vec![Section {
                     kind: SectionKind::Commit,
@@ -623,6 +672,41 @@ impl DiffView {
         self.rebuild_rows();
     }
 
+    /// Switches a range between `..` and `...`, Magit's `D r`.
+    pub fn toggle_range(&mut self) -> Result<(), String> {
+        match &mut self.kind {
+            ViewKind::Range {
+                to: Some(_),
+                symmetric,
+                ..
+            } => *symmetric = !*symmetric,
+            _ => return Err("Only a diff between two revisions has a range type".into()),
+        }
+        self.read_range();
+        self.rebuild_rows();
+        Ok(())
+    }
+
+    /// Swaps a range's two revisions, Magit's `D f`; against the working
+    /// tree, which cannot be the older side, the diff is reversed instead.
+    pub fn flip(&mut self) -> Result<(), String> {
+        match &mut self.kind {
+            ViewKind::Range {
+                from, to: Some(to), ..
+            } => std::mem::swap(from, to),
+            ViewKind::Range { to: None, .. } | ViewKind::Paths { .. } => {
+                let mut options = self.options.clone();
+                options.reverse = !options.reverse;
+                self.set_options(options);
+                return Ok(());
+            }
+            _ => return Err("Only a diff between two revisions can be flipped".into()),
+        }
+        self.read_range();
+        self.rebuild_rows();
+        Ok(())
+    }
+
     /// `+` / `-`: more or less context, read again.
     fn change_context(&mut self, delta: i32) {
         let mut options = self.options.clone();
@@ -636,7 +720,7 @@ impl DiffView {
             ViewKind::Status | ViewKind::File(_) => Self::ID,
             ViewKind::Commit => Self::COMMIT_ID,
             ViewKind::Refs => Self::REFS_ID,
-            ViewKind::Range { .. } => Self::RANGE_ID,
+            ViewKind::Range { .. } | ViewKind::Paths { .. } => Self::RANGE_ID,
             ViewKind::Cherries { .. } => Self::CHERRIES_ID,
             ViewKind::Repositories { .. } => Self::REPOSITORIES_ID,
         }
@@ -656,6 +740,7 @@ impl DiffView {
             kind,
             options: DiffOptions::default(),
             word_ranges: HashMap::new(),
+            moved: HashSet::new(),
             margin: STATUS_MARGIN.get(),
             mark: None,
         }
@@ -866,6 +951,7 @@ impl DiffView {
             kind: ViewKind::Status,
             options: DiffOptions::default(),
             word_ranges: HashMap::new(),
+            moved: HashSet::new(),
             margin: STATUS_MARGIN.get(),
             mark: None,
         };
@@ -924,7 +1010,7 @@ impl DiffView {
                 self.read_cherries();
                 return Ok(());
             }
-            ViewKind::Range { .. } => {
+            ViewKind::Range { .. } | ViewKind::Paths { .. } => {
                 self.read_range();
                 return Ok(());
             }
@@ -1067,6 +1153,15 @@ impl DiffView {
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
         // The rows the mark pointed at may be gone or moved.
         self.mark = None;
+
+        self.moved.clear();
+        if self.options.color_moved && !self.options.stat {
+            for (s, section) in self.sections.iter().enumerate() {
+                for (f, h, line) in helix_magit::diff::moved_lines(&section.files) {
+                    self.moved.insert((s, f, h, line));
+                }
+            }
+        }
 
         self.word_ranges.clear();
         if self.options.word_diff && !self.options.stat {
@@ -1662,8 +1757,8 @@ impl DiffView {
     fn view_revision(&self) -> Option<String> {
         let rev = match (&self.kind, &self.commit) {
             (_, Some(commit)) => commit.clone(),
-            (ViewKind::Range { from, to }, _) => to.clone().unwrap_or_else(|| from.clone()),
-            (ViewKind::Repositories { .. }, _) => return None,
+            (ViewKind::Range { from, to, .. }, _) => to.clone().unwrap_or_else(|| from.clone()),
+            (ViewKind::Repositories { .. } | ViewKind::Paths { .. }, _) => return None,
             _ => "HEAD".to_string(),
         };
         crate::magit::short_hash(&self.workdir, &rev)
@@ -1765,8 +1860,17 @@ impl DiffView {
     /// the path and a 0-based line; `None` when the change is the working
     /// tree's.
     fn blob_target(&self) -> Option<(String, PathBuf, usize)> {
+        // Reversed, the side a line is added to is the older one.
+        let reverse = self.options.reverse;
         let rev = match (&self.kind, &self.commit) {
+            (ViewKind::Commit, Some(commit)) if reverse => format!("{commit}^"),
             (ViewKind::Commit, Some(commit)) => commit.clone(),
+            (
+                ViewKind::Range {
+                    from, to: Some(_), ..
+                },
+                _,
+            ) if reverse => from.clone(),
             (ViewKind::Range { to: Some(to), .. }, _) => to.clone(),
             _ => return None,
         };
@@ -2679,7 +2783,23 @@ impl<'a> RowRenderer<'a> {
 
                 // The git marker is drawn separately, so the code fragment
                 // handed to the highlighter has no diff syntax in it.
+                let moved = match row {
+                    Row::Line {
+                        section,
+                        file,
+                        hunk,
+                        line,
+                    } => view.moved.contains(&(section, file, hunk, line)),
+                    _ => false,
+                };
                 let base = match line.kind {
+                    // Moved lines take the theme's colour for a change that
+                    // is neither addition nor deletion, and are dimmed.
+                    _ if moved => self.theme.try_get("diff.delta.moved").unwrap_or_else(|| {
+                        self.theme
+                            .get("diff.delta")
+                            .add_modifier(helix_view::graphics::Modifier::ITALIC)
+                    }),
                     DiffLineKind::Addition => self.theme.get("diff.plus"),
                     DiffLineKind::Deletion => self.theme.get("diff.minus"),
                     DiffLineKind::Context => self.theme.get("ui.text"),
@@ -2960,6 +3080,7 @@ mod tests {
             kind: ViewKind::Status,
             options: DiffOptions::default(),
             word_ranges: HashMap::new(),
+            moved: HashSet::new(),
             margin: STATUS_MARGIN.get(),
             mark: None,
         };
@@ -3723,5 +3844,82 @@ mod tests {
         assert!(titles.contains(&"Unpulled from fork/main"), "{titles:?}");
         assert!(titles.contains(&"Unpushed to fork/main"), "{titles:?}");
         assert!(titles.contains(&"Unmerged into origin/main"), "{titles:?}");
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "T")
+            .env("GIT_AUTHOR_EMAIL", "t@e.invalid")
+            .env("GIT_COMMITTER_NAME", "T")
+            .env("GIT_COMMITTER_EMAIL", "t@e.invalid")
+            .output()
+            .unwrap();
+        assert!(status.status.success(), "git {args:?}: {status:?}");
+    }
+
+    fn changed_paths(view: &DiffView) -> Vec<String> {
+        view.sections
+            .iter()
+            .flat_map(|section| &section.files)
+            .map(|file| file.path.display().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn ranges_switch_dots_and_flip_and_files_are_compared() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path();
+        git_in(work, &["init", "-q", "--initial-branch=main"]);
+        std::fs::write(work.join("base.txt"), "base\n").unwrap();
+        git_in(work, &["add", "."]);
+        git_in(work, &["commit", "-qm", "base"]);
+        git_in(work, &["checkout", "-qb", "feature"]);
+        std::fs::write(work.join("feature.txt"), "feature\n").unwrap();
+        git_in(work, &["add", "."]);
+        git_in(work, &["commit", "-qm", "feature"]);
+        git_in(work, &["checkout", "-q", "main"]);
+        std::fs::write(work.join("main.txt"), "main\n").unwrap();
+        git_in(work, &["add", "."]);
+        git_in(work, &["commit", "-qm", "main"]);
+
+        // main..feature: both sides' files; main...feature: feature's alone.
+        let mut view = DiffView::range(work, "main".into(), Some("feature".into()));
+        assert_eq!(view.error, None);
+        assert_eq!(changed_paths(&view), ["feature.txt", "main.txt"]);
+        assert_eq!(view.head, "Diff main..feature");
+        view.toggle_range().unwrap();
+        assert_eq!(view.head, "Diff main...feature");
+        assert_eq!(changed_paths(&view), ["feature.txt"]);
+
+        // Flipped: what main did since it forked from feature.
+        view.flip().unwrap();
+        assert_eq!(view.head, "Diff feature...main");
+        assert_eq!(changed_paths(&view), ["main.txt"]);
+
+        // Against the working tree, a flip reverses the diff.
+        let mut worktree = DiffView::range(work, "HEAD".into(), None);
+        assert!(worktree.toggle_range().is_err());
+        worktree.flip().unwrap();
+        assert!(worktree.options.reverse);
+
+        // Two files, one untracked, with the lines moved between them.
+        let body = "fn long_function_name() {\n    call_something_here();\n}\n";
+        std::fs::write(work.join("one.rs"), format!("// one\n{body}")).unwrap();
+        std::fs::write(work.join("two.rs"), "// one\n").unwrap();
+        let mut view = DiffView::paths(work, "one.rs".into(), "two.rs".into());
+        assert_eq!(view.error, None);
+        assert_eq!(view.sections[0].files[0].stats(), (0, 3));
+        let mut options = view.options.clone();
+        options.color_moved = true;
+        view.set_options(options);
+        assert!(
+            view.moved.is_empty(),
+            "deleted and not added back: not moved"
+        );
+        assert!(view.patch_text().1.contains("-    call_something_here();"));
     }
 }
