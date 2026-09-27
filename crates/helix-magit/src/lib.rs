@@ -13,6 +13,7 @@ pub mod ediff;
 pub mod log;
 pub mod message;
 pub mod patch;
+pub mod persist;
 pub mod rebase;
 pub mod refs;
 pub mod repos;

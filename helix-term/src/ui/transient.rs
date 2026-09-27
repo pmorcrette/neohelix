@@ -11,12 +11,76 @@ use helix_magit::{AskKind, MagitCommand};
 use crate::ui::diff_view::DiffView;
 use helix_view::graphics::Rect;
 use helix_view::input::{KeyCode, KeyEvent};
+use helix_view::keyboard::KeyModifiers;
 use tui::buffer::Buffer as Surface;
 use tui::widgets::{Block, Widget};
 
 use crate::compositor::{Callback, Component, Context, Event, EventResult};
 use crate::ui::log_view::LogView;
 use helix_magit::log::LogFilter;
+
+// ── What the menus remember (Magit's transient values, history, levels) ──
+
+use helix_magit::persist::{menu_name, TransientState};
+use std::collections::BTreeMap;
+use std::sync::Mutex;
+
+/// Saved values, option history and hidden actions, read from disk once.
+static STATE: Mutex<Option<TransientState>> = Mutex::new(None);
+/// Values set for this session only (`C-x s`), by menu.
+static SESSION: Mutex<BTreeMap<String, Vec<String>>> = Mutex::new(BTreeMap::new());
+
+/// Where the state is kept; none in tests, which must not read or write
+/// the user's.
+fn state_path() -> Option<PathBuf> {
+    if cfg!(test) {
+        None
+    } else {
+        Some(helix_loader::data_dir().join("magit-transient"))
+    }
+}
+
+fn with_state<R>(f: impl FnOnce(&mut TransientState) -> R) -> R {
+    let mut state = STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let state = state.get_or_insert_with(|| {
+        state_path()
+            .map(|path| TransientState::load(&path))
+            .unwrap_or_default()
+    });
+    f(state)
+}
+
+/// Writes the state back; an error is for the status line.
+fn persist() -> Result<(), String> {
+    let Some(path) = state_path() else {
+        return Ok(());
+    };
+    with_state(|state| state.save(&path)).map_err(|err| err.to_string())
+}
+
+/// A menu as it opens: with this session's values, else the saved ones,
+/// and without its hidden actions. The diff settings show the view's own.
+fn prepare(mut menu: TransientMenu) -> TransientMenu {
+    let name = menu_name(menu.kind);
+    if menu.kind != MenuKind::DiffSettings && menu.has_arguments() {
+        let session = SESSION
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&name)
+            .cloned();
+        if let Some(args) = session.or_else(|| with_state(|state| state.values.get(&name).cloned()))
+        {
+            menu.set_args(&args);
+        }
+    }
+    menu.hidden = with_state(|state| state.hidden_in(menu.kind));
+    menu
+}
+
+/// The register an option's prompt recalls its history from.
+const OPTION_HISTORY: char = '\u{F8F0}';
 
 /// Columns narrower than this are not worth splitting into.
 const MIN_COLUMN_WIDTH: u16 = 22;
@@ -36,6 +100,10 @@ pub struct TransientOverlay {
     /// The cursor's line in the file the menu was opened from, where a
     /// blame starts.
     line: usize,
+    /// `C-x` was pressed: the next key saves, sets or edits the levels.
+    ctrl_x: bool,
+    /// `C-x l`: keys hide or show actions instead of running them.
+    editing_levels: bool,
 }
 
 impl TransientOverlay {
@@ -43,11 +111,13 @@ impl TransientOverlay {
 
     pub fn new(menu: TransientMenu, context: impl Into<String>, workdir: PathBuf) -> Self {
         Self {
-            menu,
+            menu: prepare(menu),
             context: context.into(),
             workdir,
             target: None,
             line: 0,
+            ctrl_x: false,
+            editing_levels: false,
         }
     }
 
@@ -165,11 +235,14 @@ impl Component for TransientOverlay {
 
         surface.clear_with(area, popup_style);
 
-        let title = if self.context.is_empty() {
+        let mut title = if self.context.is_empty() {
             self.menu.title.clone()
         } else {
             format!("{}: {}", self.menu.title, self.context)
         };
+        if self.editing_levels {
+            title.push_str(" — a key hides or shows its command; C-x l when done");
+        }
         let block = Block::bordered().title(title).border_style(popup_style);
         let inner = block.inner(area);
         block.render(area, surface);
@@ -246,6 +319,15 @@ impl Component for TransientOverlay {
                     if y >= inner.y + inner.height {
                         break;
                     }
+                    let hidden = self.menu.hidden.contains(&action.key);
+                    if hidden && !self.editing_levels {
+                        continue;
+                    }
+                    let (text_style, description) = if hidden {
+                        (muted_style, format!("{} (hidden)", action.description))
+                    } else {
+                        (text_style, action.description.clone())
+                    };
                     surface.set_string_truncated(
                         x,
                         y,
@@ -258,7 +340,7 @@ impl Component for TransientOverlay {
                     surface.set_string_truncated(
                         x + 3,
                         y,
-                        &action.description,
+                        &description,
                         width.saturating_sub(3),
                         |_| text_style,
                         true,
@@ -284,7 +366,7 @@ impl Component for TransientOverlay {
         }
     }
 
-    fn handle_event(&mut self, event: &Event, _cx: &mut Context) -> EventResult {
+    fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
         let Event::Key(key) = event else {
             // The menu is modal: swallow everything, so a stray mouse event
             // does not reach the editor underneath.
@@ -294,6 +376,50 @@ impl Component for TransientOverlay {
         let close: Callback = Box::new(|compositor, _| {
             compositor.remove(TransientOverlay::ID);
         });
+
+        if std::mem::take(&mut self.ctrl_x) {
+            self.menu.argument_prefix = false;
+            match (key.code, key.modifiers.contains(KeyModifiers::CONTROL)) {
+                (KeyCode::Char('s'), true) => self.save_values(cx, true),
+                (KeyCode::Char('s'), false) => self.save_values(cx, false),
+                (KeyCode::Char('l'), _) => {
+                    self.editing_levels = !self.editing_levels;
+                    cx.editor.set_status(if self.editing_levels {
+                        "Press a command's key to hide or show it; C-x l when done"
+                    } else {
+                        "Done hiding commands"
+                    });
+                }
+                _ => cx.editor.set_status(
+                    "C-x C-s saves the arguments, C-x s sets them for this session, \
+                     C-x l hides or shows commands",
+                ),
+            }
+            return EventResult::Consumed(None);
+        }
+        if key.code == KeyCode::Char('x') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.ctrl_x = true;
+            return EventResult::Consumed(None);
+        }
+        if self.editing_levels {
+            match key.code {
+                KeyCode::Esc => self.editing_levels = false,
+                KeyCode::Char(c) if self.menu.has_action(c) => {
+                    let kind = self.menu.kind;
+                    let hidden = with_state(|state| state.toggle_hidden(kind, c));
+                    if hidden {
+                        self.menu.hidden.insert(c);
+                    } else {
+                        self.menu.hidden.remove(&c);
+                    }
+                    if let Err(err) = persist() {
+                        cx.editor.set_error(format!("could not save: {err}"));
+                    }
+                }
+                _ => {}
+            }
+            return EventResult::Consumed(None);
+        }
 
         match key {
             KeyEvent {
@@ -307,8 +433,15 @@ impl Component for TransientOverlay {
                 self.menu.argument_prefix = false;
                 let key = *c;
                 let label = format!("{}: ", self.menu.option_awaiting_value(key).unwrap_or(""));
+                let flag = self.menu.option_flag(key).unwrap_or_default().to_string();
+                // Its history, newest first, for `M-p` / `M-n` and completion.
+                let history =
+                    with_state(|state| state.history.get(&flag).cloned().unwrap_or_default());
+                if let Err(err) = cx.editor.registers.write(OPTION_HISTORY, history.clone()) {
+                    cx.editor.set_error(err.to_string());
+                }
                 return EventResult::Consumed(Some(Box::new(move |compositor, _| {
-                    compositor.push(Box::new(option_prompt(label, key)));
+                    compositor.push(Box::new(option_prompt(label, key, flag, history)));
                 })));
             }
             KeyEvent {
@@ -335,6 +468,29 @@ impl Component for TransientOverlay {
 }
 
 impl TransientOverlay {
+    /// `C-x C-s` saves the menu's arguments as its defaults, `C-x s` sets
+    /// them for this session only.
+    fn save_values(&mut self, cx: &mut Context, permanently: bool) {
+        if !self.menu.has_arguments() || self.menu.kind == MenuKind::DiffSettings {
+            return cx.editor.set_error("This menu has no arguments to keep");
+        }
+        let (name, args) = (menu_name(self.menu.kind), self.menu.args());
+        SESSION
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(name.clone(), args.clone());
+        if !permanently {
+            return cx.editor.set_status("Arguments set for this session");
+        }
+        with_state(|state| state.values.insert(name, args));
+        match persist() {
+            Ok(()) => cx
+                .editor
+                .set_status("Arguments saved as this menu's defaults"),
+            Err(err) => cx.editor.set_error(format!("could not save: {err}")),
+        }
+    }
+
     fn run(&mut self, command: MagitCommand, close: Callback) -> EventResult {
         match command {
             MagitCommand::OpenMenu(MenuKind::Views) => {
@@ -346,7 +502,8 @@ impl TransientOverlay {
                 })))
             }
             MagitCommand::OpenMenu(kind) => {
-                self.menu = kind.menu();
+                self.menu = prepare(kind.menu());
+                self.editing_levels = false;
                 EventResult::Consumed(None)
             }
             MagitCommand::Quit => EventResult::Consumed(Some(close)),
@@ -744,16 +901,32 @@ impl TransientOverlay {
 }
 
 /// Asks for an option's value and sets it in the menu, which stays open.
-fn option_prompt(label: String, key: char) -> crate::ui::Prompt {
-    crate::ui::Prompt::new(
+fn option_prompt(
+    label: String,
+    key: char,
+    flag: String,
+    history: Vec<String>,
+) -> crate::ui::Prompt {
+    let mut prompt = crate::ui::Prompt::new(
         label.into(),
-        None,
-        |_, _| Vec::new(),
+        Some(OPTION_HISTORY),
+        move |_, input| {
+            history
+                .iter()
+                .filter(|value| value.contains(input))
+                .map(|value| (0.., value.clone().into()))
+                .collect()
+        },
         move |cx, input, event| {
             if event != crate::ui::PromptEvent::Validate || input.trim().is_empty() {
                 return;
             }
             let value = input.trim().to_string();
+            with_state(|state| state.remember(&flag, &value));
+            if let Err(err) = persist() {
+                cx.editor
+                    .set_error(format!("could not save the history: {err}"));
+            }
             cx.jobs.callback(async move {
                 Ok(crate::job::Callback::EditorCompositor(Box::new(
                     move |_: &mut helix_view::Editor,
@@ -767,13 +940,15 @@ fn option_prompt(label: String, key: char) -> crate::ui::Prompt {
                 )))
             });
         },
-    )
+    );
+    prompt.with_history_register(Some(OPTION_HISTORY));
+    prompt
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use helix_magit::transient::{commit_menu, main_menu, pull_menu};
+    use helix_magit::transient::{commit_menu, main_menu, pull_menu, tag_menu};
 
     fn overlay(menu: TransientMenu) -> TransientOverlay {
         TransientOverlay::new(menu, "main", PathBuf::from("/repo"))
@@ -898,5 +1073,35 @@ mod tests {
                 assert!(handled, "{kind:?} binds '{}' to nothing", action.key);
             }
         }
+    }
+
+    #[test]
+    fn session_values_and_hidden_commands_shape_the_menu_as_it_opens() {
+        // The tag menu is this test's alone: the state is the process's.
+        let mut menu = tag_menu();
+        menu.handle_key('-');
+        menu.handle_key('a');
+        SESSION
+            .lock()
+            .unwrap()
+            .insert(menu_name(MenuKind::Tag), menu.args());
+        with_state(|state| state.toggle_hidden(MenuKind::Tag, 'k'));
+
+        let overlay = overlay(tag_menu());
+        assert_eq!(overlay.menu.args(), ["--annotate"]);
+        assert!(overlay.menu.hidden.contains(&'k'));
+        let mut menu = overlay.menu.clone();
+        assert_eq!(menu.handle_key('k'), TransientEvent::Unhandled);
+        assert!(matches!(menu.handle_key('t'), TransientEvent::Run(_)));
+
+        // The diff settings keep the view's own values.
+        SESSION
+            .lock()
+            .unwrap()
+            .insert(menu_name(MenuKind::DiffSettings), vec!["--stat".into()]);
+        let settings = prepare(helix_magit::transient::diff_settings_menu(
+            &helix_magit::diff::DiffOptions::default(),
+        ));
+        assert!(!settings.args().contains(&"--stat".to_string()));
     }
 }

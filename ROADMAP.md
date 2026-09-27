@@ -2298,10 +2298,22 @@ line with its commit, or hashes only.
 
 ### Task 2.29: Transient Persistence
 
-- [ ] Save a menu's arguments as its defaults (`C-x C-s`), and set them for
+- [x] Save a menu's arguments as its defaults (`C-x C-s`), and set them for
       the session only (`C-x s`).
-- [ ] History of the values typed into options, recalled with `M-p` / `M-n`.
-- [ ] Levels (`C-x l`): show or hide less common commands per menu.
+- [x] History of the values typed into options, recalled with `M-p` / `M-n`.
+- [x] Levels (`C-x l`): show or hide less common commands per menu.
+
+*Done.* In any menu, `C-x C-s` saves its arguments as its defaults, which
+later sessions open it with, and `C-x s` sets them for this session only
+(taken before the saved ones). An option's values are kept, newest first,
+twenty at most: its prompt offers them as completions and recalls them
+with `M-p` / `M-n` (Helix's `C-p` / `C-n` too; the prompt takes `M-p` /
+`M-n` everywhere now). Levels are per command rather than Magit's seven
+numbered ones: `C-x l` turns the menu's keys into toggles that hide a
+command or show it again (hidden ones are listed dimmed meanwhile), and
+`C-x l` again ends it; a hidden command is neither shown nor run. It all
+lives in one text file, `magit-transient` in Helix's data directory. The
+diff settings are left out of saving, as they show the open view's own.
 
 ### Task 2.30: Beyond Magit's Core
 

@@ -808,6 +808,9 @@ pub struct TransientMenu {
     /// Set by `-`: the next key toggles an argument rather than running an
     /// action.
     pub argument_prefix: bool,
+    /// The keys of the actions hidden from this menu (`C-x l`): not shown,
+    /// and not run.
+    pub hidden: std::collections::BTreeSet<char>,
 }
 
 impl TransientMenu {
@@ -817,6 +820,7 @@ impl TransientMenu {
             title: title.into(),
             groups: Vec::new(),
             argument_prefix: false,
+            hidden: std::collections::BTreeSet::new(),
         }
     }
 
@@ -851,6 +855,9 @@ impl TransientMenu {
             return TransientEvent::ArgumentPrefix;
         }
 
+        if self.hidden.contains(&key) {
+            return TransientEvent::Unhandled;
+        }
         for group in &self.groups {
             for action in &group.actions {
                 if action.key == key {
@@ -860,6 +867,27 @@ impl TransientMenu {
         }
 
         TransientEvent::Unhandled
+    }
+
+    /// Whether an action uses `key`.
+    pub fn has_action(&self, key: char) -> bool {
+        self.groups
+            .iter()
+            .flat_map(|group| &group.actions)
+            .any(|action| action.key == key)
+    }
+
+    /// The flag of the option `key` names.
+    pub fn option_flag(&self, key: char) -> Option<&str> {
+        self.groups
+            .iter()
+            .flat_map(|group| &group.arguments)
+            .find_map(|argument| match argument {
+                TransientArgument::Option(option) if option.key == key => {
+                    Some(option.flag.as_str())
+                }
+                _ => None,
+            })
     }
 
     /// The description of the option `key` names when it is off: turning it
