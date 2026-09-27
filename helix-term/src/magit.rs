@@ -387,12 +387,14 @@ fn ask_next(
     // A suggested preset — the file an ignore pattern starts from, since
     // `junk.log` is as likely to become `*.log` — is asked with it filled
     // in; any other preset is the answer.
-    while let Some(preset) = asks
-        .get(answers.len())
-        .filter(|ask| !ask.suggested)
-        .and_then(|ask| ask.preset.clone())
-    {
-        answers.push(preset);
+    // So is one the repository answers: the push-remote, the branch.
+    while let Some(answer) = asks.get(answers.len()).and_then(|ask| {
+        ask.preset
+            .clone()
+            .filter(|_| !ask.suggested)
+            .or_else(|| ask.source.and_then(|source| source.read(&workdir)))
+    }) {
+        answers.push(answer);
     }
     let Some(ask) = asks.get(answers.len()).cloned() else {
         let plan = plan.answered(&answers);
@@ -410,10 +412,11 @@ fn ask_next(
     };
 
     let names = helix_magit::refs::names(&workdir, ask.kind);
-    let label = match (ask.optional, ask.fallback) {
-        (_, Some(fallback)) => format!("{} (empty for {fallback}): ", ask.label),
-        (true, None) => format!("{}: ", ask.label),
-        (false, None) => format!("{} (required): ", ask.label),
+    let label = match (ask.optional, ask.fallback, ask.source) {
+        (_, _, Some(source)) => format!("{}: ", source.label(&workdir)),
+        (_, Some(fallback), _) => format!("{} (empty for {fallback}): ", ask.label),
+        (true, None, _) => format!("{}: ", ask.label),
+        (false, None, _) => format!("{} (required): ", ask.label),
     };
     let kind = ask.kind;
     let preset = ask.preset.clone();
@@ -436,6 +439,13 @@ fn ask_next(
             if let Some(refusal) = ask.refuse(&input) {
                 cx.editor.set_error(refusal);
                 return;
+            }
+            // Kept, so the push-remote is asked once per branch.
+            if let Some(source) = ask.source {
+                if let Err(err) = source.remember(&workdir, &input) {
+                    cx.editor.set_error(err);
+                    return;
+                }
             }
             let mut answers = answers.clone();
             answers.push(ask.answer(&input));

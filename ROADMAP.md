@@ -2063,11 +2063,27 @@ message open to fix.
 Magit treats the push-remote and the upstream as two separate targets
 everywhere.
 
-- [ ] Push to the push-remote (`P p`), with upstream and elsewhere beside it.
-- [ ] Pull from the push-remote, the upstream or elsewhere (`F p/u/e`).
-- [ ] Rebase onto the push-remote or elsewhere (`r p`, `r e`).
-- [ ] In the status buffer: a line for the push-remote under the upstream's,
+- [x] Push to the push-remote (`P p`), with upstream and elsewhere beside it.
+- [x] Pull from the push-remote, the upstream or elsewhere (`F p/u/e`).
+- [x] Rebase onto the push-remote or elsewhere (`r p`, `r e`).
+- [x] In the status buffer: a line for the push-remote under the upstream's,
       with its own unpulled and unpushed sections.
+
+*Done.* The push-remote is Magit's: the branch's `pushRemote`, else
+`remote.pushDefault`. A question can now be answered by the repository
+(`command::Source`): `P p`, `F p` and `r p` take the push-remote and the
+current branch from it, and only when no push-remote is configured ask
+"Set main's push-remote to:", keeping the answer as `branch.<name>.pushRemote`
+so it is asked once, as Magit does. `P p` is `git push <remote> HEAD`, `F p`
+`git pull <remote> <branch>`, `r p` `git rebase <remote>/<branch>`; `F e`
+asks a remote and a branch on it, `r e` any revision. The push menu's `p`,
+which was the upstream, is the push-remote now, the upstream `u`; the pull
+menu's likewise. `r p` and `r e` replay the commits as they are: the
+interactive rebase stays `r i`. The status's Push line is the push-remote's
+branch of the same name when one is configured (shown even before it
+exists, as not fetched), else where `git push` would go, and it gets
+"Unpulled from" and "Unpushed to" sections of its own when it is not the
+upstream.
 
 ### Task 2.24: The Fetch Transient
 

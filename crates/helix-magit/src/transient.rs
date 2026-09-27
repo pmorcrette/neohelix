@@ -29,11 +29,14 @@ pub enum MagitCommand {
     CommitInstantSquash,
 
     Push,
+    PushToPushRemote,
     PushToUpstream,
     PushElsewhere,
     PushRefspecs,
 
     Pull,
+    PullFromPushRemote,
+    PullElsewhere,
     Fetch,
     FetchAll,
 
@@ -46,7 +49,9 @@ pub enum MagitCommand {
     BranchSpinoff,
     BranchSpinout,
 
+    RebaseOntoPushRemote,
     RebaseOntoUpstream,
+    RebaseElsewhere,
     RebaseInteractive,
     RebaseOnto,
     RebaseAbort,
@@ -897,7 +902,8 @@ pub fn push_menu() -> TransientMenu {
             switch('t', "--tags", "Push tags too"),
         ]),
         TransientGroup::new("Push to").with_actions([
-            TransientAction::new('p', "Upstream", MagitCommand::PushToUpstream),
+            TransientAction::new('p', "pushRemote", MagitCommand::PushToPushRemote),
+            TransientAction::new('u', "Upstream", MagitCommand::PushToUpstream),
             TransientAction::new('e', "Elsewhere", MagitCommand::PushElsewhere),
             TransientAction::new('P', "Push", MagitCommand::Push),
             TransientAction::new('r', "Explicit refspecs", MagitCommand::PushRefspecs),
@@ -914,7 +920,9 @@ pub fn pull_menu() -> TransientMenu {
             switch('f', "--ff-only", "Fast-forward only"),
         ]),
         TransientGroup::new("Pull from").with_actions([
-            TransientAction::new('p', "Pull", MagitCommand::Pull),
+            TransientAction::new('p', "pushRemote", MagitCommand::PullFromPushRemote),
+            TransientAction::new('u', "Upstream", MagitCommand::Pull),
+            TransientAction::new('e', "Elsewhere", MagitCommand::PullElsewhere),
             TransientAction::new('f', "Fetch", MagitCommand::Fetch),
             TransientAction::new('a', "Fetch all remotes", MagitCommand::FetchAll),
         ]),
@@ -966,7 +974,9 @@ pub fn rebase_menu() -> TransientMenu {
             option('S', "--strategy=", "Merge strategy"),
         ]),
         TransientGroup::new("Rebase").with_actions([
+            TransientAction::new('p', "Onto pushRemote", MagitCommand::RebaseOntoPushRemote),
             TransientAction::new('u', "Onto upstream", MagitCommand::RebaseOntoUpstream),
+            TransientAction::new('e', "Elsewhere", MagitCommand::RebaseElsewhere),
             TransientAction::new('r', "Interactively", MagitCommand::RebaseInteractive),
             TransientAction::new('o', "Onto a revision", MagitCommand::RebaseOnto),
             TransientAction::new('d', "Reshelve: new dates since", MagitCommand::Reshelve),

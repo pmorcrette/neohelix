@@ -586,3 +586,88 @@ fn an_instant_squash_adds_its_words_to_the_commit() {
     let b = git(&work, &["log", "--format=%B", "-1", "--grep=Add b"]).unwrap();
     assert_eq!(b.trim_end(), "Add b\n\nAnd more of b");
 }
+
+/// A second bare remote, `fork`, next to `origin`.
+fn add_fork(dir: &Path, work: &Path) -> std::path::PathBuf {
+    let fork = dir.join("fork.git");
+    Command::new("git")
+        .args(["init", "--bare", fork.to_str().unwrap()])
+        .output()
+        .unwrap();
+    git(work, &["remote", "add", "fork", fork.to_str().unwrap()]).unwrap();
+    fork
+}
+
+#[test]
+fn the_push_remote_is_read_from_the_config_and_kept_once_asked() {
+    use helix_magit::command::Source;
+    let (dir, work) = fixture_or_skip!();
+    add_fork(dir.path(), &work);
+
+    assert_eq!(Source::PushRemote.read(&work), None);
+    assert_eq!(Source::CurrentBranch.read(&work).as_deref(), Some("main"));
+    assert_eq!(Source::PushRemote.label(&work), "Set main's push-remote to");
+
+    // `remote.pushDefault` counts, and a branch's own setting wins.
+    git(&work, &["config", "remote.pushDefault", "origin"]).unwrap();
+    assert_eq!(Source::PushRemote.read(&work).as_deref(), Some("origin"));
+    Source::PushRemote.remember(&work, "fork").unwrap();
+    assert_eq!(Source::PushRemote.read(&work).as_deref(), Some("fork"));
+}
+
+#[test]
+fn push_pull_and_rebase_go_to_the_push_remote() {
+    let (dir, work) = fixture_or_skip!();
+    add_fork(dir.path(), &work);
+    git(&work, &["config", "branch.main.pushRemote", "fork"]).unwrap();
+
+    fs::write(work.join("f.txt"), "mine\n").unwrap();
+    git(&work, &["commit", "-am", "mine"]).unwrap();
+
+    // Push: the fork gets main, origin does not.
+    let push = resolve(MagitCommand::PushToPushRemote, &[])
+        .unwrap()
+        .answered(&["fork".into()]);
+    assert_eq!(push.args, ["push", "fork", "HEAD"]);
+    let output = GitCommand::new(&work, push.args).run().unwrap();
+    assert!(output.success, "{}", output.summary());
+    git(&work, &["fetch", "--all"]).unwrap();
+    assert_eq!(
+        git(&work, &["rev-parse", "fork/main"]),
+        git(&work, &["rev-parse", "HEAD"])
+    );
+    assert_ne!(
+        git(&work, &["rev-parse", "origin/main"]),
+        git(&work, &["rev-parse", "HEAD"])
+    );
+
+    // The status tells the two apart.
+    fs::write(work.join("f.txt"), "more\n").unwrap();
+    git(&work, &["commit", "-am", "more"]).unwrap();
+    let overview = helix_magit::status::read(&work);
+    assert_eq!(overview.push.as_ref().unwrap().name, "fork/main");
+    let subjects = |commits: &[helix_magit::status::Commit]| -> Vec<String> {
+        commits.iter().map(|c| c.subject.clone()).collect()
+    };
+    assert_eq!(subjects(&overview.push_unpushed), ["more"]);
+    assert_eq!(subjects(&overview.unpushed), ["more", "mine"]);
+
+    // Rebase onto it: the plan names fork/main.
+    let rebase = resolve(
+        MagitCommand::RebaseOntoPushRemote,
+        &["--interactive".into()],
+    )
+    .unwrap()
+    .answered(&["fork".into(), "main".into()]);
+    assert_eq!(rebase.args, ["rebase", "fork/main"]);
+    let output = GitCommand::new(&work, rebase.args).run().unwrap();
+    assert!(output.success, "{}", output.summary());
+
+    // Pull from it: fast-forward to what someone pushed there.
+    let pull = resolve(MagitCommand::PullFromPushRemote, &[])
+        .unwrap()
+        .answered(&["fork".into(), "main".into()]);
+    assert_eq!(pull.args, ["pull", "fork", "main"]);
+    let output = GitCommand::new(&work, pull.args).run().unwrap();
+    assert!(output.success, "{}", output.summary());
+}

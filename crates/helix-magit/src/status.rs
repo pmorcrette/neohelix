@@ -104,13 +104,17 @@ pub struct Overview {
     /// HEAD's commit; `None` before the first commit.
     pub head: Option<Commit>,
     pub upstream: Option<Tracked>,
-    /// Where `git push` would go, shown only when that is not the upstream.
+    /// Where `git push` would go, shown only when that is not the upstream:
+    /// the push-remote's branch of the same name, when one is configured.
     pub push: Option<Tracked>,
     pub in_progress: Option<InProgress>,
     /// Commits the upstream has that HEAD does not.
     pub unpulled: Vec<Commit>,
     /// Commits HEAD has that the upstream does not.
     pub unpushed: Vec<Commit>,
+    /// The same two against the push branch, when it is not the upstream.
+    pub push_unpulled: Vec<Commit>,
+    pub push_unpushed: Vec<Commit>,
     /// The last few commits, shown when there is nothing unpushed to show
     /// instead.
     pub recent: Vec<Commit>,
@@ -268,10 +272,39 @@ pub fn read(workdir: &Path) -> Overview {
     let upstream = branch
         .as_ref()
         .and_then(|_| tracked(workdir, "@{upstream}"));
+    // Magit's push branch: the push-remote's branch of the same name, even
+    // before it exists; without a push-remote, where git would push.
     let push = branch
         .as_ref()
-        .and_then(|_| tracked(workdir, "@{push}"))
+        .and_then(|branch| match push_remote(workdir, branch) {
+            Some(remote) => {
+                let name = format!("{remote}/{branch}");
+                Some(
+                    tracked(workdir, &format!("refs/remotes/{name}"))
+                        .unwrap_or(Tracked { name, commit: None }),
+                )
+            }
+            None => tracked(workdir, "@{push}"),
+        })
         .filter(|push| upstream.as_ref().map(|up| &up.name) != Some(&push.name));
+    let (push_unpulled, push_unpushed) = match &push {
+        Some(Tracked {
+            name,
+            commit: Some(_),
+        }) => (
+            log(
+                workdir,
+                &format!("HEAD..refs/remotes/{name}"),
+                DIVERGENCE_LIMIT,
+            ),
+            log(
+                workdir,
+                &format!("refs/remotes/{name}..HEAD"),
+                DIVERGENCE_LIMIT,
+            ),
+        ),
+        _ => (Vec::new(), Vec::new()),
+    };
 
     let (unpulled, unpushed) = match &upstream {
         Some(_) => (
@@ -320,6 +353,8 @@ pub fn read(workdir: &Path) -> Overview {
         in_progress,
         unpulled,
         unpushed,
+        push_unpulled,
+        push_unpushed,
         recent,
         stashes,
         worktrees,
@@ -348,6 +383,24 @@ pub fn sparse_directories(workdir: &Path) -> Option<Vec<String>> {
 
 /// The repository's git directory — `.git`, or elsewhere for a linked
 /// worktree or a submodule.
+/// The checked-out branch, `None` when HEAD is detached.
+pub fn current_branch(workdir: &Path) -> Option<String> {
+    git(workdir, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+}
+
+/// Where `branch` is pushed to by Magit's `P p`: its own `pushRemote`, or
+/// the repository's `remote.pushDefault`.
+pub fn push_remote(workdir: &Path, branch: &str) -> Option<String> {
+    let config = |key: &str| {
+        git(workdir, &["config", "--get", key])
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    config(&format!("branch.{branch}.pushRemote")).or_else(|| config("remote.pushDefault"))
+}
+
 pub fn git_dir(workdir: &Path) -> Option<PathBuf> {
     git(workdir, &["rev-parse", "--absolute-git-dir"])
         .map(|dir| PathBuf::from(dir.trim()))

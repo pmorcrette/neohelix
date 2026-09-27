@@ -42,6 +42,9 @@ enum SectionKind {
     Unpulled,
     /// Commits HEAD has and the upstream does not.
     Unpushed,
+    /// The same two against the push branch, when it is not the upstream.
+    PushUnpulled,
+    PushUnpushed,
     /// The last few commits, when nothing is unpushed.
     Recent,
     /// The files a shown commit changed.
@@ -219,6 +222,10 @@ fn build_sections(
         .upstream
         .as_ref()
         .map_or("upstream", |upstream| upstream.name.as_str());
+    let push = overview
+        .push
+        .as_ref()
+        .map_or("the push branch", |push| push.name.as_str());
 
     let files = |kind, title: &str, files| Section {
         kind,
@@ -273,6 +280,16 @@ fn build_sections(
             SectionKind::Unpushed,
             format!("Unmerged into {upstream}"),
             commits(&overview.unpushed),
+        ),
+        items(
+            SectionKind::PushUnpulled,
+            format!("Unpulled from {push}"),
+            commits(&overview.push_unpulled),
+        ),
+        items(
+            SectionKind::PushUnpushed,
+            format!("Unpushed to {push}"),
+            commits(&overview.push_unpushed),
         ),
         items(
             SectionKind::Recent,
@@ -1621,6 +1638,8 @@ impl DiffView {
             let kind = match section.kind {
                 SectionKind::Unpushed
                 | SectionKind::Unpulled
+                | SectionKind::PushUnpushed
+                | SectionKind::PushUnpulled
                 | SectionKind::Recent
                 | SectionKind::Cherries => AskKind::Revision,
                 SectionKind::Stashes => AskKind::Stash,
@@ -3087,6 +3106,8 @@ mod tests {
             }),
             unpulled: vec![commit("def5678", "Theirs")],
             unpushed: vec![commit("abc1234", "Latest")],
+            push_unpulled: Vec::new(),
+            push_unpushed: Vec::new(),
             recent: Vec::new(),
             stashes: vec![Stash {
                 name: "stash@{0}".into(),
@@ -3596,5 +3617,36 @@ mod tests {
         assert!(view.sections[1].files[0].folded, "untracked start folded");
         view.set_level(4, true);
         assert!(!view.sections[1].files[0].folded);
+    }
+
+    #[test]
+    fn a_push_branch_apart_from_the_upstream_gets_sections_of_its_own() {
+        use helix_magit::status::{Commit, Tracked};
+        let commit = |hash: &str| Commit {
+            hash: hash.into(),
+            subject: "s".into(),
+            ..Commit::default()
+        };
+        let overview = Overview {
+            push: Some(Tracked {
+                name: "fork/main".into(),
+                commit: Some(commit("111")),
+            }),
+            push_unpulled: vec![commit("222")],
+            push_unpushed: vec![commit("333"), commit("444")],
+            ..overview()
+        };
+        let view = make_full_view(vec![], vec![], vec![], vec![], &overview);
+        let titles: Vec<&str> = view
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Section { section } => Some(view.sections[*section].title.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(titles.contains(&"Unpulled from fork/main"), "{titles:?}");
+        assert!(titles.contains(&"Unpushed to fork/main"), "{titles:?}");
+        assert!(titles.contains(&"Unmerged into origin/main"), "{titles:?}");
     }
 }

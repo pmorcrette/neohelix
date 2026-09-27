@@ -69,6 +69,61 @@ impl Seed {
     }
 }
 
+/// A question the repository answers by itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Source {
+    /// The current branch's push-remote. When none is configured it is
+    /// asked, and the answer kept as `branch.<name>.pushRemote`, as Magit
+    /// does.
+    PushRemote,
+    /// The checked-out branch.
+    CurrentBranch,
+}
+
+impl Source {
+    /// The answer, when the repository has one.
+    pub fn read(self, workdir: &Path) -> Option<String> {
+        let branch = crate::status::current_branch(workdir)?;
+        match self {
+            Source::PushRemote => crate::status::push_remote(workdir, &branch),
+            Source::CurrentBranch => Some(branch),
+        }
+    }
+
+    /// The question to ask when there is no answer yet.
+    pub fn label(self, workdir: &Path) -> String {
+        match (self, crate::status::current_branch(workdir)) {
+            (Source::PushRemote, Some(branch)) => format!("Set {branch}'s push-remote to"),
+            (Source::PushRemote, None) => "Push-remote".to_string(),
+            (Source::CurrentBranch, _) => "Branch".to_string(),
+        }
+    }
+
+    /// Keeps an answer that was asked for, so it is not asked again.
+    pub fn remember(self, workdir: &Path, answer: &str) -> Result<(), String> {
+        let Source::PushRemote = self else {
+            return Ok(());
+        };
+        let branch = crate::status::current_branch(workdir)
+            .ok_or("HEAD is detached: there is no branch to push")?;
+        let output = GitCommand::new(
+            workdir,
+            vec![
+                "config".into(),
+                format!("branch.{branch}.pushRemote"),
+                answer.into(),
+            ],
+        )
+        .run()
+        .map_err(|err| err.to_string())?;
+        if output.success {
+            Ok(())
+        } else {
+            Err(output.summary())
+        }
+    }
+}
+
 /// What a value asked for is, which decides how it is completed and
 /// whether the thing under the cursor can supply it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -103,6 +158,8 @@ pub struct Ask {
     pub words: bool,
     /// What an empty answer stands for: `HEAD` for the commit to fix up.
     pub fallback: Option<&'static str>,
+    /// Where the repository answers it without asking: see [`Source`].
+    pub source: Option<Source>,
     /// Whether what the menu was opened on is kept out of this question: a
     /// bundle's file is never the file under the cursor, which writing the
     /// bundle would overwrite.
@@ -119,8 +176,15 @@ impl Ask {
             suggested: false,
             words: false,
             fallback: None,
+            source: None,
             untargeted: false,
         }
+    }
+
+    /// Answered from the repository when it can be; asked only when not.
+    pub fn from(mut self, source: Source) -> Self {
+        self.source = Some(source);
+        self
     }
 
     /// Lets the answer be empty, standing for `value`.
@@ -746,6 +810,19 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
             }
         }
 
+        // To the push-remote, under the branch's own name: `git push
+        // <remote> HEAD`.
+        MagitCommand::PushToPushRemote => {
+            let mut push = with(["push"], args);
+            push.extend(["{0}".to_string(), "HEAD".to_string()]);
+            let plan = Plan::new(push, "Push to the push-remote").asking([push_remote_ask()]);
+            if forced {
+                plan.destructive()
+            } else {
+                plan
+            }
+        }
+
         MagitCommand::PushRefspecs => {
             let mut push = with(["push"], args);
             push.extend(["{0}".to_string(), "{1}".to_string()]);
@@ -761,6 +838,22 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
         }
 
         MagitCommand::Pull => Plan::new(with(["pull"], args), "Pull"),
+        MagitCommand::PullFromPushRemote => {
+            let mut pull = with(["pull"], args);
+            pull.extend(["{0}".to_string(), "{1}".to_string()]);
+            Plan::new(pull, "Pull from the push-remote").asking([
+                push_remote_ask(),
+                Ask::required(AskKind::Branch, "Branch").from(Source::CurrentBranch),
+            ])
+        }
+        MagitCommand::PullElsewhere => {
+            let mut pull = with(["pull"], args);
+            pull.extend(["{0}".to_string(), "{1}".to_string()]);
+            Plan::new(pull, "Pull from elsewhere").asking([
+                Ask::required(AskKind::Remote, "Pull from remote"),
+                Ask::required(AskKind::Text, "Branch on that remote"),
+            ])
+        }
         MagitCommand::Fetch => Plan::new(with(["fetch"], args), "Fetch"),
         MagitCommand::FetchAll => Plan::new(with(["fetch", "--all"], args), "Fetch all remotes"),
 
@@ -1108,6 +1201,25 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
         MagitCommand::RebaseOntoUpstream => {
             Plan::new(with(["rebase"], args), "Rebase onto upstream").destructive()
         }
+        // `r i` is the interactive rebase; these two replay the commits as
+        // they are, whatever the switch says.
+        MagitCommand::RebaseOntoPushRemote => {
+            let mut rebase = with(["rebase"], &without_interactive(args));
+            rebase.push("{0}/{1}".to_string());
+            Plan::new(rebase, "Rebase onto the push-remote")
+                .asking([
+                    push_remote_ask(),
+                    Ask::required(AskKind::Branch, "Branch").from(Source::CurrentBranch),
+                ])
+                .destructive()
+        }
+        MagitCommand::RebaseElsewhere => {
+            let mut rebase = with(["rebase"], &without_interactive(args));
+            rebase.push("{0}".to_string());
+            Plan::new(rebase, "Rebase elsewhere")
+                .asking([Ask::required(AskKind::Revision, "Rebase onto")])
+                .destructive()
+        }
         // The edited todo-list is the confirmation: nothing is rewritten
         // until it is written, and quitting it cancels.
         MagitCommand::RebaseInteractive => Plan::new(
@@ -1274,6 +1386,19 @@ pub fn typed_shell(line: &str) -> Result<Plan, String> {
 }
 
 /// Appends the menu's arguments to a fixed prefix.
+/// The current branch's push-remote, asked (and kept) only when none is
+/// configured.
+fn push_remote_ask() -> Ask {
+    Ask::required(AskKind::Remote, "Push-remote").from(Source::PushRemote)
+}
+
+fn without_interactive(args: &[String]) -> Vec<String> {
+    args.iter()
+        .filter(|arg| *arg != "--interactive")
+        .cloned()
+        .collect()
+}
+
 /// The commit a fixup, squash or amend is made for: the one at the cursor
 /// when the menu was opened on one, else asked, HEAD when left empty.
 fn fold_target(label: &'static str) -> Ask {
