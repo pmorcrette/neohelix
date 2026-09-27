@@ -126,6 +126,7 @@ impl TransientOverlay {
             MenuKind::BranchConfig | MenuKind::RemoteConfig => "git config",
             MenuKind::Resolve | MenuKind::File => return String::new(),
             MenuKind::Diff => "git diff",
+            MenuKind::Fetch => "git fetch",
             MenuKind::DiffSettings => "diff settings:",
             MenuKind::Jump | MenuKind::Views | MenuKind::Setup => return String::new(),
         };

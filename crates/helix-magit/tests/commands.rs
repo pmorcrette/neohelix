@@ -671,3 +671,36 @@ fn push_pull_and_rebase_go_to_the_push_remote() {
     let output = GitCommand::new(&work, pull.args).run().unwrap();
     assert!(output.success, "{}", output.summary());
 }
+
+#[test]
+fn fetch_takes_the_push_remote_another_branch_and_prune() {
+    let (dir, work) = fixture_or_skip!();
+    let fork = add_fork(dir.path(), &work);
+    git(&work, &["config", "branch.main.pushRemote", "fork"]).unwrap();
+    git(&work, &["push", "fork", "HEAD", "HEAD:refs/heads/topic"]).unwrap();
+
+    let fetch = resolve(MagitCommand::FetchFromPushRemote, &["--prune".into()])
+        .unwrap()
+        .answered(&["fork".into()]);
+    assert_eq!(fetch.args, ["fetch", "--prune", "fork"]);
+    assert!(GitCommand::new(&work, fetch.args).run().unwrap().success);
+    assert!(git(&work, &["rev-parse", "--verify", "fork/topic"]).is_some());
+
+    // Deleted on the fork: pruned from here.
+    Command::new("git")
+        .current_dir(&fork)
+        .args(["branch", "-D", "topic"])
+        .output()
+        .unwrap();
+    let fetch = resolve(MagitCommand::FetchFromPushRemote, &["--prune".into()])
+        .unwrap()
+        .answered(&["fork".into()]);
+    assert!(GitCommand::new(&work, fetch.args).run().unwrap().success);
+    assert!(git(&work, &["rev-parse", "--verify", "fork/topic"]).is_none());
+
+    let branch = resolve(MagitCommand::FetchBranch, &[])
+        .unwrap()
+        .answered(&["origin".into(), "main".into()]);
+    assert_eq!(branch.args, ["fetch", "origin", "main"]);
+    assert!(GitCommand::new(&work, branch.args).run().unwrap().success);
+}

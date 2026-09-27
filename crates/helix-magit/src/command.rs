@@ -854,7 +854,29 @@ pub fn resolve(command: MagitCommand, args: &[String]) -> Option<Plan> {
                 Ask::required(AskKind::Text, "Branch on that remote"),
             ])
         }
+        // With no remote named, git fetches the upstream's.
         MagitCommand::Fetch => Plan::new(with(["fetch"], args), "Fetch"),
+        MagitCommand::FetchFromPushRemote => {
+            let mut fetch = with(["fetch"], args);
+            fetch.push("{0}".to_string());
+            Plan::new(fetch, "Fetch from the push-remote").asking([push_remote_ask()])
+        }
+        MagitCommand::FetchBranch => {
+            let mut fetch = with(["fetch"], args);
+            fetch.extend(["{0}".to_string(), "{1}".to_string()]);
+            Plan::new(fetch, "Fetch another branch").asking([
+                Ask::required(AskKind::Remote, "Fetch from remote"),
+                Ask::required(AskKind::Text, "Branch on that remote"),
+            ])
+        }
+        MagitCommand::FetchRefspecs => {
+            let mut fetch = with(["fetch"], args);
+            fetch.extend(["{0}".to_string(), "{1}".to_string()]);
+            Plan::new(fetch, "Fetch refspecs").asking([
+                Ask::required(AskKind::Remote, "Fetch from remote"),
+                Ask::required(AskKind::Text, "Refspecs (e.g. refs/pull/1/head:pr-1)").words(),
+            ])
+        }
         MagitCommand::FetchAll => Plan::new(with(["fetch", "--all"], args), "Fetch all remotes"),
 
         // Any revision, a branch or not; one the menu was opened on is

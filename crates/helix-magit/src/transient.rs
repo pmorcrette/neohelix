@@ -38,6 +38,9 @@ pub enum MagitCommand {
     PullFromPushRemote,
     PullElsewhere,
     Fetch,
+    FetchFromPushRemote,
+    FetchBranch,
+    FetchRefspecs,
     FetchAll,
 
     BranchCheckout,
@@ -311,6 +314,7 @@ pub enum MenuKind {
     Commit,
     Push,
     Pull,
+    Fetch,
     Branch,
     Rebase,
     Log,
@@ -352,11 +356,12 @@ pub enum MenuKind {
 }
 
 impl MenuKind {
-    pub const ALL: [MenuKind; 34] = [
+    pub const ALL: [MenuKind; 35] = [
         MenuKind::Main,
         MenuKind::Commit,
         MenuKind::Push,
         MenuKind::Pull,
+        MenuKind::Fetch,
         MenuKind::Branch,
         MenuKind::Rebase,
         MenuKind::Log,
@@ -398,6 +403,7 @@ impl MenuKind {
             MenuKind::Commit => 'c',
             MenuKind::Push => 'P',
             MenuKind::Pull => 'F',
+            MenuKind::Fetch => 'f',
             MenuKind::Branch => 'b',
             MenuKind::Rebase => 'r',
             MenuKind::Log => 'l',
@@ -445,6 +451,7 @@ impl MenuKind {
             MenuKind::Commit => commit_menu(),
             MenuKind::Push => push_menu(),
             MenuKind::Pull => pull_menu(),
+            MenuKind::Fetch => fetch_menu(),
             MenuKind::Branch => branch_menu(),
             MenuKind::Rebase => rebase_menu(),
             MenuKind::Log => log_menu(),
@@ -812,7 +819,7 @@ pub fn main_menu() -> TransientMenu {
             open(MenuKind::Remote, "Remote"),
             open(MenuKind::Push, "Push"),
             open(MenuKind::Pull, "Pull"),
-            TransientAction::new('f', "Fetch", MagitCommand::Fetch),
+            open(MenuKind::Fetch, "Fetch"),
             open(MenuKind::Worktree, "Worktree"),
             open(MenuKind::Submodule, "Submodule"),
             open(MenuKind::Subtree, "Subtree"),
@@ -925,6 +932,27 @@ pub fn pull_menu() -> TransientMenu {
             TransientAction::new('e', "Elsewhere", MagitCommand::PullElsewhere),
             TransientAction::new('f', "Fetch", MagitCommand::Fetch),
             TransientAction::new('a', "Fetch all remotes", MagitCommand::FetchAll),
+        ]),
+    ])
+}
+
+pub fn fetch_menu() -> TransientMenu {
+    TransientMenu::new(MenuKind::Fetch, "Fetch").with_groups([
+        TransientGroup::new("Arguments").with_arguments([
+            switch('p', "--prune", "Prune deleted branches"),
+            switch('t', "--tags", "Fetch all tags"),
+            switch('F', "--force", "Force"),
+        ]),
+        TransientGroup::new("Fetch from").with_actions([
+            TransientAction::new('p', "pushRemote", MagitCommand::FetchFromPushRemote),
+            TransientAction::new('u', "Upstream", MagitCommand::Fetch),
+            TransientAction::new('e', "Elsewhere", MagitCommand::RemoteFetch),
+            TransientAction::new('a', "All remotes", MagitCommand::FetchAll),
+        ]),
+        TransientGroup::new("Fetch").with_actions([
+            TransientAction::new('o', "Another branch", MagitCommand::FetchBranch),
+            TransientAction::new('r', "Explicit refspecs", MagitCommand::FetchRefspecs),
+            TransientAction::new('m', "Submodules", MagitCommand::SubmoduleFetch),
         ]),
     ])
 }

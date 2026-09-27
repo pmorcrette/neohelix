@@ -2089,10 +2089,17 @@ upstream.
 
 `f` fetches straight away; in Magit it is a menu.
 
-- [ ] Fetch from the push-remote, the upstream, elsewhere, or all remotes.
-- [ ] Fetch another branch (`f o`) and an explicit refspec (`f r`).
-- [ ] Fetch submodules from the same menu (`f m`).
-- [ ] Arguments: `--prune`, `--tags`, `--force`.
+- [x] Fetch from the push-remote, the upstream, elsewhere, or all remotes.
+- [x] Fetch another branch (`f o`) and an explicit refspec (`f r`).
+- [x] Fetch submodules from the same menu (`f m`).
+- [x] Arguments: `--prune`, `--tags`, `--force`.
+
+*Done.* `f` opens the menu, in the main menu and the views alike: `p` the
+push-remote (asked once and kept when unset, as for `P p`), `u` the
+upstream's remote (a bare `git fetch`), `e` a remote picked, `a` all of
+them; `o` one branch of a remote, `r` refspecs; `m` fetches in every
+submodule. The switches are `-p --prune`, `-t --tags` and `-F --force`. The
+pull menu keeps its own `f` and `a`, as Magit's does.
 
 ### Task 2.25: Three-Way Views (Ediff)
 
