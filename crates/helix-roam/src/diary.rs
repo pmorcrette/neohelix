@@ -121,6 +121,7 @@ fn weekday(day: Date) -> i64 {
     (day.to_days() + 4).rem_euclid(7)
 }
 
+/// How many days a month has, leap years included.
 fn days_in_month(year: i64, month: u32) -> u32 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,

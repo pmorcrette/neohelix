@@ -61,6 +61,7 @@ struct TodoPart {
     unwanted: Vec<String>,
 }
 
+/// A regexp from a match or a search, which ignores case as Org's do.
 fn regex(pattern: &str) -> Result<Regex, String> {
     RegexBuilder::new(pattern)
         .case_insensitive(true)
@@ -165,6 +166,7 @@ fn split_outside(text: &str, separator: char) -> Vec<&str> {
     parts
 }
 
+/// Reads the part of a match after its `/`.
 fn parse_todo(text: &str) -> TodoPart {
     let mut part = TodoPart::default();
     let mut text = text.trim();
@@ -211,6 +213,7 @@ impl TodoPart {
     }
 }
 
+/// What a tag or a property's name is made of.
 fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, '_' | '@' | '#' | '%')
 }
@@ -326,6 +329,7 @@ enum Found {
     Missing,
 }
 
+/// The property `name` of `entry`, special ones included.
 fn property_of(entry: &Entry, name: &str) -> Found {
     let stamp =
         |stamp: Option<crate::Timestamp>| stamp.map_or(Found::Missing, |s| Found::Date(s.day()));
@@ -362,6 +366,7 @@ fn property_of(entry: &Entry, name: &str) -> Found {
     }
 }
 
+/// `left op right`.
 fn compare<T: PartialOrd>(op: Op, left: T, right: T) -> bool {
     match op {
         Op::Eq => left == right,

@@ -42,6 +42,7 @@ pub struct AgendaItem<'a> {
 /// the morning it is due is not a deadline.
 pub const DEADLINE_WARNING_DAYS: i64 = 14;
 
+/// A timestamp's time of day, if it has one.
 fn time_of(stamp: &Timestamp) -> Option<(u32, u32)> {
     Some((stamp.hour?, stamp.minute.unwrap_or(0)))
 }
@@ -145,10 +146,12 @@ pub struct LogItem<'a> {
     pub what: Logged,
 }
 
+/// The day a moment falls on.
 fn day_of(moment: Moment) -> Date {
     Date::from_days(moment.div_euclid(1440))
 }
 
+/// A moment's time of day, `(hour, minute)`.
 fn time_of_moment(moment: Moment) -> (u32, u32) {
     let minutes = moment.rem_euclid(1440) as u32;
     (minutes / 60, minutes % 60)

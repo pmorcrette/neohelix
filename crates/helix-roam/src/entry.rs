@@ -236,12 +236,14 @@ fn read_section(lines: &[&str], from: usize, settings: &FileSettings, entry: &mu
     }
 }
 
+/// Whether a line is a planning line: `SCHEDULED:`, `DEADLINE:`, `CLOSED:`.
 fn is_planning(trimmed: &str) -> bool {
     ["SCHEDULED:", "DEADLINE:", "CLOSED:"]
         .iter()
         .any(|label| starts_with_ignore_case(trimmed, label))
 }
 
+/// Reads `:KEY: value` in a drawer, the key lowercased.
 fn property(trimmed: &str) -> Option<(String, String)> {
     let rest = trimmed.strip_prefix(':')?;
     let (key, value) = rest.split_once(':')?;
