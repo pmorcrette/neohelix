@@ -5299,40 +5299,75 @@ pub fn org_capture_picker(editor: &mut Editor, key: Option<&str>) -> Option<Box<
     Some(Box::new(overlaid(picker)))
 }
 
-/// Asks the template's `%^{…}` questions one after the other, then files
-/// the capture; with none to ask, files it at once.
+/// Asks the template's questions one after the other, then files the
+/// capture; with none to ask, files it at once. A date answer is turned
+/// into its timestamp and tags into `:a:b:` as they are given, so a wrong
+/// date is asked again rather than written.
 fn org_capture_questions(
     editor: &mut Editor,
     template: helix_view::editor::OrgCaptureTemplate,
     context: helix_roam::org_capture::Context,
 ) -> Option<Box<dyn Component>> {
+    use helix_roam::org_capture::Asking;
+
     let questions = helix_roam::org_capture::questions(&template.template);
     let Some(question) = questions.get(context.answers.len()).cloned() else {
         crate::roam::org_capture(editor, &template, &context);
         return None;
     };
-    let label = match &question.default {
-        Some(default) => format!("{} [{default}]: ", question.prompt),
-        None => format!("{}: ", question.prompt),
+    let label = match (&question.asking, &question.default) {
+        (Asking::Date { time: true, .. }, _) => {
+            format!(
+                "{} (a date, then a time; empty is today): ",
+                question.prompt
+            )
+        }
+        (Asking::Date { .. }, _) => format!("{} (empty is today): ", question.prompt),
+        (Asking::Tags, _) => format!("{} (separated by spaces): ", question.prompt),
+        (_, Some(default)) => format!("{} [{default}]: ", question.prompt),
+        (_, None) => format!("{}: ", question.prompt),
     };
-    let choices = question.choices.clone();
+    let choices = match question.asking {
+        Asking::Tags => crate::roam::known_tags(editor),
+        _ => question.choices.clone(),
+    };
+    let tags = matches!(question.asking, Asking::Tags);
     Some(Box::new(ui::Prompt::new(
         label.into(),
         None,
         move |_editor, input| {
+            // Tags complete the word being typed, not the whole line.
+            let (start, word) = if tags {
+                let start = input.rfind(' ').map_or(0, |at| at + 1);
+                (start, &input[start..])
+            } else {
+                (0, input)
+            };
             choices
                 .iter()
-                .filter(|choice| choice.contains(input))
-                .map(|choice| (0.., choice.clone().into()))
+                .filter(|choice| choice.contains(word))
+                .map(|choice| (start.., choice.clone().into()))
                 .collect()
         },
         move |cx, input, event| {
             if event != PromptEvent::Validate {
                 return;
             }
-            let answer = match input.trim() {
-                "" => question.default.clone().unwrap_or_default(),
-                answer => answer.to_string(),
+            let answer = match &question.asking {
+                Asking::Date { active, .. } => {
+                    match crate::roam::capture_date_answer(input, *active) {
+                        Ok(stamp) => stamp,
+                        Err(err) => {
+                            cx.editor.set_error(err);
+                            return;
+                        }
+                    }
+                }
+                Asking::Tags => helix_roam::org_capture::tags_answer(input),
+                _ => match input.trim() {
+                    "" => question.default.clone().unwrap_or_default(),
+                    answer => answer.to_string(),
+                },
             };
             let (template, mut context) = (template.clone(), context.clone());
             context.answers.push(answer);
@@ -5348,6 +5383,28 @@ fn org_capture_questions(
             });
         },
     )))
+}
+
+/// Files the capture in the focused capture buffer under a node picked
+/// from the graph, instead of where its template says.
+pub fn org_capture_refile_picker(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    if crate::roam::in_capture_buffer(editor).is_none() {
+        editor.set_error("Not in a capture buffer");
+        return None;
+    }
+    let targets = crate::roam::refile_targets(editor);
+    let columns = [ui::PickerColumn::new(
+        "node",
+        |item: &crate::roam::RefileTarget, _: &PathStyleConfig| item.title.as_str().into(),
+    )];
+    let picker = Picker::new(
+        columns,
+        0,
+        targets,
+        PathStyleConfig::new(&editor.theme),
+        |cx, target, _action| crate::roam::refile_capture(cx.editor, target),
+    );
+    Some(Box::new(overlaid(picker)))
 }
 
 fn org_capture(cx: &mut Context) {

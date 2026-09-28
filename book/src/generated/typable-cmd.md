@@ -199,6 +199,7 @@
 | `:org-add-note` | Record a dated note in the entry's :LOGBOOK:. |
 | `:org-log-state` | Record a TODO state change in the entry's :LOGBOOK:. |
 | `:roam-capture` | Create an Org-Roam node from a template. |
+| `:org-capture-refile` | In a capture buffer, file the capture under a node picked from the graph. |
 | `:org-capture` | Capture a note or a task into its place: pick a template, or name it by its key. |
 | `:roam-unlinked-references`, `:roam-unlinked` | List the places this node is named without being linked. |
 | `:roam-rename-node`, `:roam-rename` | Rename the node at the cursor, and the link descriptions naming it. |

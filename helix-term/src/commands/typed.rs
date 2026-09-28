@@ -2442,6 +2442,10 @@ roam_component_command!(
     crate::commands::roam_unlinked_picker
 );
 roam_component_command!(roam_capture, crate::commands::roam_capture_picker);
+roam_component_command!(
+    org_capture_refile,
+    crate::commands::org_capture_refile_picker
+);
 
 fn org_capture(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
@@ -6098,6 +6102,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Create an Org-Roam node from a template.",
         fun: roam_capture,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-capture-refile",
+        aliases: &[],
+        doc: "In a capture buffer, file the capture under a node picked from the graph.",
+        fun: org_capture_refile,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

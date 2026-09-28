@@ -1196,16 +1196,35 @@ pub fn org_capture_templates(editor: &Editor) -> Vec<helix_view::editor::OrgCapt
         description: "Task".into(),
         kind: helix_view::editor::OrgCaptureKind::Entry,
         file: "inbox.org".into(),
+        id: None,
+        regexp: None,
+        clock: false,
         outline: Vec::new(),
         datetree: false,
+        tree_type: helix_view::editor::OrgCaptureTree::Day,
         template: "* TODO %?\n  %U\n  %a".into(),
         prepend: false,
         immediate: false,
+        buffer: false,
+        clock_in: false,
     }]
 }
 
+/// The file with the running clock, and the line of the entry it runs in.
+fn clocked_entry(editor: &Editor) -> Option<(PathBuf, String, usize)> {
+    let (home, text) = find_running_clock(editor)?;
+    let path = match home {
+        ClockHome::Buffer(id) => editor.document(id)?.path()?.to_path_buf(),
+        ClockHome::Disk(path) => path,
+    };
+    let clock = helix_roam::clock::running(&text)?;
+    let line = helix_roam::clock::entry_of(&text, &clock)?;
+    Some((path, text, line))
+}
+
 /// What a capture's escapes refer to, taken where it starts: the link to
-/// the cursor, the selection (when more than a character), the file.
+/// the cursor, the selection (when more than a character), the file, the
+/// yank and clipboard registers, the entry being clocked.
 pub fn org_capture_context(editor: &Editor) -> helix_roam::org_capture::Context {
     let (view, doc) = current_ref!(editor);
     let selection = doc.selection(view.id).primary();
@@ -1214,43 +1233,120 @@ pub fn org_capture_context(editor: &Editor) -> helix_roam::org_capture::Context 
     } else {
         String::new()
     };
+    let register = |name: char| {
+        editor
+            .registers
+            .first(name, editor)
+            .map(|value| value.into_owned())
+            .unwrap_or_default()
+    };
+    let clocked = clocked_entry(editor).map(|(path, text, line)| {
+        let title = clock_title(&text);
+        let link = match helix_roam::restructure::entry_at(&text, line) {
+            Some((id, title)) => {
+                helix_roam::hyperlink::format_link(&format!("id:{id}"), Some(&title))
+            }
+            None => helix_roam::hyperlink::format_link(
+                &format!("file:{}::{}", path.display(), line + 1),
+                Some(&title),
+            ),
+        };
+        (title, link)
+    });
     let (date, time) = now();
     helix_roam::org_capture::Context {
-        date,
-        time,
         link: link_here(editor).ok(),
         initial: initial.trim_end_matches('\n').to_string(),
         file: doc.path().map(Path::to_path_buf),
-        answers: Vec::new(),
+        kill: register(editor.config().default_yank_register),
+        clipboard: register('+'),
+        clocked,
+        user: std::env::var("USER").unwrap_or_default(),
+        ..helix_roam::org_capture::Context::at(date, time)
     }
 }
 
-/// Files a capture where `template` says, then goes to it unless the
-/// template is `immediate`. An open buffer for the file gets the text,
-/// unsaved like any other change; otherwise the file does.
-pub fn org_capture(
+/// What a template's place starts from, found in the target's text when
+/// the capture is filed, as that text may have changed since.
+enum Anchor {
+    Top,
+    Line(usize),
+    Id(String),
+    Regexp(helix_core::regex::Regex),
+}
+
+impl Anchor {
+    fn line(&self, text: &str) -> Result<Option<usize>, String> {
+        match self {
+            Anchor::Top => Ok(None),
+            Anchor::Line(line) => Ok(Some(*line)),
+            Anchor::Id(id) => helix_roam::org_capture::id_line(text, id)
+                .map(Some)
+                .ok_or_else(|| format!("no entry has the id {id}")),
+            Anchor::Regexp(regexp) => text
+                .lines()
+                .position(|line| regexp.is_match(line))
+                .map(Some)
+                .ok_or_else(|| format!("no line matches {}", regexp.as_str())),
+        }
+    }
+}
+
+/// The file a template's capture goes into, and what it starts from there.
+fn capture_target(
+    editor: &Editor,
+    template: &helix_view::editor::OrgCaptureTemplate,
+) -> Result<(PathBuf, Anchor), String> {
+    if template.clock {
+        let (path, _, line) = clocked_entry(editor).ok_or("no clock is running")?;
+        return Ok((path, Anchor::Line(line)));
+    }
+    if let Some(id) = &template.id {
+        let target = refile_targets(editor)
+            .into_iter()
+            .find(|target| target.id.to_string().eq_ignore_ascii_case(id.trim()))
+            .ok_or_else(|| format!("no node has the id {id}"))?;
+        return Ok((target.path, Anchor::Id(id.clone())));
+    }
+    let file = Path::new(&template.file);
+    let path = if file.is_absolute() {
+        file.to_path_buf()
+    } else {
+        notes_directory(editor).join(file)
+    };
+    let anchor = match &template.regexp {
+        Some(pattern) => Anchor::Regexp(
+            helix_core::regex::Regex::new(pattern)
+                .map_err(|err| format!("the template's regexp: {err}"))?,
+        ),
+        None => Anchor::Top,
+    };
+    Ok((path, anchor))
+}
+
+/// Files `expanded` where `template` says, clocking into it when the
+/// template asks, and returns the file and where the cursor goes in it.
+fn file_capture(
     editor: &mut Editor,
     template: &helix_view::editor::OrgCaptureTemplate,
-    cx: &helix_roam::org_capture::Context,
-) {
-    use helix_roam::org_capture::{expand, place, Kind, Place};
-    use helix_view::editor::OrgCaptureKind;
+    expanded: &str,
+    date: helix_roam::Date,
+) -> Result<(PathBuf, usize), String> {
+    use helix_roam::org_capture::{place, Kind, Place, Tree};
+    use helix_view::editor::{OrgCaptureKind, OrgCaptureTree};
 
-    let path = {
-        let file = Path::new(&template.file);
-        if file.is_absolute() {
-            file.to_path_buf()
-        } else {
-            notes_directory(editor).join(file)
-        }
-    };
+    let (path, anchor) = capture_target(editor, template)?;
     if editor.document_by_path(&path).is_none() && !path.exists() {
-        let created = path
-            .parent()
+        path.parent()
             .map_or(Ok(()), std::fs::create_dir_all)
-            .and_then(|()| std::fs::write(&path, ""));
-        if let Err(err) = created {
-            return editor.set_error(format!("could not create {}: {err}", path.display()));
+            .and_then(|()| std::fs::write(&path, ""))
+            .map_err(|err| format!("could not create {}: {err}", path.display()))?;
+    }
+    // The clock this capture takes over is stopped first, so that its own
+    // file is read afterwards with the clock closed.
+    if template.clock_in {
+        if let Some(Err(err)) = stop_running_clock(editor) {
+            return Err(format!("the running clock could not be stopped: {err}"));
         }
     }
 
@@ -1260,29 +1356,63 @@ pub fn org_capture(
         OrgCaptureKind::Checkitem => Kind::CheckItem,
         OrgCaptureKind::Plain => Kind::Plain,
     };
-    let at = Place {
-        outline: template.outline.clone(),
-        datetree: template.datetree,
-        prepend: template.prepend,
+    let tree = match template.tree_type {
+        OrgCaptureTree::Day => Tree::Day,
+        OrgCaptureTree::Week => Tree::Week,
+        OrgCaptureTree::Month => Tree::Month,
     };
-    let expanded = expand(&template.template, cx);
     let mut cursor = 0;
-    let result = edit_file(editor, &path, |_, text| {
-        let insertion = place(text, &at, kind, &expanded, cx.date);
+    edit_file(editor, &path, |_, text| {
+        let at = Place {
+            line: anchor.line(text)?,
+            outline: template.outline.clone(),
+            datetree: template.datetree,
+            tree,
+            prepend: template.prepend,
+        };
+        let insertion = place(text, &at, kind, expanded, date);
         cursor = insertion.cursor;
         let mut after = text.to_string();
         after.insert_str(insertion.at, &insertion.text);
+        if template.clock_in {
+            let line = after[..cursor].matches('\n').count();
+            after = helix_roam::clock::clock_in(&after, line, now_moment())
+                .map_err(|err| format!("not clocked in: {err}"))?;
+        }
         Ok(after)
-    });
-    if let Err(err) = result {
-        return editor.set_error(format!("Not captured: {err}"));
+    })?;
+    if template.clock_in {
+        editor.org_clock = Some(path.clone());
     }
+    Ok((path, cursor))
+}
 
-    let name = path
-        .strip_prefix(notes_directory(editor))
-        .unwrap_or(&path)
+/// How a capture's file is named in messages: from the notes directory.
+fn capture_name(editor: &Editor, path: &Path) -> String {
+    path.strip_prefix(notes_directory(editor))
+        .unwrap_or(path)
         .display()
-        .to_string();
+        .to_string()
+}
+
+/// Files a capture where `template` says, then goes to it unless the
+/// template is `immediate`, or shows it in a buffer of its own first when
+/// the template asks for one. An open buffer for the file gets the text,
+/// unsaved like any other change; otherwise the file does.
+pub fn org_capture(
+    editor: &mut Editor,
+    template: &helix_view::editor::OrgCaptureTemplate,
+    cx: &helix_roam::org_capture::Context,
+) {
+    let expanded = helix_roam::org_capture::expand(&template.template, cx);
+    if template.buffer {
+        return open_capture_buffer(editor, template, &expanded, cx.date);
+    }
+    let (path, cursor) = match file_capture(editor, template, &expanded, cx.date) {
+        Ok(filed) => filed,
+        Err(err) => return editor.set_error(format!("Not captured: {err}")),
+    };
+    let name = capture_name(editor, &path);
     if template.immediate {
         return editor.set_status(format!("Captured into {name}"));
     }
@@ -1293,6 +1423,126 @@ pub fn org_capture(
     // A capture is for typing: straight into insert mode, at `%?`.
     editor.mode = helix_view::document::Mode::Insert;
     editor.set_status(format!("Captured into {name}"));
+}
+
+/// Shows a capture in a buffer of its own, beside what was being edited,
+/// until it is written (filed) or closed without writing (dropped).
+fn open_capture_buffer(
+    editor: &mut Editor,
+    template: &helix_view::editor::OrgCaptureTemplate,
+    expanded: &str,
+    date: helix_roam::Date,
+) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(1);
+
+    let (text, cursor) = helix_roam::org_capture::take_cursor(expanded);
+    let directory = helix_loader::cache_dir().join("capture");
+    let buffer = directory.join(format!(
+        "capture-{}-{}.org",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let written = std::fs::create_dir_all(&directory).and_then(|()| std::fs::write(&buffer, &text));
+    if let Err(err) = written {
+        return editor.set_error(format!("could not prepare the capture: {err}"));
+    }
+    if let Err(err) = editor.open(&buffer, helix_view::editor::Action::HorizontalSplit) {
+        return editor.set_error(format!("could not open the capture: {err}"));
+    }
+    jump_to_byte(
+        editor,
+        cursor.unwrap_or_else(|| text.trim_end_matches('\n').len()),
+    );
+    editor.mode = helix_view::document::Mode::Insert;
+    editor
+        .pending_captures
+        .push(helix_view::editor::PendingCapture {
+            buffer,
+            template: template.clone(),
+            date,
+        });
+    editor.set_status(format!(
+        "Capture ({}): :w files it, :q! drops it, :org-capture-refile files it elsewhere",
+        template.description
+    ));
+}
+
+/// Files the capture whose buffer `path` was just written, and closes it.
+/// Returns whether the write was a capture's.
+pub fn capture_if_written(editor: &mut Editor, path: &Path) -> bool {
+    let Some(index) = editor
+        .pending_captures
+        .iter()
+        .position(|pending| pending.buffer == path)
+    else {
+        return false;
+    };
+    let pending = editor.pending_captures[index].clone();
+    finish_capture(editor, index, &pending.template, pending.date);
+    true
+}
+
+/// Files the capture in the pending buffer `index` with `template`, which
+/// is its own or one pointing elsewhere; on success the buffer is closed
+/// and its file removed, on failure both stay for another try.
+fn finish_capture(
+    editor: &mut Editor,
+    index: usize,
+    template: &helix_view::editor::OrgCaptureTemplate,
+    date: helix_roam::Date,
+) {
+    let buffer = editor.pending_captures[index].buffer.clone();
+    let text = match editor.document_by_path(&buffer) {
+        Some(doc) => doc.text().to_string(),
+        None => std::fs::read_to_string(&buffer).unwrap_or_default(),
+    };
+    if text.trim().is_empty() {
+        return editor.set_error("The capture is empty; :q! drops it");
+    }
+    match file_capture(editor, template, &text, date) {
+        Ok((path, _)) => {
+            editor.pending_captures.remove(index);
+            let name = capture_name(editor, &path);
+            // Closed once the write that filed it is done with the buffer:
+            // the save handling still reaches for it after this returns.
+            tokio::spawn(crate::job::dispatch(move |editor, _| {
+                if let Some(id) = editor.document_by_path(&buffer).map(|doc| doc.id()) {
+                    let _ = editor.close_document(id, true);
+                }
+                let _ = std::fs::remove_file(&buffer);
+                editor.set_status(format!("Captured into {name}"));
+            }));
+        }
+        Err(err) => editor.set_error(format!("Not captured: {err}")),
+    }
+}
+
+/// Whether the focused buffer is a capture waiting to be filed.
+pub fn in_capture_buffer(editor: &Editor) -> Option<usize> {
+    let path = doc!(editor).path()?;
+    editor
+        .pending_captures
+        .iter()
+        .position(|pending| pending.buffer == path)
+}
+
+/// Files the capture in the focused buffer under `target` instead of where
+/// its template says: Org's refile from a capture buffer.
+pub fn refile_capture(editor: &mut Editor, target: &RefileTarget) {
+    let Some(index) = in_capture_buffer(editor) else {
+        return editor.set_error("Not in a capture buffer");
+    };
+    let pending = editor.pending_captures[index].clone();
+    let template = helix_view::editor::OrgCaptureTemplate {
+        id: Some(target.id.to_string()),
+        regexp: None,
+        clock: false,
+        outline: Vec::new(),
+        datetree: false,
+        ..pending.template
+    };
+    finish_capture(editor, index, &template, pending.date);
 }
 
 /// Creates a node from `template`, opens it, and leaves the cursor at `%?`.
@@ -1938,6 +2188,34 @@ fn set_planning(editor: &mut Editor, which: helix_roam::restructure::Planning, i
         }
         Err(err) => editor.set_error(err.to_string()),
     }
+}
+
+/// A capture's date answer as the timestamp its escape writes: the date
+/// as a date prompt takes it (`today`, `+3`, `2026-10-01`; empty is
+/// today), then a time (`14:30`) when one is typed.
+pub fn capture_date_answer(input: &str, active: bool) -> Result<String, String> {
+    let mut words: Vec<&str> = input.split_whitespace().collect();
+    let time = match words.last().and_then(|word| word.split_once(':')) {
+        Some((hour, minute)) => {
+            let hour: u32 = hour
+                .parse()
+                .map_err(|_| format!("`{input}` has no valid time"))?;
+            let minute: u32 = minute
+                .parse()
+                .map_err(|_| format!("`{input}` has no valid time"))?;
+            if hour > 23 || minute > 59 {
+                return Err(format!("`{input}` has no valid time"));
+            }
+            words.pop();
+            Some(helix_roam::date::Time { hour, minute })
+        }
+        None => None,
+    };
+    let date = match words.join(" ").as_str() {
+        "" => helix_roam::Date::today(),
+        text => parse_date_input(text).ok_or_else(|| format!("`{text}` is not a date"))?,
+    };
+    Ok(helix_roam::org_capture::timestamp(date, time, active))
 }
 
 /// Reads the shorthands a date prompt accepts.

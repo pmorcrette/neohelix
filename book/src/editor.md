@@ -298,6 +298,11 @@ names one by its key), their `%^{…}` questions are asked, and the text goes in
 The file then opens on it, unless the template is `immediate`. Without any
 template configured, `t` files a task into `inbox.org`.
 
+A template with `buffer = true` shows the capture in a buffer of its own
+first, as Org does: `:w` files it where the template says and closes the
+buffer, `:q!` drops it, and `:org-capture-refile` files it under a node picked
+from the graph instead.
+
 ```toml
 [[editor.roam.capture]]
 key = "t"
@@ -321,6 +326,23 @@ file = "lists.org"
 outline = ["Shopping"]
 template = "%^{Item}"
 immediate = true
+
+[[editor.roam.capture]]
+key = "m"
+description = "Meeting"
+file = "work.org"
+datetree = true
+tree-type = "week"
+clock-in = true
+template = "* Meeting with %^{Who} %^g\n%?"
+
+[[editor.roam.capture]]
+key = "n"
+description = "Note on the clocked task"
+clock = true
+type = "item"
+template = "%^{Note} %U"
+immediate = true
 ```
 
 | Key | Description | Default |
@@ -328,11 +350,37 @@ immediate = true
 |`key`, `description` | What selects the template, and what the picker shows | |
 |`type` | `entry` (a headline, made a child of the place), `item`, `checkitem` or `plain` | `"entry"` |
 |`file` | Where it goes, relative to the notes directory unless absolute; created if missing | `"inbox.org"` |
-|`outline` | Headlines from the top of the file down to the place, created if missing | `[]` (the file) |
+|`id` | Under the headline with this `:ID:`, wherever it is, instead of `file` | |
+|`clock` | Under the entry being clocked, instead of `file` | `false` |
+|`regexp` | Under the first headline of `file` matching this regular expression | |
+|`outline` | Headlines from the top of the file (or the place above) down to the place, created if missing | `[]` (the file) |
 |`datetree` | File it under `2026` / `2026-09 September` / `2026-09-28 Monday` beneath the place | `false` |
-|`template` | The text, with Org's escapes: `%?` the cursor, `%t` `%T` `%u` `%U` today's timestamps (active or inactive, with the time for the capitals), `%a` a link to where the capture started, `%i` the selected text there, `%f` `%F` that file's name and path, `%^{Prompt}` or `%^{Prompt\|default\|other}` a question, `%\1` the first answer again, `%%` a `%` | |
+|`tree-type` | The date tree's shape: `day` as above, `week` (`2026` / `2026-W40` / `2026-09-28 Monday`) or `month` (`2026` / `2026-09 September`) | `"day"` |
+|`template` | The text, with Org's escapes (below) | |
 |`prepend` | First among what is already there rather than last | `false` |
 |`immediate` | Write it and stay where you are | `false` |
+|`buffer` | Show it in a capture buffer first, filed on `:w` | `false` |
+|`clock-in` | Clock in on the new entry, stopping the running clock | `false` |
+
+The template's escapes:
+
+| Escape | Becomes |
+|--|--|
+|`%?` | Where the cursor goes |
+|`%t` `%T` `%u` `%U` | Today's timestamp: active or inactive, with the time for the capitals |
+|`%<%Y-%m-%d %H:%M>` | Now, formatted: `%Y` `%y` `%m` `%d` `%e` `%H` `%M` `%a` `%A` `%b` `%B` `%j` |
+|`%a` | A link to where the capture started |
+|`%i` | The text selected there |
+|`%f` `%F` | That file's name and path |
+|`%c` `%x` | The last yank and the clipboard |
+|`%k` `%K` | The clocked entry's title and a link to it |
+|`%n` | Your user name (`$USER`) |
+|`%^{Prompt}` `%^{Prompt\|default\|other}` | A question, with a default and other answers offered |
+|`%^t` `%^T` `%^u` `%^U` `%^{Due}t` | A date asked for (`today`, `tomorrow`, `+3`, `2026-10-01`, then `14:00` for a time), active or inactive, with the time for the capitals, written as that timestamp |
+|`%^g` `%^G` | Tags asked for, completed from the graph's, written `:a:b:` |
+|`%^{Effort}p` | A property asked for, written in the entry's drawer |
+|`%\1` | The first text answer again |
+|`%%` | A `%` |
 
 ### `[editor.integrated-terminal]` Section
 

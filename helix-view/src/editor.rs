@@ -581,6 +581,17 @@ pub struct PendingRebase {
     pub head: Option<String>,
 }
 
+/// A capture being written in a buffer of its own: writing the buffer files
+/// it where the template says.
+#[derive(Debug, Clone)]
+pub struct PendingCapture {
+    /// The capture buffer's file.
+    pub buffer: PathBuf,
+    pub template: OrgCaptureTemplate,
+    /// The day it was captured, which its date tree files it under.
+    pub date: helix_roam::Date,
+}
+
 /// The integrated terminal's configuration, `[editor.integrated-terminal]`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
@@ -840,14 +851,35 @@ pub struct OrgCaptureTemplate {
     /// absolute; created if missing.
     #[serde(default = "default_capture_file")]
     pub file: String,
-    /// Headlines from the top of the file down to where it goes, created
-    /// if missing. Empty is the file itself.
+    /// Start at the entry with this `:ID:`, in whichever file has it,
+    /// instead of the top of `file`.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Start at the entry holding the first line of `file` that matches.
+    #[serde(default)]
+    pub regexp: Option<String>,
+    /// Start at the entry being clocked, wherever it is.
+    #[serde(default)]
+    pub clock: bool,
+    /// Headlines from the top of the file (or the entry above) down to
+    /// where it goes, created if missing. Empty is that place itself.
     #[serde(default)]
     pub outline: Vec<String>,
-    /// File it under a date tree for today (`2026` / `2026-09 September` /
-    /// `2026-09-28 Monday`), beneath `outline`.
+    /// File it under a date tree for today, beneath `outline`.
     #[serde(default)]
     pub datetree: bool,
+    /// The date tree's levels: `day` (`2026` / `2026-09 September` /
+    /// `2026-09-28 Monday`), `week` (`2026` / `2026-W40` / the day) or
+    /// `month`.
+    #[serde(default)]
+    pub tree_type: OrgCaptureTree,
+    /// Write it in a buffer of its own first: `:w` files it, `:q!` drops
+    /// it, `:org-capture-refile` files it elsewhere.
+    #[serde(default)]
+    pub buffer: bool,
+    /// Clock into the new entry once it is filed.
+    #[serde(default)]
+    pub clock_in: bool,
     /// The text, with Org's `%`-escapes: `%?` `%t` `%T` `%u` `%U` `%a`
     /// `%i` `%f` `%F` `%^{Prompt|default|choice}` `%\1` `%%`.
     pub template: String,
@@ -861,6 +893,16 @@ pub struct OrgCaptureTemplate {
 
 fn default_capture_file() -> String {
     "inbox.org".to_string()
+}
+
+/// The levels of an `org-capture` date tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OrgCaptureTree {
+    #[default]
+    Day,
+    Week,
+    Month,
 }
 
 /// What an `org-capture` template writes.
@@ -1821,6 +1863,9 @@ pub struct Editor {
     /// An interactive rebase waiting for its todo-list to be written.
     pub pending_rebase: Option<PendingRebase>,
 
+    /// Captures shown in a buffer of their own, filed when it is written.
+    pub pending_captures: Vec<PendingCapture>,
+
     /// The integrated terminals, kept here so that hiding the view does not
     /// kill the shells running in them.
     ///
@@ -1973,6 +2018,7 @@ impl Editor {
             org_clip: None,
             pending_commit: None,
             pending_rebase: None,
+            pending_captures: Vec::new(),
             agenda_restriction: None,
         }
     }

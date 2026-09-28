@@ -1218,21 +1218,27 @@ anywhere, and is what a Doom or Spacemacs user reaches for first.
       `%^{Prompt|default|choices}` and `%\1`.
 - [x] A picker over the templates and a key for it (`<space>nc`), with
       `:org-capture <key>` to skip the picker.
-- [ ] The rest of the escapes: `%^t` and `%^T` (a date asked for), `%^g` and
+- [x] The rest of the escapes: `%^t` and `%^T` (a date asked for), `%^g` and
       `%^G` (tags), `%^{Prop}p` (a property), `%<…>` (a formatted date),
-      `%c` (the clipboard), `%k` and `%K` (the clocked entry).
-- [ ] The other targets: `file+regexp`, `id`, `clock` (the entry being clocked),
-      and a date tree by week.
-- [ ] A capture buffer: the text shown in its own buffer first, `C-c C-c`
-      files it and `C-c C-k` drops it, with refile from there; and
-      `:clock-in` / `:clock-resume` properties.
+      `%c` `%x` (the yank and the clipboard), `%k` and `%K` (the clocked
+      entry), `%n` (the user).
+- [x] The other targets: `file+regexp` (`regexp`), `id`, `clock` (the entry
+      being clocked), and date trees by week and by month (`tree-type`).
+- [x] A capture buffer (`buffer`): the text shown in its own buffer first,
+      `:w` files it and `:q!` drops it, `:org-capture-refile` files it under
+      another node; and `clock-in`.
+- [ ] `:clock-resume`: going back to the clock that ran before a
+      `clock-in` capture once it is filed.
 
 *In progress.* The escapes, the placing and the date tree are pure text
 work in `helix_roam::org_capture`, so what a capture writes is tested
 without the editor; the editor applies it as one insertion (into the open
 buffer, or the file when it is not open) and goes there, unless the
 template is `immediate`. Without templates, `t` files a task into
-`inbox.org`, as Org's default does.
+`inbox.org`, as Org's default does. The questions come one prompt after
+another; a date answer is checked there and asked again when wrong. The
+capture buffer is a file of its own in the cache directory, so `:w` is what
+files it: the save hook does the filing, then closes the buffer.
 
 ### Task 1.24: The Agenda, Continued
 

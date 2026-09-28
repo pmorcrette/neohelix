@@ -9,11 +9,18 @@
 //! | `%?` | where the cursor lands |
 //! | `%t` `%T` | today as an active timestamp, without and with the time |
 //! | `%u` `%U` | the same, inactive |
+//! | `%<%Y-%m-%d %H:%M>` | the date and time in that format |
 //! | `%a` | a link to where the capture started |
 //! | `%i` | the text selected there |
 //! | `%f` `%F` | that file's name, and its full path |
+//! | `%c` `%x` | the last yank, and the clipboard |
+//! | `%k` `%K` | the entry being clocked, and a link to it |
+//! | `%n` | the user's name |
 //! | `%^{Prompt}` | an answer asked for; `%^{Prompt\|default\|other}` offers choices |
-//! | `%\1` … | the first, … answer again |
+//! | `%^t` `%^T` `%^u` `%^U` | a date asked for, as those timestamps; `%^{Label}t` names it |
+//! | `%^g` `%^G` | tags asked for, as `:a:b:` |
+//! | `%^{Prop}p` | a value asked for, set as the entry's property `Prop` |
+//! | `%\1` … | the first, … `%^{…}` answer again |
 //! | `%%` | a `%` |
 //!
 //! Any other `%` stays as written, so "50% done" needs no escaping.
@@ -56,12 +63,66 @@ impl Kind {
 /// Where a capture is filed, inside its file.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Place {
-    /// Headlines from the top of the file down; empty is the file itself.
+    /// Where the outline starts: the entry this line is in (the entry with
+    /// an id, the one a regexp found, the one being clocked); `None` is the
+    /// top of the file.
+    pub line: Option<usize>,
+    /// Headlines from there down; empty is that place itself.
     pub outline: Vec<String>,
     /// File under a date tree for the capture's day, beneath the outline.
     pub datetree: bool,
+    /// What the date tree's levels are.
+    pub tree: Tree,
     /// First rather than last among what is already there.
     pub prepend: bool,
+}
+
+/// The levels of a date tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Tree {
+    /// `2026` / `2026-09 September` / `2026-09-28 Monday`.
+    #[default]
+    Day,
+    /// `2026` / `2026-W40` / `2026-09-28 Monday`, ISO weeks (Org's week tree).
+    Week,
+    /// `2026` / `2026-09 September`.
+    Month,
+}
+
+/// The line of the entry whose property drawer gives it `:ID: id`.
+pub fn id_line(text: &str, id: &str) -> Option<usize> {
+    let lines: Vec<&str> = text.lines().collect();
+    let found = lines.iter().position(|line| {
+        let line = line.trim();
+        line.len() > 4
+            && line[..4].eq_ignore_ascii_case(":ID:")
+            && line[4..].trim().eq_ignore_ascii_case(id.trim())
+    })?;
+    (0..=found)
+        .rev()
+        .find(|&index| level_of(lines[index]).is_some())
+}
+
+/// The ISO week of a date, with the year it belongs to: the one its
+/// Thursday is in.
+pub fn iso_week(date: Date) -> (i32, u32) {
+    let weekday = match date.weekday() {
+        "Mon" => 1,
+        "Tue" => 2,
+        "Wed" => 3,
+        "Thu" => 4,
+        "Fri" => 5,
+        "Sat" => 6,
+        _ => 7,
+    };
+    let thursday = date.offset_by(4 - weekday);
+    let start = Date {
+        year: thursday.year,
+        month: 1,
+        day: 1,
+    };
+    let ordinal = thursday.to_days() - start.to_days();
+    (thursday.year, (ordinal / 7 + 1) as u32)
 }
 
 /// Everything the escapes can refer to, gathered where the capture started.
@@ -75,11 +136,53 @@ pub struct Context {
     pub initial: String,
     /// `%F`: that file's path; `%f` is its last component.
     pub file: Option<std::path::PathBuf>,
-    /// The answers to the template's `%^{…}` prompts, in order.
+    /// `%c`: the last yank.
+    pub kill: String,
+    /// `%x`: the clipboard.
+    pub clipboard: String,
+    /// `%k` and `%K`: the title of the entry being clocked, and a link to it.
+    pub clocked: Option<(String, String)>,
+    /// `%n`: who is capturing.
+    pub user: String,
+    /// The answers to the template's questions, in order, as they are to
+    /// be written: a date answer is already a timestamp, tags are `:a:b:`.
     pub answers: Vec<String>,
 }
 
-/// One `%^{…}` question.
+impl Context {
+    /// A context with nothing but the moment in it.
+    pub fn at(date: Date, time: Time) -> Self {
+        Self {
+            date,
+            time,
+            link: None,
+            initial: String::new(),
+            file: None,
+            kill: String::new(),
+            clipboard: String::new(),
+            clocked: None,
+            user: String::new(),
+            answers: Vec::new(),
+        }
+    }
+}
+
+/// What a question asks for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Asking {
+    Text,
+    /// A date, written as an active or inactive timestamp, with or without
+    /// a time.
+    Date {
+        active: bool,
+        time: bool,
+    },
+    Tags,
+    /// A value for the entry's property of that name.
+    Property(String),
+}
+
+/// One question a template asks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Question {
     pub prompt: String,
@@ -87,35 +190,84 @@ pub struct Question {
     pub default: Option<String>,
     /// The answers offered: the default and the others.
     pub choices: Vec<String>,
+    pub asking: Asking,
 }
 
 /// Where the cursor lands, kept through the expansion and the reshaping of
 /// the text as a character nothing writes.
 const CURSOR: char = '\u{E000}';
 
-/// The questions a template asks, in the order it asks them.
-pub fn questions(template: &str) -> Vec<Question> {
-    let mut found = Vec::new();
-    let mut rest = template;
-    while let Some(at) = rest.find("%^{") {
-        let after = &rest[at + 3..];
-        let Some(end) = after.find('}') else {
-            break;
-        };
-        let mut parts = after[..end].split('|');
+/// The question an escape asks, read from just after its `%`, with how
+/// many bytes the escape takes after the `%`.
+fn interactive(rest: &str) -> Option<(Question, usize)> {
+    let date = |c: char| match c {
+        't' => Some((true, false)),
+        'T' => Some((true, true)),
+        'u' => Some((false, false)),
+        'U' => Some((false, true)),
+        _ => None,
+    };
+    let after_caret = rest.strip_prefix('^')?;
+    let first = after_caret.chars().next()?;
+    if first == '{' {
+        let end = after_caret.find('}')?;
+        let mut parts = after_caret[1..end].split('|');
         let prompt = parts.next().unwrap_or("").to_string();
         let choices: Vec<String> = parts.map(str::to_string).collect();
-        found.push(Question {
+        let suffix = after_caret[end + 1..].chars().next();
+        let (asking, extra) = match suffix.and_then(|c| date(c).map(|d| (c, d))) {
+            Some((_, (active, time))) => (Asking::Date { active, time }, 1),
+            None if suffix == Some('p') => (Asking::Property(prompt.clone()), 1),
+            None => (Asking::Text, 0),
+        };
+        let question = Question {
             prompt,
             default: choices.first().cloned(),
             choices,
-        });
-        rest = &after[end + 1..];
+            asking,
+        };
+        return Some((question, 1 + end + 1 + extra));
+    }
+    let (prompt, asking) = match (first, date(first)) {
+        (_, Some((active, time))) => ("Date", Asking::Date { active, time }),
+        ('g' | 'G', None) => ("Tags", Asking::Tags),
+        _ => return None,
+    };
+    Some((
+        Question {
+            prompt: prompt.to_string(),
+            default: None,
+            choices: Vec::new(),
+            asking,
+        },
+        2,
+    ))
+}
+
+/// The questions a template asks, in the order it asks them.
+pub fn questions(template: &str) -> Vec<Question> {
+    let mut found = Vec::new();
+    let mut at = 0;
+    while let Some(offset) = template[at..].find('%') {
+        let percent = at + offset;
+        let rest = &template[percent + 1..];
+        if rest.starts_with('%') {
+            at = percent + 2;
+            continue;
+        }
+        match interactive(rest) {
+            Some((question, length)) => {
+                found.push(question);
+                at = percent + 1 + length;
+            }
+            None => at = percent + 1,
+        }
     }
     found
 }
 
-fn timestamp(date: Date, time: Option<Time>, active: bool) -> String {
+/// An Org timestamp for a moment: active `<…>` or inactive `[…]`.
+pub fn timestamp(date: Date, time: Option<Time>, active: bool) -> String {
     let (open, close) = if active { ('<', '>') } else { ('[', ']') };
     match time {
         Some(time) => format!(
@@ -129,21 +281,86 @@ fn timestamp(date: Date, time: Option<Time>, active: bool) -> String {
     }
 }
 
-/// The template's text with its escapes replaced. The cursor's place is
-/// marked with [`CURSOR`]; [`place`] takes it out.
-pub fn expand(template: &str, cx: &Context) -> String {
-    let mut out = String::with_capacity(template.len());
-    let mut chars = template.char_indices().peekable();
-    let mut asked = 0;
-    let mut cursor_placed = false;
-    while let Some((at, c)) = chars.next() {
+/// Tags as typed (`work home`, `work:home`, `work, home`) as Org writes
+/// them after a headline: `:work:home:`; nothing for none.
+pub fn tags_answer(input: &str) -> String {
+    let tags: Vec<&str> = input
+        .split(|c: char| c == ':' || c == ',' || c.is_whitespace())
+        .filter(|tag| !tag.is_empty())
+        .collect();
+    if tags.is_empty() {
+        String::new()
+    } else {
+        format!(":{}:", tags.join(":"))
+    }
+}
+
+/// `%<…>`: a date and time in a `strftime`-like format. `%Y` `%y` `%m`
+/// `%d` `%e` `%H` `%M` `%a` `%A` `%b` `%B` `%j` and `%%` are understood;
+/// anything else is kept.
+pub fn format_moment(format: &str, date: Date, time: Time) -> String {
+    let mut out = String::new();
+    let mut chars = format.chars();
+    while let Some(c) = chars.next() {
         if c != '%' {
             out.push(c);
             continue;
         }
-        let Some(&(_, next)) = chars.peek() else {
+        match chars.next() {
+            Some('Y') => out.push_str(&format!("{:04}", date.year)),
+            Some('y') => out.push_str(&format!("{:02}", date.year.rem_euclid(100))),
+            Some('m') => out.push_str(&format!("{:02}", date.month)),
+            Some('d') => out.push_str(&format!("{:02}", date.day)),
+            Some('e') => out.push_str(&format!("{:>2}", date.day)),
+            Some('H') => out.push_str(&format!("{:02}", time.hour)),
+            Some('M') => out.push_str(&format!("{:02}", time.minute)),
+            Some('a') => out.push_str(date.weekday()),
+            Some('A') => out.push_str(day_name(date)),
+            Some('b') => out.push_str(&month_name(date)[..3]),
+            Some('B') => out.push_str(month_name(date)),
+            Some('j') => {
+                let start = Date {
+                    year: date.year,
+                    month: 1,
+                    day: 1,
+                };
+                out.push_str(&format!("{:03}", date.to_days() - start.to_days() + 1));
+            }
+            Some('%') => out.push('%'),
+            Some(other) => {
+                out.push('%');
+                out.push(other);
+            }
+            None => out.push('%'),
+        }
+    }
+    out
+}
+
+/// The template's text with its escapes replaced. The cursor's place is
+/// marked with [`CURSOR`]; [`place`] takes it out. Properties asked for go
+/// into a drawer after the first line.
+pub fn expand(template: &str, cx: &Context) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut asked = 0;
+    let mut texts: Vec<String> = Vec::new();
+    let mut properties: Vec<(String, String)> = Vec::new();
+    let mut cursor_placed = false;
+    let mut at = 0;
+    while at < template.len() {
+        let Some(offset) = template[at..].find('%') else {
+            out.push_str(&template[at..]);
+            break;
+        };
+        out.push_str(&template[at..at + offset]);
+        let percent = at + offset;
+        let rest = &template[percent + 1..];
+        let Some(next) = rest.chars().next() else {
             out.push('%');
             break;
+        };
+        let clocked = |pick: fn(&(String, String)) -> &String| {
+            cx.clocked.as_ref().map(pick).cloned().unwrap_or_default()
         };
         let simple = match next {
             '%' => Some("%".to_string()),
@@ -157,6 +374,11 @@ pub fn expand(template: &str, cx: &Context) -> String {
             'u' => Some(timestamp(cx.date, None, false)),
             'U' => Some(timestamp(cx.date, Some(cx.time), false)),
             'a' => Some(cx.link.clone().unwrap_or_default()),
+            'c' => Some(cx.kill.clone()),
+            'x' => Some(cx.clipboard.clone()),
+            'k' => Some(clocked(|(title, _)| title)),
+            'K' => Some(clocked(|(_, link)| link)),
+            'n' => Some(cx.user.clone()),
             'f' => Some(
                 cx.file
                     .as_ref()
@@ -182,37 +404,80 @@ pub fn expand(template: &str, cx: &Context) -> String {
             _ => None,
         };
         if let Some(text) = simple {
-            chars.next();
             out.push_str(&text);
+            at = percent + 1 + next.len_utf8();
             continue;
         }
-        let rest = &template[at + 1..];
-        if let Some(inner) = rest.strip_prefix("^{") {
-            if let Some(end) = inner.find('}') {
-                let answer = cx.answers.get(asked).cloned().unwrap_or_default();
-                asked += 1;
-                out.push_str(&answer);
-                // Skip `^{…}`.
-                let skip = 2 + inner[..=end].chars().count();
-                for _ in 0..skip {
-                    chars.next();
+        if let Some((question, length)) = interactive(rest) {
+            let answer = cx.answers.get(asked).cloned().unwrap_or_default();
+            asked += 1;
+            match question.asking {
+                Asking::Property(name) => properties.push((name, answer)),
+                Asking::Text => {
+                    out.push_str(&answer);
+                    texts.push(answer);
                 }
+                _ => out.push_str(&answer),
+            }
+            at = percent + 1 + length;
+            continue;
+        }
+        if let Some(format) = rest.strip_prefix('<') {
+            if let Some(end) = format.find('>') {
+                out.push_str(&format_moment(&format[..end], cx.date, cx.time));
+                at = percent + 2 + end + 1;
                 continue;
             }
         }
         if let Some(digits) = rest.strip_prefix('\\') {
             let number: String = digits.chars().take_while(char::is_ascii_digit).collect();
             if let Ok(n) = number.parse::<usize>() {
-                out.push_str(cx.answers.get(n.wrapping_sub(1)).map_or("", String::as_str));
-                for _ in 0..1 + number.len() {
-                    chars.next();
-                }
+                out.push_str(texts.get(n.wrapping_sub(1)).map_or("", String::as_str));
+                at = percent + 2 + number.len();
                 continue;
             }
         }
         out.push('%');
+        at = percent + 1;
+    }
+
+    // An empty answer (no tags, say) leaves no blank at a line's end.
+    let mut out = out
+        .split('\n')
+        .map(|line| line.trim_end_matches([' ', '\t']))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !properties.is_empty() {
+        // After the headline and its planning line, as Org wants them.
+        let mut first_end = out.find('\n').unwrap_or(out.len());
+        while first_end < out.len() {
+            let next = &out[first_end + 1..];
+            let line = next.lines().next().unwrap_or("").trim_start();
+            if !["SCHEDULED:", "DEADLINE:", "CLOSED:"]
+                .iter()
+                .any(|keyword| line.starts_with(keyword))
+            {
+                break;
+            }
+            first_end += 1 + next.find('\n').unwrap_or(next.len());
+        }
+        let mut drawer = String::from("\n:PROPERTIES:\n");
+        for (name, value) in &properties {
+            drawer.push_str(&format!(":{name}: {value}\n"));
+        }
+        drawer.push_str(":END:");
+        out.insert_str(first_end, &drawer);
     }
     out
+}
+
+/// The expanded text without its cursor mark, and where the mark was (a
+/// byte offset): for showing a capture in a buffer of its own first.
+pub fn take_cursor(expanded: &str) -> (String, Option<usize>) {
+    match expanded.find(CURSOR) {
+        Some(at) => (expanded.replacen(CURSOR, "", 1), Some(at)),
+        None => (expanded.to_string(), None),
+    }
 }
 
 /// One insertion into the target's text, and where the cursor goes.
@@ -375,6 +640,23 @@ pub fn place(text: &str, place: &Place, kind: Kind, expanded: &str, date: Date) 
         line: None,
         end: lines.len(),
     };
+    // Started from an entry: that entry is the place the outline starts at.
+    if let Some(line) = place.line {
+        if let Some(heading) = (0..=line.min(lines.len().saturating_sub(1)))
+            .rev()
+            .find(|&index| level_of(lines[index].1).is_some())
+        {
+            let level = level_of(lines[heading].1).unwrap_or(1);
+            let end = (heading + 1..lines.len())
+                .find(|&next| level_of(lines[next].1).is_some_and(|l| l <= level))
+                .unwrap_or(lines.len());
+            node = Node {
+                level,
+                line: Some(heading),
+                end,
+            };
+        }
+    }
     // What has to be created on the way, as headlines (level, title).
     let mut missing: Vec<(usize, String)> = Vec::new();
     // Where a missing path starts: after the last existing ancestor's
@@ -403,7 +685,19 @@ pub fn place(text: &str, place: &Place, kind: Kind, expanded: &str, date: Date) 
         let year = date.to_iso()[..4].to_string();
         let month = format!("{} {}", &date.to_iso()[..7], month_name(date));
         let day = format!("{} {}", date.to_iso(), day_name(date));
-        for title in [year, month, day] {
+        let titles = match place.tree {
+            Tree::Day => vec![year, month, day],
+            Tree::Month => vec![year, month],
+            Tree::Week => {
+                let (week_year, week) = iso_week(date);
+                vec![
+                    week_year.to_string(),
+                    format!("{week_year}-W{week:02}"),
+                    day,
+                ]
+            }
+        };
+        for title in titles {
             let base = node.level + 1 + missing.len();
             if create_at.is_some() {
                 missing.push((base, title));
@@ -528,12 +822,14 @@ mod tests {
 
     fn cx() -> Context {
         Context {
-            date: Date::parse_iso("2026-09-28").unwrap(),
-            time: Time { hour: 9, minute: 5 },
             link: Some("[[file:a.org::3][Somewhere]]".into()),
             initial: "line one\nline two".into(),
             file: Some("/notes/a.org".into()),
             answers: vec!["Alice".into(), "high".into()],
+            ..Context::at(
+                Date::parse_iso("2026-09-28").unwrap(),
+                Time { hour: 9, minute: 5 },
+            )
         }
     }
 
@@ -561,6 +857,73 @@ mod tests {
         assert_eq!(asked[0].prompt, "Who");
         assert_eq!(asked[1].default.as_deref(), Some("high"));
         assert_eq!(asked[1].choices, ["high", "low"]);
+    }
+
+    #[test]
+    fn dates_tags_properties_and_the_rest_of_the_escapes() {
+        let template = "* %^{Title} %^g\n%^{Effort|1:00}p%^{Due}t %^U %<%Y/%m/%d %a %H:%M %B %j> \
+                        %c %x %k %K %n %\\1 %^{Who}";
+        let asked = questions(template);
+        let kinds: Vec<&Asking> = asked.iter().map(|q| &q.asking).collect();
+        assert_eq!(
+            kinds,
+            [
+                &Asking::Text,
+                &Asking::Tags,
+                &Asking::Property("Effort".into()),
+                &Asking::Date {
+                    active: true,
+                    time: false
+                },
+                &Asking::Date {
+                    active: false,
+                    time: true
+                },
+                &Asking::Text,
+            ]
+        );
+        assert_eq!(asked[3].prompt, "Due");
+        assert_eq!(asked[4].prompt, "Date");
+        assert_eq!(asked[2].default.as_deref(), Some("1:00"));
+
+        let context = Context {
+            kill: "yanked".into(),
+            clipboard: "clip".into(),
+            clocked: Some(("Report".into(), "[[id:1][Report]]".into())),
+            user: "ann".into(),
+            answers: vec![
+                "Plan".into(),
+                ":work:".into(),
+                "2:00".into(),
+                "<2026-10-01 Thu>".into(),
+                "[2026-10-02 Fri 14:00]".into(),
+                "Bob".into(),
+            ],
+            ..cx()
+        };
+        assert_eq!(
+            expand(template, &context),
+            "* Plan :work:\n:PROPERTIES:\n:Effort: 2:00\n:END:\n<2026-10-01 Thu> [2026-10-02 Fri 14:00] \
+             2026/09/28 Mon 09:05 September 271 yanked clip Report [[id:1][Report]] ann Plan Bob"
+        );
+        assert_eq!(tags_answer("work home, x:y"), ":work:home:x:y:");
+        assert_eq!(tags_answer("  "), "");
+        // The drawer goes after a planning line.
+        let planned = Context {
+            answers: vec!["<2026-10-01 Thu>".into(), "1:00".into()],
+            ..cx()
+        };
+        assert_eq!(
+            expand("* A\nSCHEDULED: %^t\n%^{Effort}pbody", &planned),
+            "* A\nSCHEDULED: <2026-10-01 Thu>\n:PROPERTIES:\n:Effort: 1:00\n:END:\nbody"
+        );
+        let untagged = Context {
+            answers: vec!["Paint".into(), String::new()],
+            ..cx()
+        };
+        assert_eq!(expand("* %^{Title} %^g\nbody", &untagged), "* Paint\nbody");
+        // `%%^{x}` is a `%` followed by text, not a question.
+        assert!(questions("100%%^{x}").is_empty());
     }
 
     #[test]
@@ -665,6 +1028,64 @@ mod tests {
             "* Journal\n** 2026\n*** 2026-09 September\n**** 2026-09-28 Monday\n***** Early\n\
              **** 2026-09-30 Wednesday\n"
         );
+    }
+
+    #[test]
+    fn an_entry_by_id_or_line_and_week_and_month_trees() {
+        let text = "* Projects\n** Home\n:PROPERTIES:\n:ID: abc-1\n:END:\n*** Paint\n* Other\n";
+        assert_eq!(id_line(text, "ABC-1"), Some(1));
+        assert_eq!(id_line(text, "nope"), None);
+        let at_home = Place {
+            line: id_line(text, "abc-1"),
+            ..Place::default()
+        };
+        let after = inserted(
+            text,
+            &super::place(text, &at_home, Kind::Entry, "Fix roof", cx().date),
+        );
+        assert_eq!(
+            after,
+            "* Projects\n** Home\n:PROPERTIES:\n:ID: abc-1\n:END:\n*** Paint\n*** Fix roof\n* Other\n"
+        );
+        // From a line inside the entry, with an outline below it.
+        let below = Place {
+            line: Some(5),
+            outline: vec!["Notes".into()],
+            ..Place::default()
+        };
+        let after = inserted(
+            text,
+            &super::place(text, &below, Kind::Item, "brush", cx().date),
+        );
+        assert!(
+            after.contains("*** Paint\n**** Notes\n- brush\n* Other"),
+            "{after}"
+        );
+
+        // 2026-09-28 is a Monday of ISO week 40; 2027-01-01 is in 2026's week 53.
+        assert_eq!(iso_week(cx().date), (2026, 40));
+        assert_eq!(iso_week(Date::parse_iso("2027-01-01").unwrap()), (2026, 53));
+        assert_eq!(iso_week(Date::parse_iso("2026-01-01").unwrap()), (2026, 1));
+        let week = Place {
+            datetree: true,
+            tree: Tree::Week,
+            ..Place::default()
+        };
+        let after = inserted(
+            "",
+            &super::place("", &week, Kind::Entry, "Standup", cx().date),
+        );
+        assert_eq!(
+            after,
+            "* 2026\n** 2026-W40\n*** 2026-09-28 Monday\n**** Standup\n"
+        );
+        let month = Place {
+            datetree: true,
+            tree: Tree::Month,
+            ..Place::default()
+        };
+        let after = inserted("", &super::place("", &month, Kind::Item, "rent", cx().date));
+        assert_eq!(after, "* 2026\n** 2026-09 September\n- rent\n");
     }
 
     #[test]
