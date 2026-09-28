@@ -590,6 +590,9 @@ pub struct PendingCapture {
     pub template: OrgCaptureTemplate,
     /// The day it was captured, which its date tree files it under.
     pub date: helix_roam::Date,
+    /// When the buffer opened, in minutes since the epoch: where a
+    /// `clock-in` capture's clock starts.
+    pub opened: i64,
 }
 
 /// The integrated terminal's configuration, `[editor.integrated-terminal]`.
@@ -877,11 +880,22 @@ pub struct OrgCaptureTemplate {
     /// it, `:org-capture-refile` files it elsewhere.
     #[serde(default)]
     pub buffer: bool,
-    /// Clock into the new entry once it is filed.
+    /// Clock the capture on the new entry, stopping the running clock.
+    /// With a capture buffer, the clock runs from when it opens until it is
+    /// filed; without one, it keeps running on the new entry.
     #[serde(default)]
     pub clock_in: bool,
-    /// The text, with Org's `%`-escapes: `%?` `%t` `%T` `%u` `%U` `%a`
-    /// `%i` `%f` `%F` `%^{Prompt|default|choice}` `%\1` `%%`.
+    /// With `clock-in` and a capture buffer, keep the clock running once
+    /// it is filed.
+    #[serde(default)]
+    pub clock_keep: bool,
+    /// With `clock-in` and a capture buffer, clock back into the entry
+    /// whose clock the capture stopped once it is filed.
+    #[serde(default)]
+    pub clock_resume: bool,
+    /// The text, with Org's `%`-escapes: `%?` `%t` `%T` `%u` `%U` `%<…>`
+    /// `%a` `%i` `%f` `%F` `%c` `%x` `%k` `%K` `%n`, the questions
+    /// `%^{Prompt|default|choice}` `%^t` `%^g` `%^{Prop}p`, `%\1` and `%%`.
     pub template: String,
     /// First among what is already there, rather than last.
     #[serde(default)]

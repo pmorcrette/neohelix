@@ -1207,6 +1207,8 @@ pub fn org_capture_templates(editor: &Editor) -> Vec<helix_view::editor::OrgCapt
         immediate: false,
         buffer: false,
         clock_in: false,
+        clock_keep: false,
+        clock_resume: false,
     }]
 }
 
@@ -1326,11 +1328,16 @@ fn capture_target(
 
 /// Files `expanded` where `template` says, clocking into it when the
 /// template asks, and returns the file and where the cursor goes in it.
+///
+/// `opened` is when its capture buffer opened, if it had one: a `clock-in`
+/// capture's clock then runs from that moment until now, and is stopped
+/// (unless `clock-keep`) since the capture is over.
 fn file_capture(
     editor: &mut Editor,
     template: &helix_view::editor::OrgCaptureTemplate,
     expanded: &str,
     date: helix_roam::Date,
+    opened: Option<helix_roam::clock::Moment>,
 ) -> Result<(PathBuf, usize), String> {
     use helix_roam::org_capture::{place, Kind, Place, Tree};
     use helix_view::editor::{OrgCaptureKind, OrgCaptureTree};
@@ -1343,12 +1350,17 @@ fn file_capture(
             .map_err(|err| format!("could not create {}: {err}", path.display()))?;
     }
     // The clock this capture takes over is stopped first, so that its own
-    // file is read afterwards with the clock closed.
-    if template.clock_in {
-        if let Some(Err(err)) = stop_running_clock(editor) {
-            return Err(format!("the running clock could not be stopped: {err}"));
-        }
-    }
+    // file is read afterwards with the clock closed; it stops when the
+    // capture started.
+    let now = now_moment();
+    let started = opened.unwrap_or(now);
+    let interrupted = if template.clock_in {
+        interrupt_clock(editor, started)
+            .map_err(|err| format!("the running clock could not be stopped: {err}"))?
+    } else {
+        None
+    };
+    let finished = opened.is_some() && !template.clock_keep;
 
     let kind = match template.kind {
         OrgCaptureKind::Entry => Kind::Entry,
@@ -1376,15 +1388,76 @@ fn file_capture(
         after.insert_str(insertion.at, &insertion.text);
         if template.clock_in {
             let line = after[..cursor].matches('\n').count();
-            after = helix_roam::clock::clock_in(&after, line, now_moment())
+            after = helix_roam::clock::clock_in(&after, line, started)
                 .map_err(|err| format!("not clocked in: {err}"))?;
+            if finished {
+                after = helix_roam::clock::clock_out(&after, now)
+                    .map_err(|err| format!("not clocked out: {err}"))?
+                    .0;
+            }
         }
         Ok(after)
     })?;
-    if template.clock_in {
+    if template.clock_in && !finished {
         editor.org_clock = Some(path.clone());
     }
+    if let Some(interrupted) = interrupted.filter(|_| finished && template.clock_resume) {
+        resume_clock(editor, interrupted, now)
+            .map_err(|err| format!("the interrupted clock was not resumed: {err}"))?;
+    }
     Ok((path, cursor))
+}
+
+/// An entry whose clock a capture stopped: its file, its headline and the
+/// line it was on, to find it again after the capture moved it.
+struct Interrupted {
+    path: PathBuf,
+    headline: String,
+    line: usize,
+}
+
+/// Stops the running clock at `when` (or when it started, if that is
+/// later), and says which entry it was on.
+fn interrupt_clock(
+    editor: &mut Editor,
+    when: helix_roam::clock::Moment,
+) -> Result<Option<Interrupted>, String> {
+    let Some((path, text, line)) = clocked_entry(editor) else {
+        return Ok(None);
+    };
+    let headline = text.lines().nth(line).unwrap_or_default().to_string();
+    edit_file(editor, &path, |_, text| {
+        let start = helix_roam::clock::running(text).map_or(when, |clock| clock.start);
+        helix_roam::clock::clock_out(text, when.max(start))
+            .map(|(after, _)| after)
+            .map_err(|err| err.to_string())
+    })?;
+    Ok(Some(Interrupted {
+        path,
+        headline,
+        line,
+    }))
+}
+
+/// Clocks back into the entry a capture interrupted: its headline nearest
+/// to where it was.
+fn resume_clock(
+    editor: &mut Editor,
+    interrupted: Interrupted,
+    now: helix_roam::clock::Moment,
+) -> Result<(), String> {
+    edit_file(editor, &interrupted.path, |_, text| {
+        let line = text
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| *line == interrupted.headline)
+            .min_by_key(|(at, _)| at.abs_diff(interrupted.line))
+            .map(|(at, _)| at)
+            .ok_or_else(|| format!("{} is gone", interrupted.headline.trim()))?;
+        helix_roam::clock::clock_in(text, line, now).map_err(|err| err.to_string())
+    })?;
+    editor.org_clock = Some(interrupted.path);
+    Ok(())
 }
 
 /// How a capture's file is named in messages: from the notes directory.
@@ -1408,7 +1481,7 @@ pub fn org_capture(
     if template.buffer {
         return open_capture_buffer(editor, template, &expanded, cx.date);
     }
-    let (path, cursor) = match file_capture(editor, template, &expanded, cx.date) {
+    let (path, cursor) = match file_capture(editor, template, &expanded, cx.date, None) {
         Ok(filed) => filed,
         Err(err) => return editor.set_error(format!("Not captured: {err}")),
     };
@@ -1436,6 +1509,13 @@ fn open_capture_buffer(
     use std::sync::atomic::{AtomicUsize, Ordering};
     static NEXT: AtomicUsize = AtomicUsize::new(1);
 
+    // The clock running now is the one filing it stops, when the capture
+    // buffer is focused and no longer shows where it is.
+    if template.clock_in {
+        if let Some((path, _, _)) = clocked_entry(editor) {
+            editor.org_clock = Some(path);
+        }
+    }
     let (text, cursor) = helix_roam::org_capture::take_cursor(expanded);
     let directory = helix_loader::cache_dir().join("capture");
     let buffer = directory.join(format!(
@@ -1461,6 +1541,7 @@ fn open_capture_buffer(
             buffer,
             template: template.clone(),
             date,
+            opened: now_moment(),
         });
     editor.set_status(format!(
         "Capture ({}): :w files it, :q! drops it, :org-capture-refile files it elsewhere",
@@ -1493,6 +1574,7 @@ fn finish_capture(
     date: helix_roam::Date,
 ) {
     let buffer = editor.pending_captures[index].buffer.clone();
+    let opened = editor.pending_captures[index].opened;
     let text = match editor.document_by_path(&buffer) {
         Some(doc) => doc.text().to_string(),
         None => std::fs::read_to_string(&buffer).unwrap_or_default(),
@@ -1500,7 +1582,7 @@ fn finish_capture(
     if text.trim().is_empty() {
         return editor.set_error("The capture is empty; :q! drops it");
     }
-    match file_capture(editor, template, &text, date) {
+    match file_capture(editor, template, &text, date, Some(opened)) {
         Ok((path, _)) => {
             editor.pending_captures.remove(index);
             let name = capture_name(editor, &path);

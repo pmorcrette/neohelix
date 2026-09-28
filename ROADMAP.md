@@ -1227,10 +1227,10 @@ anywhere, and is what a Doom or Spacemacs user reaches for first.
 - [x] A capture buffer (`buffer`): the text shown in its own buffer first,
       `:w` files it and `:q!` drops it, `:org-capture-refile` files it under
       another node; and `clock-in`.
-- [ ] `:clock-resume`: going back to the clock that ran before a
-      `clock-in` capture once it is filed.
+- [x] `clock-resume`: going back to the clock that ran before a
+      `clock-in` capture once it is filed, and `clock-keep`.
 
-*In progress.* The escapes, the placing and the date tree are pure text
+*Done.* The escapes, the placing and the date tree are pure text
 work in `helix_roam::org_capture`, so what a capture writes is tested
 without the editor; the editor applies it as one insertion (into the open
 buffer, or the file when it is not open) and goes there, unless the
@@ -1238,7 +1238,11 @@ template is `immediate`. Without templates, `t` files a task into
 `inbox.org`, as Org's default does. The questions come one prompt after
 another; a date answer is checked there and asked again when wrong. The
 capture buffer is a file of its own in the cache directory, so `:w` is what
-files it: the save hook does the filing, then closes the buffer.
+files it: the save hook does the filing, then closes the buffer. The
+entry exists only once filed, so a buffer's clock is written then, from
+when the buffer opened: the interrupted clock stops at that moment and,
+with `clock-resume`, starts again when it is filed. `:q!` leaves the
+clocks as they were.
 
 ### Task 1.24: The Agenda, Continued
 

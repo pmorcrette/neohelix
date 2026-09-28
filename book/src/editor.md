@@ -360,7 +360,9 @@ immediate = true
 |`prepend` | First among what is already there rather than last | `false` |
 |`immediate` | Write it and stay where you are | `false` |
 |`buffer` | Show it in a capture buffer first, filed on `:w` | `false` |
-|`clock-in` | Clock in on the new entry, stopping the running clock | `false` |
+|`clock-in` | Clock the capture on the new entry, stopping the running clock: in a capture buffer from when it opens until `:w` files it; without one the clock keeps running | `false` |
+|`clock-keep` | With `clock-in` and `buffer`, keep the clock running once it is filed | `false` |
+|`clock-resume` | With `clock-in` and `buffer`, clock back into the entry whose clock it stopped once it is filed; for interruptions | `false` |
 
 The template's escapes:
 
