@@ -78,6 +78,7 @@ fn apply_parsed(graph: &mut RoamGraph, parsed: &[ParsedFile], errors: usize) -> 
 
     for file in parsed {
         graph.record_setup_files(&file.path, &file.settings.setup_files);
+        graph.set_entries(&file.path, file.entries.clone());
         for node in &file.nodes {
             graph.insert_node(node.clone());
             stats.nodes += 1;

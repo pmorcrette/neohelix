@@ -52,6 +52,8 @@ pub struct ParsedFile {
     pub settings: FileSettings,
     /// The file this was parsed from.
     pub path: PathBuf,
+    /// Every headline, node or not, as the agenda reads it.
+    pub entries: Vec<crate::entry::Entry>,
 }
 
 /// What a file declares about how it should be read.
@@ -479,7 +481,11 @@ pub(crate) fn parse_planning(trimmed: &str) -> Option<(Option<Timestamp>, Option
 
 /// `haystack` begins with `needle`, comparing ASCII case-insensitively.
 pub(crate) fn starts_with_ignore_case(haystack: &str, needle: &str) -> bool {
-    haystack.len() >= needle.len() && haystack[..needle.len()].eq_ignore_ascii_case(needle)
+    // Bytes, not a slice: the needle's length may fall inside a character.
+    haystack
+        .as_bytes()
+        .get(..needle.len())
+        .is_some_and(|start| start.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
 /// Byte offset of `needle` in `haystack`, comparing ASCII case-insensitively.
@@ -538,7 +544,9 @@ pub fn parse_id(raw: &str) -> Uuid {
 /// Rejecting without allocating is what makes the figure above affordable; a
 /// change here that allocates per line will not be.
 pub fn parse_org(text: &str, path: impl Into<PathBuf>) -> ParsedFile {
-    Parser::new(path.into()).run(text)
+    let mut parsed = Parser::new(path.into()).run(text);
+    parsed.entries = crate::entry::entries(text, &parsed.path, &parsed.settings);
+    parsed
 }
 
 /// The node a link belongs to: the innermost headline with an `:ID:`, falling

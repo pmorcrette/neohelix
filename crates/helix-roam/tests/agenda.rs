@@ -7,8 +7,8 @@ fn day(year: i32, month: u32, day: u32) -> Date {
     Date { year, month, day }
 }
 
-fn nodes(text: &str) -> Vec<helix_roam::Node> {
-    parse_org(text, "n.org").nodes
+fn nodes(text: &str) -> Vec<helix_roam::Entry> {
+    parse_org(text, "n.org").entries
 }
 
 const TASKS: &str = "\
@@ -38,7 +38,7 @@ fn a_day_view_shows_what_falls_on_that_day() {
     let nodes = nodes(TASKS);
     let entries = agenda(&nodes, day(2026, 9, 19), 1);
 
-    let titles: Vec<&str> = entries.iter().map(|e| e.node.title.as_str()).collect();
+    let titles: Vec<&str> = entries.iter().map(|e| e.entry.title.as_str()).collect();
     // The scheduled one, and the deadline inside its warning period.
     assert_eq!(titles, ["Due in three days", "Scheduled today"]);
     // A deadline sorts before a scheduled item on the same day.
@@ -54,7 +54,7 @@ fn a_finished_task_is_not_pending_whatever_its_dates_say() {
     assert!(
         !entries
             .iter()
-            .any(|e| e.node.title == "Finished but scheduled"),
+            .any(|e| e.entry.title == "Finished but scheduled"),
         "a DONE task should not be on the agenda"
     );
 }
@@ -63,7 +63,7 @@ fn a_finished_task_is_not_pending_whatever_its_dates_say() {
 fn a_task_with_no_dates_is_not_on_the_agenda_but_is_on_the_todo_list() {
     let nodes = nodes(TASKS);
     let entries = agenda(&nodes, day(2026, 9, 19), 7);
-    assert!(!entries.iter().any(|e| e.node.title == "No dates at all"));
+    assert!(!entries.iter().any(|e| e.entry.title == "No dates at all"));
 
     let todos: Vec<&str> = todo_list(&nodes).iter().map(|n| n.title.as_str()).collect();
     assert!(todos.contains(&"No dates at all"), "{todos:?}");
@@ -78,7 +78,7 @@ fn a_week_view_spreads_entries_over_their_days() {
 
     let deadline = entries
         .iter()
-        .find(|e| e.node.title == "Due in three days" && e.reason == Reason::Deadline)
+        .find(|e| e.entry.title == "Due in three days" && e.reason == Reason::Deadline)
         .unwrap();
     assert_eq!(deadline.day, day(2026, 9, 22));
 }
@@ -266,4 +266,34 @@ fn filtering_the_todo_list_narrows_it() {
 
     let by_priority = filtered_todo_list(&nodes, &TodoFilter::parse("#A"));
     assert_eq!(by_priority.len(), 1);
+}
+
+/// An item's title, why it is there and its time.
+type Seen<'a> = (&'a str, Reason, Option<(u32, u32)>);
+
+#[test]
+fn a_task_without_an_id_and_an_appointment_are_on_the_agenda() {
+    let entries = nodes(
+        "* TODO Laver\nSCHEDULED: <2026-09-19 Sat>\n\
+         * Dentiste\nRendez-vous <2026-09-19 Sat 15:00>.\n\
+         * Réunion <2026-09-19 Sat 09:30>\n",
+    );
+    let items = agenda(&entries, day(2026, 9, 19), 1);
+    let seen: Vec<Seen> = items
+        .iter()
+        .map(|item| (item.entry.title.as_str(), item.reason, item.time))
+        .collect();
+    // Timed items first, by their time.
+    assert_eq!(
+        seen,
+        [
+            (
+                "Réunion <2026-09-19 Sat 09:30>",
+                Reason::Timestamp,
+                Some((9, 30))
+            ),
+            ("Dentiste", Reason::Timestamp, Some((15, 0))),
+            ("Laver", Reason::Scheduled, None),
+        ]
+    );
 }

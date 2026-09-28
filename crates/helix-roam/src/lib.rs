@@ -17,6 +17,7 @@ pub mod crypt;
 pub mod date;
 pub mod dependencies;
 pub mod dynamic;
+pub mod entry;
 pub mod export;
 pub mod formula;
 mod graph;
@@ -44,6 +45,7 @@ pub mod visual;
 
 pub use clip::Clip;
 pub use date::Date;
+pub use entry::Entry;
 pub use graph::RoamGraph;
 pub use hyperlink::{find_links, link_at, LinkKind, OrgLink};
 pub use link::Link;

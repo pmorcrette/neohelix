@@ -51,6 +51,9 @@ pub struct RoamGraph {
     /// A file's meaning can depend on a second file, so saving the second
     /// has to re-read the first: this is what says which ones.
     setup_dependents: HashMap<PathBuf, std::collections::BTreeSet<PathBuf>>,
+    /// Every headline of every file, by file: what the agenda reads, since
+    /// a task need not be a node.
+    entries: HashMap<PathBuf, Vec<crate::entry::Entry>>,
 }
 
 impl RoamGraph {
@@ -188,6 +191,8 @@ impl RoamGraph {
         for id in &doomed {
             self.remove_node(id);
         }
+
+        self.entries.remove(path);
 
         // Locations pointing at this file go with its nodes: the file has
         // just been re-read, and whatever it no longer declares is no longer
@@ -342,6 +347,22 @@ impl RoamGraph {
     /// Every node in the graph, in no particular order.
     pub fn nodes(&self) -> impl Iterator<Item = &Node> {
         self.graph.node_weights()
+    }
+
+    /// Sets the headlines read from `path`, replacing what it had.
+    pub fn set_entries(&mut self, path: impl Into<PathBuf>, entries: Vec<crate::entry::Entry>) {
+        self.entries.insert(path.into(), entries);
+    }
+
+    /// Every headline of every file, files in no particular order and each
+    /// file's in its own order.
+    pub fn entries(&self) -> impl Iterator<Item = &crate::entry::Entry> {
+        self.entries.values().flatten()
+    }
+
+    /// The headlines read from `path`.
+    pub fn entries_in_file(&self, path: &Path) -> &[crate::entry::Entry] {
+        self.entries.get(path).map_or(&[], Vec::as_slice)
     }
 
     fn neighbours(&self, node_id: &Uuid, direction: Direction) -> Vec<(&Node, &Link)> {

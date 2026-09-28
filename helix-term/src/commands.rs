@@ -4486,7 +4486,7 @@ pub fn org_filtered_todo_picker(
     Some(agenda_view(
         editor,
         lines,
-        "state",
+        "category",
         Box::new(move |editor| crate::roam::filtered_todo_lines(editor, &filter)),
     ))
 }
