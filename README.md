@@ -13,6 +13,7 @@
 [![Documentation](https://shields.io/badge/-documentation-452859)](https://docs.helix-editor.com/)
 [![GitHub contributors](https://img.shields.io/github/contributors/helix-editor/helix)](https://github.com/helix-editor/helix/graphs/contributors)
 [![Matrix Space](https://img.shields.io/matrix/helix-community:matrix.org)](https://matrix.to/#/#helix-community:matrix.org)
+![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/pmorcrette/neohelix?utm_source=oss&utm_medium=github&utm_campaign=pmorcrette%2Fneohelix&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
 
 </div>
 

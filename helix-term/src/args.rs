@@ -20,6 +20,9 @@ pub struct Args {
     pub config_file: Option<PathBuf>,
     pub files: IndexMap<PathBuf, Vec<Position>>,
     pub working_directory: Option<PathBuf>,
+    /// An `org-protocol://` URL to act on, which a browser hands the editor
+    /// the way it would hand `emacsclient` one.
+    pub org_protocol: Option<String>,
 }
 
 impl Args {
@@ -111,6 +114,9 @@ impl Args {
                         Ok(n) => line_number = n.saturating_sub(1),
                         _ => insert_file_with_position(arg),
                     };
+                }
+                arg if arg.starts_with("org-protocol:") => {
+                    args.org_protocol = Some(arg.to_string());
                 }
                 arg => insert_file_with_position(arg),
             }

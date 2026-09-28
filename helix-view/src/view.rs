@@ -351,6 +351,14 @@ impl View {
     }
 
     pub fn ensure_cursor_in_view(&self, doc: &mut Document, scrolloff: usize) {
+        // A cursor never stays inside folded text: a search, a jump or a
+        // positioned open that lands there opens the fold instead of leaving
+        // the cursor somewhere nothing is drawn. Checked here because every
+        // command's effect on the cursor passes through this call.
+        let text = doc.text().slice(..);
+        let cursor = doc.selection(self.id).primary().cursor(text);
+        doc.folds_mut().reveal(cursor);
+
         if let Some(offset) = self.offset_coords_to_in_view_center::<false>(doc, scrolloff) {
             doc.set_view_offset(self.id, offset);
         }
@@ -461,6 +469,40 @@ impl View {
         theme: Option<&Theme>,
     ) -> TextAnnotations<'a> {
         let mut text_annotations = TextAnnotations::default();
+
+        // Folds go on first: everything below positions itself against the
+        // document, and a fold changes what the document looks like.
+        text_annotations.add_folds(doc.folds());
+
+        // Conceals, except on the lines a selection is on: what is being
+        // edited is shown as it is written.
+        if !doc.org_conceals.is_empty() {
+            let text = doc.text().slice(..);
+            let revealed = doc
+                .selection(self.id)
+                .iter()
+                .map(|range| {
+                    let first = text.char_to_line(range.from().min(text.len_chars()));
+                    // `to` is exclusive: a cursor on a line's newline
+                    // ends where the next line starts, and that line is not
+                    // being edited.
+                    let last_char = range.to().saturating_sub(1).max(range.from());
+                    let last = text.char_to_line(last_char.min(text.len_chars()));
+                    text.line_to_char(first)..text.line_to_char((last + 1).min(text.len_lines()))
+                })
+                .collect();
+            text_annotations.add_conceals(&doc.org_conceals, revealed);
+        }
+
+        if !doc.roam_counts.is_empty() {
+            let style = theme.and_then(|t| t.find_highlight("ui.virtual.inlay-hint"));
+            text_annotations.add_inline_annotations(&doc.roam_counts, style);
+        }
+
+        if !doc.org_columns.is_empty() {
+            let style = theme.and_then(|t| t.find_highlight("ui.virtual.inlay-hint"));
+            text_annotations.add_inline_annotations(&doc.org_columns, style);
+        }
 
         if let Some(labels) = doc.jump_labels.get(&self.id) {
             let style = theme.and_then(|t| t.find_highlight("ui.virtual.jump-label"));

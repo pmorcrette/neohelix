@@ -14,6 +14,9 @@ members = [
   "helix-vcs",
   "helix-parsec",
   "helix-stdx",
+  "crates/helix-roam",
+  "crates/helix-magit",
+  "crates/helix-pty",
   "xtask",
 ]
 

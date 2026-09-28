@@ -2454,7 +2454,11 @@ name = "org"
 scope = "source.org"
 injection-regex = "org"
 file-types = ["org"]
+comment-token = "#"
+block-comment-tokens = { start = "#+begin_comment", end = "#+end_comment" }
 indent = { tab-width = 2, unit = "  " }
+grammar = "org"
+word-completion.trigger-length = 4
 
 [[grammar]]
 name = "org"

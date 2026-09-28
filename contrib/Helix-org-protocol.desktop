@@ -1,0 +1,21 @@
+# Registers neohelix as the handler of org-protocol:// URLs, the way Emacs
+# users register emacsclient, so a browser bookmarklet can capture into the
+# notes directory.
+#
+# Install:
+#   cp contrib/Helix-org-protocol.desktop ~/.local/share/applications/
+#   xdg-mime default Helix-org-protocol.desktop x-scheme-handler/org-protocol
+#
+# A bookmarklet that captures the page and the text selected on it:
+#   javascript:location.href='org-protocol://capture?url='+encodeURIComponent(location.href)+'&title='+encodeURIComponent(document.title)+'&body='+encodeURIComponent(window.getSelection())
+#
+# Terminal=true opens the editor in the desktop's default terminal.
+[Desktop Entry]
+Name=Helix (org-protocol)
+Comment=Capture pages into Org notes
+Type=Application
+TryExec=hx
+Exec=hx %u
+Terminal=true
+NoDisplay=true
+MimeType=x-scheme-handler/org-protocol;

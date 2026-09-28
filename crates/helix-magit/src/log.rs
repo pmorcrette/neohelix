@@ -1,0 +1,648 @@
+//! The log, and a single commit.
+//!
+//! Both are read from the `git` binary: `git log --graph` draws the graph,
+//! which is not worth reimplementing, and `git show` gives a commit's diff in
+//! the same unified format the status buffer already parses.
+
+use std::path::{Path, PathBuf};
+
+use crate::command::GitCommand;
+use crate::diff::{parse_unified_diff, DiffOptions, FileDiff};
+
+/// How many commits a log shows before asking for more.
+pub const DEFAULT_LIMIT: usize = 256;
+
+/// What a log shows: which commits, and which of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogFilter {
+    /// A revision or range (`main`, `v1.0..HEAD`); `None` is HEAD.
+    pub range: Option<String>,
+    /// Every branch, tag and remote branch, as `git log --all`.
+    pub all: bool,
+    /// Commits whose author matches, case-insensitively.
+    pub author: Option<String>,
+    /// Commits whose message matches, case-insensitively.
+    pub grep: Option<String>,
+    /// Commits that touch this path.
+    pub path: Option<PathBuf>,
+    /// Follow the path through renames; git allows it for one file only.
+    pub follow: bool,
+    /// Trace these lines of `path` (`10,20`, or `:funcname`) through
+    /// history: `git log -L`.
+    pub lines: Option<String>,
+    /// Walk the reflog of `range` (HEAD when `None`) instead of history:
+    /// where the ref has pointed, newest first, and why it moved.
+    pub reflog: bool,
+    pub limit: usize,
+    /// Commits whose changes add or remove lines matching this regex
+    /// (`-G`), or change how often this string occurs (`-S`).
+    pub changes: Option<String>,
+    pub occurrences: Option<String>,
+    pub no_merges: bool,
+    /// Dates as git takes them: `2024-01-31`, `2 weeks ago`.
+    pub since: Option<String>,
+    pub until: Option<String>,
+    /// Oldest first; git draws no graph then.
+    pub reverse: bool,
+    pub graph: bool,
+    /// Branch and tag names beside the commits.
+    pub decorate: bool,
+    /// More starting points, as git's own arguments: `--branches`,
+    /// `--remotes=origin/*`, several revisions.
+    pub revs: Vec<String>,
+    /// What these starting points are, for the title, when `revs` says it
+    /// better than `range`.
+    pub title: Option<String>,
+}
+
+impl Default for LogFilter {
+    fn default() -> Self {
+        Self {
+            range: None,
+            all: false,
+            author: None,
+            grep: None,
+            path: None,
+            follow: false,
+            lines: None,
+            reflog: false,
+            limit: DEFAULT_LIMIT,
+            changes: None,
+            occurrences: None,
+            no_merges: false,
+            since: None,
+            until: None,
+            reverse: false,
+            graph: true,
+            decorate: true,
+            revs: Vec::new(),
+            title: None,
+        }
+    }
+}
+
+/// The log menu's switch that hides the graph. git has no such flag: the
+/// graph is this log's own `--graph`, left out.
+pub const NO_GRAPH_FLAG: &str = "--no-graph";
+
+/// The pseudo-flag the log menu uses for a path. git takes paths after
+/// `--`, not as a flag, so [`LogFilter::from_args`] moves it there.
+pub const PATH_FLAG: &str = "--path=";
+
+impl LogFilter {
+    /// A filter from the log menu's arguments.
+    pub fn from_args(args: &[String]) -> Self {
+        let mut filter = Self::default();
+        for arg in args {
+            if let Some(author) = arg.strip_prefix("--author=") {
+                filter.author = Some(author.to_string());
+            } else if let Some(grep) = arg.strip_prefix("--grep=") {
+                filter.grep = Some(grep.to_string());
+            } else if let Some(path) = arg.strip_prefix(PATH_FLAG) {
+                filter.path = Some(PathBuf::from(path));
+            } else if arg == "--all" {
+                filter.all = true;
+            } else if let Some(regex) = arg.strip_prefix("-G") {
+                filter.changes = Some(regex.to_string());
+            } else if let Some(string) = arg.strip_prefix("-S") {
+                filter.occurrences = Some(string.to_string());
+            } else if let Some(trace) = arg.strip_prefix("-L") {
+                // `10,20:file` or `:function:file`: the file after the last colon.
+                if let Some((lines, path)) = trace.rsplit_once(':') {
+                    if !lines.is_empty() && !path.is_empty() {
+                        filter.lines = Some(lines.to_string());
+                        filter.path = Some(PathBuf::from(path));
+                    }
+                }
+            } else if arg == "--no-merges" {
+                filter.no_merges = true;
+            } else if let Some(date) = arg.strip_prefix("--since=") {
+                filter.since = Some(date.to_string());
+            } else if let Some(date) = arg.strip_prefix("--until=") {
+                filter.until = Some(date.to_string());
+            } else if arg == "--reverse" {
+                filter.reverse = true;
+            } else if arg == NO_GRAPH_FLAG {
+                filter.graph = false;
+            } else if arg == "--no-decorate" {
+                filter.decorate = false;
+            }
+        }
+        filter
+    }
+
+    /// Checks what a user typed as a range: it goes on git's command line,
+    /// so it must not be taken for an option.
+    pub fn valid_range(range: &str) -> Result<(), String> {
+        if range.starts_with('-') {
+            Err(format!("`{range}` is not a revision"))
+        } else if range.trim().is_empty() {
+            Err("empty revision".to_string())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// The `git log` arguments.
+    pub fn args(&self) -> Vec<String> {
+        if self.reflog {
+            // No graph: git refuses `--graph` with `--walk-reflogs`, and a
+            // reflog is a list, not a history.
+            let mut args: Vec<String> = [
+                "log",
+                "--walk-reflogs",
+                "--color=never",
+                // No `--date`: with it git names entries `HEAD@{<date>}`
+                // rather than `HEAD@{2}`; `%as` gives the short date.
+                REFLOG_FORMAT,
+            ]
+            .iter()
+            .map(|arg| arg.to_string())
+            .collect();
+            args.push(format!("--max-count={}", self.limit));
+            args.push(self.range.clone().unwrap_or_else(|| "HEAD".to_string()));
+            args.push("--".into());
+            return args;
+        }
+        let mut args: Vec<String> = vec!["log".into()];
+        // git refuses to draw a graph backwards.
+        if self.graph && !self.reverse {
+            args.push("--graph".into());
+        }
+        args.extend(["--color=never", "--decorate=short", "--date=short"].map(str::to_string));
+        args.push(
+            if self.decorate {
+                LOG_FORMAT
+            } else {
+                LOG_FORMAT_PLAIN
+            }
+            .to_string(),
+        );
+        args.push(format!("--max-count={}", self.limit));
+        if let Some(regex) = &self.changes {
+            args.push(format!("-G{regex}"));
+        }
+        if let Some(string) = &self.occurrences {
+            args.push(format!("-S{string}"));
+        }
+        if self.no_merges {
+            args.push("--no-merges".into());
+        }
+        if let Some(date) = &self.since {
+            args.push(format!("--since={date}"));
+        }
+        if let Some(date) = &self.until {
+            args.push(format!("--until={date}"));
+        }
+        if self.reverse {
+            args.push("--reverse".into());
+        }
+        args.extend(self.revs.iter().cloned());
+        if self.author.is_some() || self.grep.is_some() {
+            args.push("--regexp-ignore-case".into());
+        }
+        if let Some(author) = &self.author {
+            args.push(format!("--author={author}"));
+        }
+        if let Some(grep) = &self.grep {
+            args.push(format!("--grep={grep}"));
+        }
+        if self.all {
+            args.push("--all".into());
+        }
+        // `-L` names its file itself and takes no pathspec; `-s` keeps the
+        // patches it would print out of the list.
+        if let (Some(lines), Some(path)) = (&self.lines, &self.path) {
+            args.push(format!("-L{lines}:{}", path.display()));
+            args.push("-s".into());
+            if let Some(range) = &self.range {
+                args.push(range.clone());
+            }
+            return args;
+        }
+        if self.follow && self.path.is_some() {
+            args.push("--follow".into());
+        }
+        if let Some(range) = &self.range {
+            args.push(range.clone());
+        }
+        args.push("--".into());
+        if let Some(path) = &self.path {
+            args.push(path.display().to_string());
+        }
+        args
+    }
+
+    /// A one-line summary for the log's title.
+    pub fn describe(&self) -> String {
+        if self.reflog {
+            return format!("reflog of {}", self.range.as_deref().unwrap_or("HEAD"));
+        }
+        let mut parts = vec![if self.all {
+            "all references".to_string()
+        } else if let Some(title) = &self.title {
+            title.clone()
+        } else {
+            self.range.clone().unwrap_or_else(|| "HEAD".to_string())
+        }];
+        if let Some(author) = &self.author {
+            parts.push(format!("author ~ {author}"));
+        }
+        if let Some(grep) = &self.grep {
+            parts.push(format!("message ~ {grep}"));
+        }
+        if let Some(path) = &self.path {
+            parts.push(match &self.lines {
+                Some(lines) => format!("tracing {lines} of {}", path.display()),
+                None => format!("touching {}", path.display()),
+            });
+        }
+        if let Some(regex) = &self.changes {
+            parts.push(format!("changes ~ {regex}"));
+        }
+        if let Some(string) = &self.occurrences {
+            parts.push(format!("adding or removing {string}"));
+        }
+        if self.no_merges {
+            parts.push("no merges".into());
+        }
+        match (&self.since, &self.until) {
+            (Some(since), Some(until)) => parts.push(format!("{since} to {until}")),
+            (Some(since), None) => parts.push(format!("since {since}")),
+            (None, Some(until)) => parts.push(format!("until {until}")),
+            (None, None) => {}
+        }
+        if self.reverse {
+            parts.push("oldest first".into());
+        }
+        parts.join(", ")
+    }
+}
+
+/// Hash, refs, date, author and subject, NUL-separated after the graph.
+const LOG_FORMAT: &str = "--format=%x00%h%x00%D%x00%ad%x00%an%x00%at%x00%s";
+
+/// The same without the refs, for a log that hides them: `%D` is filled
+/// whatever `--decorate` says.
+const LOG_FORMAT_PLAIN: &str = "--format=%x00%h%x00%x00%ad%x00%an%x00%at%x00%s";
+
+/// The reflog's lines in the same shape: the selector (`HEAD@{2}`) where
+/// the refs go, and why the ref moved (`reset: moving to HEAD~1`) as the
+/// subject.
+const REFLOG_FORMAT: &str = "--format=%x00%h%x00%gd%x00%as%x00%an%x00%at%x00%gs";
+
+/// One line of the log: a commit, or a line of graph joining commits.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LogEntry {
+    /// The graph's columns on this line (`* | `, `|\`).
+    pub graph: String,
+    /// `None` on a graph-only line.
+    pub hash: Option<String>,
+    /// `HEAD -> main`, `origin/main`, `tag: v1.0`.
+    pub refs: Vec<String>,
+    pub date: String,
+    pub author: String,
+    /// Seconds since the epoch, for the margin's age.
+    pub time: i64,
+    pub subject: String,
+}
+
+/// Reads `git log --graph` with [`LOG_FORMAT`].
+pub fn parse_log(text: &str) -> Vec<LogEntry> {
+    text.lines()
+        .map(|line| {
+            let Some((graph, rest)) = line.split_once('\0') else {
+                return LogEntry {
+                    graph: line.trim_end().to_string(),
+                    ..LogEntry::default()
+                };
+            };
+            let mut fields = rest.splitn(6, '\0');
+            let mut next = || fields.next().unwrap_or_default().to_string();
+            let hash = next();
+            let refs = next();
+            LogEntry {
+                graph: graph.trim_end().to_string(),
+                hash: Some(hash),
+                refs: refs
+                    .split(", ")
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+                date: next(),
+                author: next(),
+                time: next().parse().unwrap_or(0),
+                subject: next(),
+            }
+        })
+        .collect()
+}
+
+/// How long ago `time` was, as the margin shows it: "5 minutes", "3 days",
+/// "2 years" — the largest unit that is at least one.
+pub fn age(time: i64, now: i64) -> String {
+    let seconds = (now - time).max(0);
+    let units = [
+        (365 * 86_400, "year"),
+        (30 * 86_400, "month"),
+        (7 * 86_400, "week"),
+        (86_400, "day"),
+        (3_600, "hour"),
+        (60, "minute"),
+    ];
+    for (length, name) in units {
+        let count = seconds / length;
+        if count >= 1 {
+            return format!("{count} {name}{}", if count == 1 { "" } else { "s" });
+        }
+    }
+    "just now".to_string()
+}
+
+/// Runs the log. An error is git's own message.
+pub fn read_log(workdir: &Path, filter: &LogFilter) -> Result<Vec<LogEntry>, String> {
+    let output = GitCommand::new(workdir, filter.args())
+        .run()
+        .map_err(|err| err.to_string())?;
+    if output.success {
+        Ok(parse_log(&output.stdout))
+    } else {
+        Err(output.summary())
+    }
+}
+
+/// A commit as the commit view shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitDetails {
+    pub hash: String,
+    pub short: String,
+    /// `Name <email>`.
+    pub author: String,
+    pub date: String,
+    pub refs: Vec<String>,
+    /// The whole message, subject first.
+    pub message: String,
+    /// Against the first parent, so a merge shows what it brought in.
+    pub files: Vec<FileDiff>,
+}
+
+const SHOW_FORMAT: &str = "--format=%H%x00%h%x00%an <%ae>%x00%ad%x00%D%x00%B%x00";
+
+/// Reads `git show` with [`SHOW_FORMAT`].
+pub fn parse_show(text: &str) -> Option<CommitDetails> {
+    let mut fields = text.splitn(7, '\0');
+    let mut next = || fields.next().map(str::to_string);
+    let hash = next()?;
+    let short = next()?;
+    let author = next()?;
+    let date = next()?;
+    let refs = next()?;
+    let message = next()?;
+    let diff = next().unwrap_or_default();
+    Some(CommitDetails {
+        hash: hash.trim().to_string(),
+        short,
+        author,
+        date,
+        refs: refs
+            .split(", ")
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .collect(),
+        message: message.trim_end().to_string(),
+        files: parse_unified_diff(&diff),
+    })
+}
+
+/// Reads one commit — or a stash, which is a commit too.
+pub fn show(workdir: &Path, rev: &str) -> Result<CommitDetails, String> {
+    show_with(workdir, rev, &DiffOptions::default())
+}
+
+/// [`show`] with the diff shaped by `options`.
+pub fn show_with(
+    workdir: &Path,
+    rev: &str,
+    options: &DiffOptions,
+) -> Result<CommitDetails, String> {
+    LogFilter::valid_range(rev)?;
+    let mut args: Vec<String> = [
+        "show",
+        "--color=never",
+        "--no-ext-diff",
+        "--diff-merges=first-parent",
+        "--date=format:%Y-%m-%d %H:%M",
+        "--patch",
+        SHOW_FORMAT,
+    ]
+    .iter()
+    .map(|arg| arg.to_string())
+    .collect();
+    args.extend(options.git_args());
+    args.push(rev.to_string());
+    args.push("--".into());
+    let output = GitCommand::new(workdir, args)
+        .run()
+        .map_err(|err| err.to_string())?;
+    if !output.success {
+        return Err(output.summary());
+    }
+    parse_show(&output.stdout).ok_or_else(|| format!("could not read {rev}"))
+}
+
+/// The merge that brought `commit` into `branch`: on the way from one to
+/// the other, the first merge whose own branch had it. `Err` when `branch`
+/// does not contain it, or got it without a merge.
+pub fn merged_by(workdir: &Path, commit: &str, branch: &str) -> Result<String, String> {
+    LogFilter::valid_range(commit)?;
+    LogFilter::valid_range(branch)?;
+    let git = |args: &[&str]| {
+        GitCommand::new(workdir, args.iter().map(|arg| arg.to_string()).collect())
+            .run()
+            .map_err(|err| err.to_string())
+    };
+    let contains = git(&["merge-base", "--is-ancestor", commit, branch])?;
+    if !contains.success {
+        return Err(format!("{branch} does not contain {commit}"));
+    }
+    let merges = git(&[
+        "rev-list",
+        "--ancestry-path",
+        "--merges",
+        "--reverse",
+        &format!("{commit}..{branch}"),
+    ])?;
+    // The merge it came in through: the first whose first parent did not
+    // have it yet. One whose first parent had it merely passed it along.
+    for merge in merges.stdout.lines() {
+        let before = git(&["merge-base", "--is-ancestor", commit, &format!("{merge}^1")])?;
+        if !before.success {
+            return Ok(merge.to_string());
+        }
+    }
+    Err(format!("{commit} reached {branch} without a merge"))
+}
+
+/// The diff between two revisions, or between one and the working tree
+/// when `to` is `None`.
+pub fn diff_range(
+    workdir: &Path,
+    from: &str,
+    to: Option<&str>,
+    options: &DiffOptions,
+) -> Result<Vec<FileDiff>, String> {
+    diff_revisions(workdir, from, to, false, options)
+}
+
+/// [`diff_range`], or with `symmetric` what `to` changed since it forked
+/// from `from`: git's `from...to`, the diff from their merge base.
+pub fn diff_revisions(
+    workdir: &Path,
+    from: &str,
+    to: Option<&str>,
+    symmetric: bool,
+    options: &DiffOptions,
+) -> Result<Vec<FileDiff>, String> {
+    LogFilter::valid_range(from)?;
+    if let Some(to) = to {
+        LogFilter::valid_range(to)?;
+    }
+    let mut args = diff_args(options);
+    match to {
+        Some(to) if symmetric => args.push(format!("{from}...{to}")),
+        _ => {
+            args.push(from.to_string());
+            args.extend(to.map(str::to_string));
+        }
+    }
+    args.push("--".into());
+    let output = GitCommand::new(workdir, args)
+        .run()
+        .map_err(|err| err.to_string())?;
+    if output.success {
+        Ok(parse_unified_diff(&output.stdout))
+    } else {
+        Err(output.summary())
+    }
+}
+
+/// The diff between two files, tracked or not: `git diff --no-index`.
+pub fn diff_paths(
+    workdir: &Path,
+    a: &Path,
+    b: &Path,
+    options: &DiffOptions,
+) -> Result<Vec<FileDiff>, String> {
+    let mut args = diff_args(options);
+    args.push("--no-index".into());
+    args.push("--".into());
+    args.push(a.display().to_string());
+    args.push(b.display().to_string());
+    let output = GitCommand::new(workdir, args)
+        .run()
+        .map_err(|err| err.to_string())?;
+    // `--no-index` exits with 1 when the files differ, as `diff` does.
+    if output.success || (output.stderr.trim().is_empty() && !output.stdout.is_empty()) {
+        Ok(parse_unified_diff(&output.stdout))
+    } else {
+        Err(output.summary())
+    }
+}
+
+fn diff_args(options: &DiffOptions) -> Vec<String> {
+    let mut args: Vec<String> = ["diff", "--color=never", "--no-ext-diff"]
+        .iter()
+        .map(|arg| arg.to_string())
+        .collect();
+    args.extend(options.git_args());
+    args
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn graph_lines_and_commit_lines_are_told_apart() {
+        let text =
+            "* \0a1b2c3d\0HEAD -> main, tag: v1\x002026-09-24\0Ann\x001790000000\0Merge topic\n\
+                    |\\  \n\
+                    | * \0e4f5a6b\0\x002026-09-23\0Bob\x001789900000\0Topic work\n";
+        let entries = parse_log(text);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].graph, "*");
+        assert_eq!(entries[0].hash.as_deref(), Some("a1b2c3d"));
+        assert_eq!(entries[0].refs, ["HEAD -> main", "tag: v1"]);
+        assert_eq!(entries[0].subject, "Merge topic");
+        assert_eq!(entries[1].hash, None);
+        assert_eq!(entries[1].graph, "|\\");
+        assert_eq!(entries[2].graph, "| *");
+        assert!(entries[2].refs.is_empty());
+        assert_eq!(entries[2].author, "Bob");
+    }
+
+    #[test]
+    fn a_filter_builds_its_command_line() {
+        let filter = LogFilter {
+            range: Some("v1..HEAD".into()),
+            author: Some("ann".into()),
+            grep: Some("fix".into()),
+            path: Some(PathBuf::from("src/lib.rs")),
+            limit: 10,
+            ..LogFilter::default()
+        };
+        let args = filter.args();
+        let tail: Vec<&str> = args[6..].iter().map(String::as_str).collect();
+        assert_eq!(
+            tail,
+            [
+                "--max-count=10",
+                "--regexp-ignore-case",
+                "--author=ann",
+                "--grep=fix",
+                "v1..HEAD",
+                "--",
+                "src/lib.rs"
+            ]
+        );
+        assert_eq!(
+            filter.describe(),
+            "v1..HEAD, author ~ ann, message ~ fix, touching src/lib.rs"
+        );
+    }
+
+    #[test]
+    fn menu_arguments_become_a_filter() {
+        let filter = LogFilter::from_args(&[
+            "--author=ann".into(),
+            "--path=a b.txt".into(),
+            "--all".into(),
+        ]);
+        assert_eq!(filter.author.as_deref(), Some("ann"));
+        assert_eq!(filter.path, Some(PathBuf::from("a b.txt")));
+        assert!(filter.all);
+        assert_eq!(filter.grep, None);
+    }
+
+    #[test]
+    fn a_range_is_never_an_option() {
+        assert!(LogFilter::valid_range("--output=/tmp/x").is_err());
+        assert!(LogFilter::valid_range("main..topic").is_ok());
+    }
+
+    #[test]
+    fn an_age_is_the_largest_whole_unit() {
+        let now = 1_790_000_000;
+        assert_eq!(age(now - 30, now), "just now");
+        assert_eq!(age(now - 60, now), "1 minute");
+        assert_eq!(age(now - 3 * 3_600 - 5, now), "3 hours");
+        assert_eq!(age(now - 86_400 * 2, now), "2 days");
+        assert_eq!(age(now - 86_400 * 15, now), "2 weeks");
+        assert_eq!(age(now - 86_400 * 400, now), "1 year");
+        assert_eq!(
+            age(now + 100, now),
+            "just now",
+            "a clock ahead is not the future"
+        );
+    }
+}

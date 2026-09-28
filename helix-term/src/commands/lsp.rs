@@ -1461,7 +1461,9 @@ fn compute_inlay_hints_for_view(
                     };
 
                     let width = label.width();
-                    let limit = limit.get().into();
+                    // Annotated because `usize: PartialOrd<_>` has more than
+                    // one candidate once alacritty_terminal is in the graph.
+                    let limit: usize = limit.get().into();
                     if width > limit {
                         let mut floor_boundary = 0;
                         let mut acc = 0;

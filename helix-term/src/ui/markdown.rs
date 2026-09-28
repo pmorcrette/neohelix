@@ -39,6 +39,21 @@ pub fn highlighted_code_block<'a>(
     // which passes this parameter currently passes **byte indices** instead.
     additional_highlight_spans: Option<OverlayHighlights>,
 ) -> Text<'a> {
+    let language = loader.language_for_match(RopeSlice::from(language));
+    highlighted_code_block_for_language(text, language, theme, loader, additional_highlight_spans)
+}
+
+/// As [`highlighted_code_block`], but for a language already resolved.
+///
+/// The diff view picks its language from the file's path rather than from a
+/// language name written in the text, so it has a `Language` in hand.
+pub fn highlighted_code_block_for_language<'a>(
+    text: &str,
+    language: Option<helix_core::Language>,
+    theme: Option<&Theme>,
+    loader: &syntax::Loader,
+    additional_highlight_spans: Option<OverlayHighlights>,
+) -> Text<'a> {
     let mut spans = Vec::new();
     let mut lines = Vec::new();
 
@@ -52,10 +67,7 @@ pub fn highlighted_code_block<'a>(
     };
 
     let ropeslice = RopeSlice::from(text);
-    let Some(syntax) = loader
-        .language_for_match(RopeSlice::from(language))
-        .and_then(|lang| Syntax::new(ropeslice, lang, loader).ok())
-    else {
+    let Some(syntax) = language.and_then(|lang| Syntax::new(ropeslice, lang, loader).ok()) else {
         return styled_multiline_text(text, code_style);
     };
 
@@ -94,7 +106,7 @@ pub fn highlighted_code_block<'a>(
         // If the highlighter malfunctions, bail on syntax highlighting and log an error.
         debug_assert!(pos > start);
         if pos < start {
-            log::error!("Failed to highlight '{language}': {text:?}");
+            log::error!("Failed to highlight: {text:?}");
             return styled_multiline_text(text, code_style);
         }
 

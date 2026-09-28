@@ -55,6 +55,7 @@ use helix_core::{
 use helix_dap::{self as dap, registry::DebugAdapterId};
 use helix_lsp::lsp;
 use helix_stdx::path::canonicalize;
+use parking_lot::RwLock;
 
 use serde::{ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
 
@@ -427,6 +428,14 @@ pub struct Config {
     /// Whether to read settings from [EditorConfig](https://editorconfig.org) files. Defaults to
     /// `true`.
     pub editor_config: bool,
+    /// Org-Roam knowledge graph settings.
+    pub roam: RoamConfig,
+    /// The Magit client's settings.
+    pub magit: MagitConfig,
+    /// The integrated terminal's settings (`:terminal`, `<space>t`).
+    pub integrated_terminal: IntegratedTerminalConfig,
+    /// Where the fork's views go: beside the documents, or over them.
+    pub dock: DockConfig,
     /// Whether to render rainbow colors for matching brackets. Defaults to `false`.
     pub rainbow_brackets: bool,
     /// Whether to enable Kitty Keyboard Protocol
@@ -510,6 +519,533 @@ impl Config {
                 .statusline
                 .right
                 .contains(&StatusLineElement::CodeActionHint)
+    }
+}
+
+/// A source block being edited in a buffer of its own.
+///
+/// The buffer is a real file in a temporary directory, so the language's
+/// tooling sees an ordinary file; writing it puts the code back into the
+/// block. The block is found again by its body rather than by its line,
+/// because the Org buffer may have been edited above it in the meantime.
+#[derive(Debug, Clone)]
+pub struct OrgSrcEdit {
+    /// The Org buffer the block lives in.
+    pub org_doc: DocumentId,
+    /// Where the block began when last seen, to choose between identical
+    /// blocks.
+    pub begin_line: usize,
+    /// The block's body as last written back.
+    pub body: String,
+}
+
+/// What the panel shows in its unlinked-references section.
+#[derive(Debug, Clone)]
+pub struct RoamUnlinked {
+    /// The node the references are to.
+    pub node: helix_roam::Uuid,
+    /// The matching line, and `path:line` of where it is.
+    pub entries: Vec<(String, String)>,
+}
+
+/// A commit waiting on the message being written in a buffer.
+///
+/// Plain data rather than a git type, so the editor's state does not depend on
+/// the Git client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingCommit {
+    /// The buffer holding the message.
+    pub message_path: PathBuf,
+    /// Arguments for `git`, without the message itself.
+    pub args: Vec<String>,
+    pub working_directory: PathBuf,
+    /// A revision to squash the new commit into at once: the instant squash.
+    pub fold_into: Option<String>,
+    /// Whether the message passed the style checks, or the user said to
+    /// commit it anyway.
+    pub checked: bool,
+    /// Git commands run before the commit, once the message is written: a
+    /// cherry-pick or revert taken uncommitted.
+    pub prelude: Vec<Vec<String>>,
+}
+
+/// An interactive rebase whose todo-list the user is editing.
+#[derive(Debug, Clone)]
+pub struct PendingRebase {
+    /// The buffer holding the list.
+    pub todo_path: PathBuf,
+    /// The `rebase --interactive …` arguments, run again once it is written.
+    pub args: Vec<String>,
+    pub working_directory: PathBuf,
+    /// HEAD when the list was made; the list is refused if it moved.
+    pub head: Option<String>,
+}
+
+/// A capture being written in a buffer of its own: writing the buffer files
+/// it where the template says.
+#[derive(Debug, Clone)]
+pub struct PendingCapture {
+    /// The capture buffer's file.
+    pub buffer: PathBuf,
+    pub template: OrgCaptureTemplate,
+    /// The day it was captured, which its date tree files it under.
+    pub date: helix_roam::Date,
+    /// When the buffer opened, in minutes since the epoch: where a
+    /// `clock-in` capture's clock starts.
+    pub opened: i64,
+}
+
+/// The integrated terminal's configuration, `[editor.integrated-terminal]`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct IntegratedTerminalConfig {
+    /// Lines kept above the screen to scroll back through. Each terminal
+    /// holds this many lines in memory once they have been written.
+    pub scrollback: usize,
+    /// Let programs in the terminal switch on the Kitty keyboard protocol,
+    /// which tells apart keys the usual encoding confuses, such as `Ctrl-i`
+    /// and `Tab`. Programs that do not ask for it are unaffected.
+    pub kitty_keyboard: bool,
+    /// The program to run and its arguments, such as `["fish", "--login"]`.
+    /// Empty, the default, runs `$SHELL`.
+    pub shell: Vec<String>,
+    /// What `TERM` tells programs the terminal is. The emulator implements
+    /// `xterm-256color`; claiming another terminal makes programs send
+    /// sequences it may not understand.
+    pub term: String,
+    /// Environment variables for the shell, set after `TERM`. An empty value
+    /// removes the variable.
+    pub environment: BTreeMap<String, String>,
+    /// The cursor's shape until a program asks for another.
+    pub cursor_shape: TerminalCursorShape,
+    /// The characters that end a word for copy mode's `w`, `b` and `e`.
+    pub word_separators: String,
+    /// Let programs copy into the clipboard registers (OSC 52). Programs can
+    /// never read them.
+    pub clipboard_copy: bool,
+    /// The key that starts the terminal's own commands (`Ctrl-g Ctrl-n`
+    /// back to the editor, `Ctrl-g [` copy mode, …) instead of reaching the
+    /// program. `Ctrl-g` by default: a letter, so it is typed the same way
+    /// on AZERTY, QWERTY and Ergo-L, and one shells hardly use. Pressed
+    /// twice, the program gets it.
+    #[serde(serialize_with = "serialize_key")]
+    pub prefix: crate::input::KeyEvent,
+}
+
+fn serialize_key<S: serde::Serializer>(
+    key: &crate::input::KeyEvent,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&key.to_string())
+}
+
+/// `[editor.dock]`: which of the fork's views are docked, and where.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct DockConfig {
+    /// The integrated terminal: `bottom`, `right`, or `none` to cover the
+    /// documents.
+    pub terminal: crate::dock::Placement,
+    /// Magit's views: the status, the log, the blame.
+    pub magit: crate::dock::Placement,
+    /// The Org-Roam backlinks panel. When Magit has the same side, the panel
+    /// covers the documents' edge instead.
+    pub backlinks: crate::dock::Placement,
+    /// The right pane's width, in percent of the screen's.
+    pub right_size: u16,
+    /// The bottom pane's height, in percent of the documents' area.
+    pub bottom_size: u16,
+}
+
+impl Default for DockConfig {
+    fn default() -> Self {
+        Self {
+            terminal: crate::dock::Placement::Bottom,
+            magit: crate::dock::Placement::Right,
+            backlinks: crate::dock::Placement::Right,
+            right_size: 40,
+            bottom_size: 40,
+        }
+    }
+}
+
+/// The integrated terminal's cursor shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TerminalCursorShape {
+    #[default]
+    Block,
+    Underline,
+    Bar,
+}
+
+impl Default for IntegratedTerminalConfig {
+    fn default() -> Self {
+        let pty = helix_pty::Options::default();
+        Self {
+            scrollback: pty.scrollback,
+            kitty_keyboard: pty.kitty_keyboard,
+            shell: pty.shell,
+            term: pty.term,
+            environment: BTreeMap::new(),
+            cursor_shape: TerminalCursorShape::Block,
+            word_separators: pty.word_separators,
+            clipboard_copy: pty.clipboard_copy,
+            prefix: crate::input::KeyEvent {
+                code: crate::keyboard::KeyCode::Char('g'),
+                modifiers: crate::keyboard::KeyModifiers::CONTROL,
+            },
+        }
+    }
+}
+
+impl IntegratedTerminalConfig {
+    /// The prefix as the terminal's hints spell it: `Ctrl-g`.
+    pub fn prefix_label(&self) -> String {
+        key_label(self.prefix)
+    }
+}
+
+/// A key spelled for people rather than for the config file: `Ctrl-g`
+/// rather than `C-g`.
+pub fn key_label(key: crate::input::KeyEvent) -> String {
+    use crate::keyboard::KeyModifiers;
+    let mut label = String::new();
+    for (modifier, name) in [
+        (KeyModifiers::CONTROL, "Ctrl-"),
+        (KeyModifiers::ALT, "Alt-"),
+        (KeyModifiers::SHIFT, "Shift-"),
+    ] {
+        if key.modifiers.contains(modifier) {
+            label.push_str(name);
+        }
+    }
+    let bare = crate::input::KeyEvent {
+        code: key.code,
+        modifiers: KeyModifiers::NONE,
+    };
+    label.push_str(&bare.to_string());
+    label
+}
+
+impl IntegratedTerminalConfig {
+    /// The options a new terminal is started with.
+    pub fn options(&self) -> helix_pty::Options {
+        helix_pty::Options {
+            scrollback: self.scrollback,
+            kitty_keyboard: self.kitty_keyboard,
+            shell: self.shell.clone(),
+            term: self.term.clone(),
+            environment: self
+                .environment
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone()))
+                .collect(),
+            cursor_shape: match self.cursor_shape {
+                TerminalCursorShape::Block => helix_pty::CursorShape::Block,
+                TerminalCursorShape::Underline => helix_pty::CursorShape::Underline,
+                TerminalCursorShape::Bar => helix_pty::CursorShape::Beam,
+            },
+            word_separators: self.word_separators.clone(),
+            clipboard_copy: self.clipboard_copy,
+        }
+    }
+}
+
+/// The Magit client's configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct MagitConfig {
+    /// Save uncommitted work to hidden work-in-progress refs
+    /// (`refs/wip/…`) after writing a file in a repository and before a
+    /// command that can lose it. Off by default: it writes to the
+    /// repository on every save, which nobody should find out about by
+    /// surprise.
+    pub wip: bool,
+    /// Where the repository list looks for repositories. Empty means the
+    /// current working directory.
+    pub repository_directories: Vec<PathBuf>,
+    /// How many directory levels below each of those the list searches.
+    pub repository_depth: usize,
+}
+
+impl Default for MagitConfig {
+    fn default() -> Self {
+        Self {
+            wip: false,
+            repository_directories: Vec::new(),
+            repository_depth: 2,
+        }
+    }
+}
+
+/// Org-Roam knowledge graph configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct RoamConfig {
+    /// Whether to index Org files into the Org-Roam graph. Defaults to `true`.
+    pub enable: bool,
+    /// Directory to index. Defaults to the workspace root when unset.
+    pub directory: Option<PathBuf>,
+    /// Where daily notes live, relative to `directory` unless absolute.
+    ///
+    /// Defaults to `daily`, which is what Org-Roam uses.
+    pub dailies_directory: PathBuf,
+    /// Files the agenda reads, relative to `directory` unless absolute.
+    ///
+    /// Empty means every indexed file, which is the useful default for a
+    /// notes directory where any file may carry a date.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub agenda_files: Vec<PathBuf>,
+    /// Shapes a captured node can take.
+    ///
+    /// Empty means the one built-in template, so the feature works before it
+    /// is configured.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub templates: Vec<RoamTemplate>,
+    /// `org-capture`'s templates: what a capture writes, and where.
+    ///
+    /// Empty means one built-in template, a task filed into `inbox.org`.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub capture: Vec<OrgCaptureTemplate>,
+    /// Agenda views of one's own, Org's `org-agenda-custom-commands`:
+    /// blocks of the built-in views, each narrowed by a match.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub agenda_views: Vec<AgendaView>,
+    /// Whether an entry with an open child can be marked done. Org's
+    /// `org-enforce-todo-dependencies`, off by default as it is there.
+    /// `:ORDERED:` and `:BLOCKER:` apply either way.
+    pub todo_dependencies: bool,
+    /// Draw Org entities as their characters (`\alpha` as `α`) and links
+    /// as their descriptions, except on the lines being edited. Org's
+    /// `org-pretty-entities` and `org-link-descriptive` together.
+    pub pretty: bool,
+}
+
+/// A template for a new Org-Roam node.
+///
+/// `file` and `content` are expanded with `${title}`, `${slug}`, `${id}` and
+/// `${date}`, and `%?` in `content` marks where the cursor lands.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct RoamTemplate {
+    /// Key that selects this template.
+    pub key: String,
+    /// What the picker shows.
+    pub description: String,
+    /// The file to create, relative to the notes directory.
+    pub file: String,
+    pub content: String,
+}
+
+/// A custom agenda view, `[[editor.roam.agenda-views]]`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct AgendaView {
+    /// What selects it in the agenda dispatcher.
+    pub key: String,
+    pub name: String,
+    /// What it shows, one block after the other.
+    pub blocks: Vec<AgendaBlock>,
+}
+
+/// One block of a custom agenda view.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct AgendaBlock {
+    #[serde(rename = "type")]
+    pub kind: AgendaBlockKind,
+    /// For `agenda`, a match the entries must satisfy; for `todo`, the TODO
+    /// keywords (`NEXT|WAITING`); for `tags` and `tags-todo`, the match;
+    /// for `search`, the words.
+    #[serde(default, rename = "match")]
+    pub query: String,
+    /// For `agenda`: how many days from today.
+    #[serde(default = "default_agenda_days")]
+    pub days: i64,
+    /// A heading for the block instead of the one made from it.
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+fn default_agenda_days() -> i64 {
+    7
+}
+
+/// The built-in views a custom one is made of, named as in Org.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgendaBlockKind {
+    /// What is due, by day.
+    Agenda,
+    /// Unfinished tasks.
+    Todo,
+    /// Entries matching tags, properties and states.
+    Tags,
+    /// The same, unfinished tasks only.
+    TagsTodo,
+    /// Entries whose text has the words.
+    Search,
+}
+
+/// An `org-capture` template, `[[editor.roam.capture]]`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct OrgCaptureTemplate {
+    /// Key that selects this template, in the picker and as
+    /// `:org-capture <key>`.
+    pub key: String,
+    /// What the picker shows.
+    pub description: String,
+    /// What is written: an `entry` (a headline), an `item`, a `checkitem`
+    /// or `plain` text.
+    #[serde(default, rename = "type")]
+    pub kind: OrgCaptureKind,
+    /// The file it goes into, relative to the notes directory unless
+    /// absolute; created if missing.
+    #[serde(default = "default_capture_file")]
+    pub file: String,
+    /// Start at the entry with this `:ID:`, in whichever file has it,
+    /// instead of the top of `file`.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Start at the entry holding the first line of `file` that matches.
+    #[serde(default)]
+    pub regexp: Option<String>,
+    /// Start at the entry being clocked, wherever it is.
+    #[serde(default)]
+    pub clock: bool,
+    /// Headlines from the top of the file (or the entry above) down to
+    /// where it goes, created if missing. Empty is that place itself.
+    #[serde(default)]
+    pub outline: Vec<String>,
+    /// File it under a date tree for today, beneath `outline`.
+    #[serde(default)]
+    pub datetree: bool,
+    /// The date tree's levels: `day` (`2026` / `2026-09 September` /
+    /// `2026-09-28 Monday`), `week` (`2026` / `2026-W40` / the day) or
+    /// `month`.
+    #[serde(default)]
+    pub tree_type: OrgCaptureTree,
+    /// Write it in a buffer of its own first: `:w` files it, `:q!` drops
+    /// it, `:org-capture-refile` files it elsewhere.
+    #[serde(default)]
+    pub buffer: bool,
+    /// Clock the capture on the new entry, stopping the running clock.
+    /// With a capture buffer, the clock runs from when it opens until it is
+    /// filed; without one, it keeps running on the new entry.
+    #[serde(default)]
+    pub clock_in: bool,
+    /// With `clock-in` and a capture buffer, keep the clock running once
+    /// it is filed.
+    #[serde(default)]
+    pub clock_keep: bool,
+    /// With `clock-in` and a capture buffer, clock back into the entry
+    /// whose clock the capture stopped once it is filed.
+    #[serde(default)]
+    pub clock_resume: bool,
+    /// The text, with Org's `%`-escapes: `%?` `%t` `%T` `%u` `%U` `%<…>`
+    /// `%a` `%i` `%f` `%F` `%c` `%x` `%k` `%K` `%n`, the questions
+    /// `%^{Prompt|default|choice}` `%^t` `%^g` `%^{Prop}p`, `%\1` and `%%`.
+    pub template: String,
+    /// First among what is already there, rather than last.
+    #[serde(default)]
+    pub prepend: bool,
+    /// Write it and stay where you are, rather than going to it.
+    #[serde(default)]
+    pub immediate: bool,
+}
+
+fn default_capture_file() -> String {
+    "inbox.org".to_string()
+}
+
+/// The levels of an `org-capture` date tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OrgCaptureTree {
+    #[default]
+    Day,
+    Week,
+    Month,
+}
+
+/// What an `org-capture` template writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OrgCaptureKind {
+    #[default]
+    Entry,
+    Item,
+    Checkitem,
+    Plain,
+}
+
+impl Default for RoamConfig {
+    fn default() -> Self {
+        Self {
+            enable: true,
+            directory: None,
+            dailies_directory: PathBuf::from("daily"),
+            agenda_files: Vec::new(),
+            templates: Vec::new(),
+            capture: Vec::new(),
+            agenda_views: Vec::new(),
+            todo_dependencies: false,
+            pretty: true,
+        }
+    }
+}
+
+impl RoamConfig {
+    /// The directory to index, falling back to the workspace root.
+    ///
+    /// A leading `~` is expanded, so `directory = "~/org"` works as written.
+    pub fn directory(&self) -> PathBuf {
+        match &self.directory {
+            Some(directory) => helix_stdx::path::expand_tilde(directory.as_path()).into_owned(),
+            None => helix_loader::find_workspace().0,
+        }
+    }
+
+    /// The files the agenda reads, resolved against the notes directory.
+    ///
+    /// An empty result means "no restriction" rather than "no files", which
+    /// the caller has to distinguish — a configuration naming nothing is not
+    /// the same as one naming files that happen to be missing.
+    pub fn agenda_files(&self) -> Vec<PathBuf> {
+        let directory = self.directory();
+        self.agenda_files
+            .iter()
+            .map(|path| {
+                let expanded = helix_stdx::path::expand_tilde(path.as_path()).into_owned();
+                if expanded.is_absolute() {
+                    expanded
+                } else {
+                    directory.join(expanded)
+                }
+            })
+            .collect()
+    }
+
+    /// Where daily notes live.
+    ///
+    /// Relative paths are taken from the notes directory, so the default
+    /// `daily` means a subdirectory of it rather than of the working
+    /// directory.
+    pub fn dailies_directory(&self) -> PathBuf {
+        let configured =
+            helix_stdx::path::expand_tilde(self.dailies_directory.as_path()).into_owned();
+
+        if configured.is_absolute() {
+            configured
+        } else {
+            self.directory().join(configured)
+        }
     }
 }
 
@@ -1236,6 +1772,10 @@ impl Default for Config {
             end_of_line_diagnostics: DiagnosticFilter::Enable(Severity::Hint),
             clipboard_provider: ClipboardProvider::default(),
             editor_config: true,
+            roam: RoamConfig::default(),
+            magit: MagitConfig::default(),
+            integrated_terminal: IntegratedTerminalConfig::default(),
+            dock: DockConfig::default(),
             rainbow_brackets: false,
             kitty_keyboard_protocol: Default::default(),
             buffer_picker: BufferPickerConfig::default(),
@@ -1282,6 +1822,10 @@ pub struct Editor {
     pub saves: HashMap<DocumentId, UnboundedSender<Once<DocumentSavedEventFuture>>>,
     pub save_queue: SelectAll<Flatten<UnboundedReceiverStream<Once<DocumentSavedEventFuture>>>>,
     pub write_count: usize,
+    /// Saves [`Editor::flush_writes`] waited for itself, as `:wq` does:
+    /// they never reach the application's save handling, which takes them
+    /// from here instead once the command is done.
+    pub flushed_saves: Vec<crate::document::DocumentSavedEvent>,
 
     pub count: Option<std::num::NonZeroUsize>,
     pub selected_register: Option<char>,
@@ -1343,6 +1887,71 @@ pub struct Editor {
     pub mouse_down_range: Option<Range>,
     pub cursor_cache: CursorCache,
     pub workspace_trust: WorkspaceTrust,
+
+    /// A file the agenda is temporarily restricted to.
+    ///
+    /// Separate from the configured `agenda_files`: that says which files are
+    /// eligible at all, this narrows the view for as long as the session
+    /// wants it, the way Org's restriction lock does.
+    pub agenda_restriction: Option<PathBuf>,
+
+    /// The node the Roam panel is pinned to, beside the one it follows.
+    ///
+    /// Comparing two nodes needs both at once, and the panel shows them in
+    /// one column rather than two: a second panel would have to know whether
+    /// the first one is open to place itself, and components cannot see each
+    /// other.
+    pub roam_pinned: Option<helix_roam::Uuid>,
+
+    /// Unlinked references the panel is showing, and whose node they are for.
+    ///
+    /// Cached rather than computed per frame: finding them reads every file
+    /// in the notes directory, which is not something to do sixty times a
+    /// second. A command fills this; the panel only displays it.
+    pub roam_unlinked: Option<RoamUnlinked>,
+    /// Source blocks open for editing, by the path of their editing buffer.
+    pub org_src_edits: HashMap<PathBuf, OrgSrcEdit>,
+    /// The file whose clock was last started from this editor.
+    ///
+    /// A hint, not the record: the running clock is whatever `CLOCK:` line
+    /// has no end, and a file edited elsewhere may disagree with this.
+    pub org_clock: Option<PathBuf>,
+
+    /// The last subtree cut or copied, waiting to be pasted.
+    ///
+    /// Kept apart from the registers because a subtree is not lines: pasting
+    /// one has to know the level it was taken from so it can be shifted to
+    /// the level it lands at, and a register has nowhere to put that.
+    pub org_clip: Option<helix_roam::Clip>,
+
+    /// A commit whose message the user is composing in a buffer.
+    ///
+    /// Set when the message buffer is opened and taken when it is closed, so
+    /// that closing it is what decides whether the commit happens.
+    pub pending_commit: Option<PendingCommit>,
+
+    /// An interactive rebase waiting for its todo-list to be written.
+    pub pending_rebase: Option<PendingRebase>,
+
+    /// Captures shown in a buffer of their own, filed when it is written.
+    pub pending_captures: Vec<PendingCapture>,
+
+    /// The integrated terminals, kept here so that hiding the view does not
+    /// kill the shells running in them.
+    ///
+    /// Empty until `:terminal` starts one; a terminal leaves the list when
+    /// its shell exits or it is closed.
+    pub terminals: crate::terminals::Terminals,
+
+    /// The panes docked beside the documents this frame, and which of them
+    /// has the keyboard.
+    pub dock: crate::dock::Dock,
+
+    /// The Org-Roam knowledge graph, shared with the background indexer.
+    ///
+    /// Indexing runs on a blocking thread and takes the write lock only to
+    /// install its result, so the editor never blocks on a scan.
+    pub roam: Arc<RwLock<helix_roam::RoamGraph>>,
 }
 
 pub type Motion = Box<dyn Fn(&mut Editor)>;
@@ -1433,6 +2042,7 @@ impl Editor {
             saves: HashMap::new(),
             save_queue: SelectAll::new(),
             write_count: 0,
+            flushed_saves: Vec::new(),
             count: None,
             selected_register: None,
             macro_recording: None,
@@ -1468,6 +2078,18 @@ impl Editor {
             cursor_cache: CursorCache::default(),
             dir_stack: VecDeque::with_capacity(DIR_STACK_CAP),
             workspace_trust,
+            roam: Arc::default(),
+            terminals: Default::default(),
+            dock: Default::default(),
+            roam_pinned: None,
+            roam_unlinked: None,
+            org_src_edits: HashMap::new(),
+            org_clock: None,
+            org_clip: None,
+            pending_commit: None,
+            pending_rebase: None,
+            pending_captures: Vec::new(),
+            agenda_restriction: None,
         }
     }
 
@@ -2074,6 +2696,18 @@ impl Editor {
         )
     }
 
+    /// A new scratch buffer holding `text`. It starts unmodified, so it
+    /// closes without asking to be saved.
+    pub fn new_scratch_with_text(&mut self, action: Action, text: &str) -> DocumentId {
+        let doc = Document::from(
+            helix_core::Rope::from(text),
+            None,
+            self.config.clone(),
+            self.syn_loader.clone(),
+        );
+        self.new_file_from_document(action, doc)
+    }
+
     pub fn new_file_from_stdin(&mut self, action: Action) -> Result<DocumentId, Error> {
         let (stdin, encoding, has_bom) = crate::document::read_to_string(&mut stdin(), None)?;
         let doc = Document::from(
@@ -2523,6 +3157,7 @@ impl Editor {
 
                 let doc = doc_mut!(self, &save_event.doc_id);
                 doc.set_last_saved_revision(save_event.revision, save_event.save_time);
+                self.flushed_saves.push(save_event);
             }
         }
 
@@ -2696,5 +3331,93 @@ impl CursorCache {
 
     pub fn reset(&self) {
         self.0.set(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agenda_files_resolve_against_the_notes_directory() {
+        let config = RoamConfig {
+            directory: Some(PathBuf::from("/notes")),
+            agenda_files: vec![PathBuf::from("work.org"), PathBuf::from("/elsewhere/x.org")],
+            ..RoamConfig::default()
+        };
+
+        assert_eq!(
+            config.agenda_files(),
+            [
+                PathBuf::from("/notes/work.org"),
+                PathBuf::from("/elsewhere/x.org")
+            ]
+        );
+    }
+
+    #[test]
+    fn naming_no_agenda_files_is_not_the_same_as_naming_none_that_exist() {
+        // Empty means "no restriction"; the caller distinguishes the two.
+        let config = RoamConfig::default();
+        assert!(config.agenda_files().is_empty());
+    }
+
+    #[test]
+    fn dailies_live_under_the_notes_directory_unless_absolute() {
+        let config = RoamConfig {
+            directory: Some(PathBuf::from("/notes")),
+            ..RoamConfig::default()
+        };
+        // The default is relative, so it is a subdirectory of the notes.
+        assert_eq!(config.dailies_directory(), PathBuf::from("/notes/daily"));
+
+        let absolute = RoamConfig {
+            directory: Some(PathBuf::from("/notes")),
+            dailies_directory: PathBuf::from("/elsewhere/journal"),
+            ..RoamConfig::default()
+        };
+        assert_eq!(
+            absolute.dailies_directory(),
+            PathBuf::from("/elsewhere/journal")
+        );
+    }
+
+    #[test]
+    fn roam_directory_expands_a_leading_tilde() {
+        let config = RoamConfig {
+            directory: Some(PathBuf::from("~/org")),
+            ..RoamConfig::default()
+        };
+
+        let directory = config.directory();
+        assert!(
+            !directory.starts_with("~"),
+            "a literal ~ would not exist on disk: {}",
+            directory.display()
+        );
+        assert!(directory.ends_with("org"));
+    }
+
+    #[test]
+    fn roam_directory_falls_back_to_the_workspace_root() {
+        let config = RoamConfig::default();
+        assert!(config.enable);
+        assert_eq!(config.directory(), helix_loader::find_workspace().0);
+    }
+
+    #[test]
+    fn roam_config_round_trips_through_toml() {
+        let toml = r#"
+            enable = false
+            directory = "/notes"
+        "#;
+        let config: RoamConfig = toml::from_str(toml).unwrap();
+
+        assert!(!config.enable);
+        assert_eq!(config.directory(), PathBuf::from("/notes"));
+
+        // An unset section keeps the defaults rather than disabling indexing.
+        let config: RoamConfig = toml::from_str("").unwrap();
+        assert_eq!(config, RoamConfig::default());
     }
 }

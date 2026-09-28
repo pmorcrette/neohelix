@@ -266,6 +266,283 @@ Example
 start-position = "previous"
 ```
 
+### `[editor.roam]` Section
+
+Set options for the Org-Roam knowledge graph. Helix indexes the `.org` files in
+the configured directory at startup, and re-indexes a file when it is saved.
+
+| Key | Description | Default |
+|--|--|---------|
+|`enable` | Whether to index Org files into the graph | `true` |
+|`directory` | Directory to index | the workspace root |
+|`pretty` | Draw Org entities as their characters (`\alpha` as `α`) and links as their descriptions, except on the lines being edited; `:org-toggle-pretty` switches it per buffer | `true` |
+
+Example
+
+```toml
+[editor.roam]
+directory = "~/org"
+```
+
+The graph backs `:roam-node-find` (`<space>nf`) and the backlinks panel opened
+by `:roam-backlinks-toggle` (`<space>nb`). `:roam-reindex` rebuilds it from
+scratch, which is needed after Org files change outside the editor.
+`<space>ni` inserts a link to a node (`:roam-node-insert`) and `<space>nC`
+creates a node from a template (`:roam-capture`).
+
+#### Agenda
+
+The agenda reads every headline of the agenda's files (`agenda-files`, all of
+the notes by default), whether or not it has an `:ID:`. `:org-agenda-dispatch`
+(`<space>na`, or `:agenda <key>`) offers its views, as Org's `C-c a` does:
+
+| Key | View |
+|--|--|
+| `a`, `d` | What is due this week, or today: scheduled entries, deadlines (from 14 days ahead), and appointments, the active timestamps in an entry's text, timed ones first |
+| `t` | Every unfinished task |
+| `m` | The entries a match finds (`:org-agenda-match`) |
+| `M` | The same, unfinished tasks only (`:org-agenda-match-todo`) |
+| `s` | The entries whose text has the words (`:org-agenda-search`) |
+
+In every view, `Alt-t` and `Alt-T` step the selected entry's state, `Alt-s`
+and `Alt-d` schedule it and set its deadline, `Alt-+` and `Alt--` change its
+priority, and `Alt-i` clocks in.
+
+A match is Org's: `work+urgent-boss` wants the tags `work` and `urgent`
+(inherited ones count) and not `boss`, `|` separates alternatives, and
+`{^proj}` is a tag regexp. Properties are compared with `=`, `<>`, `<`, `<=`,
+`>`, `>=`: `Effort>0:30`, `PRIORITY="A"`, `ITEM={report}`, `DEADLINE<=<+3d>`,
+`LEVEL=1`; `TODO`, `CATEGORY`, `TAGS`, `SCHEDULED` and `CLOSED` are there too.
+After a `/`, the TODO keywords: `/NEXT|WAITING`, `/-DONE`, and `/!` for
+unfinished ones only. A search wants every word (`rust async`), none of the
+ones after a `-`, a `"phrase"` as written, and a `{regexp}`; case does not
+matter.
+
+Views of one's own, Org's custom agenda commands, show blocks of these one
+after the other:
+
+```toml
+[[editor.roam.agenda-views]]
+key = "w"
+name = "Work"
+blocks = [
+  { type = "agenda", days = 1, match = "work" },
+  { type = "todo", match = "NEXT|WAITING" },
+  { type = "tags-todo", match = "work+urgent" },
+  { type = "search", match = "\"code review\"", title = "Reviews" },
+]
+```
+
+A block's `type` is `agenda` (with `days`, 7 by default, and an optional match
+the entries must satisfy), `todo` (the unfinished tasks, of the keywords given
+if any), `tags` or `tags-todo` (a match) or `search` (words). `title` replaces
+the heading made from the block. A custom view's key takes over a built-in
+one's.
+
+#### Capture
+
+`:org-capture` (`<space>nc`) files a note, a task or a list item into its place
+without going there first: a picker offers the templates (`:org-capture t`
+names one by its key), their `%^{…}` questions are asked, and the text goes in.
+The file then opens on it, unless the template is `immediate`. Without any
+template configured, `t` files a task into `inbox.org`.
+
+A template with `buffer = true` shows the capture in a buffer of its own
+first, as Org does: `:w` files it where the template says and closes the
+buffer, `:q!` drops it, and `:org-capture-refile` files it under a node picked
+from the graph instead.
+
+```toml
+[[editor.roam.capture]]
+key = "t"
+description = "Task"
+file = "inbox.org"
+outline = ["Tasks"]
+template = "* TODO %?\n  %U\n  %a"
+
+[[editor.roam.capture]]
+key = "j"
+description = "Journal"
+file = "journal.org"
+datetree = true
+template = "* %U %^{Title}\n%?"
+
+[[editor.roam.capture]]
+key = "s"
+description = "Shopping"
+type = "checkitem"
+file = "lists.org"
+outline = ["Shopping"]
+template = "%^{Item}"
+immediate = true
+
+[[editor.roam.capture]]
+key = "m"
+description = "Meeting"
+file = "work.org"
+datetree = true
+tree-type = "week"
+clock-in = true
+template = "* Meeting with %^{Who} %^g\n%?"
+
+[[editor.roam.capture]]
+key = "n"
+description = "Note on the clocked task"
+clock = true
+type = "item"
+template = "%^{Note} %U"
+immediate = true
+```
+
+| Key | Description | Default |
+|--|--|---------|
+|`key`, `description` | What selects the template, and what the picker shows | |
+|`type` | `entry` (a headline, made a child of the place), `item`, `checkitem` or `plain` | `"entry"` |
+|`file` | Where it goes, relative to the notes directory unless absolute; created if missing | `"inbox.org"` |
+|`id` | Under the headline with this `:ID:`, wherever it is, instead of `file` | |
+|`clock` | Under the entry being clocked, instead of `file` | `false` |
+|`regexp` | Under the first headline of `file` matching this regular expression | |
+|`outline` | Headlines from the top of the file (or the place above) down to the place, created if missing | `[]` (the file) |
+|`datetree` | File it under `2026` / `2026-09 September` / `2026-09-28 Monday` beneath the place | `false` |
+|`tree-type` | The date tree's shape: `day` as above, `week` (`2026` / `2026-W40` / `2026-09-28 Monday`) or `month` (`2026` / `2026-09 September`) | `"day"` |
+|`template` | The text, with Org's escapes (below) | |
+|`prepend` | First among what is already there rather than last | `false` |
+|`immediate` | Write it and stay where you are | `false` |
+|`buffer` | Show it in a capture buffer first, filed on `:w` | `false` |
+|`clock-in` | Clock the capture on the new entry, stopping the running clock: in a capture buffer from when it opens until `:w` files it; without one the clock keeps running | `false` |
+|`clock-keep` | With `clock-in` and `buffer`, keep the clock running once it is filed | `false` |
+|`clock-resume` | With `clock-in` and `buffer`, clock back into the entry whose clock it stopped once it is filed; for interruptions | `false` |
+
+The template's escapes:
+
+| Escape | Becomes |
+|--|--|
+|`%?` | Where the cursor goes |
+|`%t` `%T` `%u` `%U` | Today's timestamp: active or inactive, with the time for the capitals |
+|`%<%Y-%m-%d %H:%M>` | Now, formatted: `%Y` `%y` `%m` `%d` `%e` `%H` `%M` `%a` `%A` `%b` `%B` `%j` |
+|`%a` | A link to where the capture started |
+|`%i` | The text selected there |
+|`%f` `%F` | That file's name and path |
+|`%c` `%x` | The last yank and the clipboard |
+|`%k` `%K` | The clocked entry's title and a link to it |
+|`%n` | Your user name (`$USER`) |
+|`%^{Prompt}` `%^{Prompt\|default\|other}` | A question, with a default and other answers offered |
+|`%^t` `%^T` `%^u` `%^U` `%^{Due}t` | A date asked for (`today`, `tomorrow`, `+3`, `2026-10-01`, then `14:00` for a time), active or inactive, with the time for the capitals, written as that timestamp |
+|`%^g` `%^G` | Tags asked for, completed from the graph's, written `:a:b:` |
+|`%^{Effort}p` | A property asked for, written in the entry's drawer |
+|`%\1` | The first text answer again |
+|`%%` | A `%` |
+
+### `[editor.integrated-terminal]` Section
+
+Set options for the integrated terminal (`:terminal`, `<space>t`).
+
+| Key | Description | Default |
+|--|--|---------|
+|`scrollback` | Lines kept above the screen to scroll back through, per terminal | `10000` |
+|`kitty-keyboard` | Let programs switch on the Kitty keyboard protocol, which tells apart keys such as `Ctrl-i` and `Tab` | `true` |
+|`shell` | The program to run and its arguments, such as `["fish", "--login"]`; empty runs `$SHELL` | `[]` |
+|`term` | What `TERM` tells programs the terminal is. The emulator implements `xterm-256color`; claiming another terminal can make programs send sequences it does not understand | `"xterm-256color"` |
+|`environment` | Environment variables for the shell, such as `{ EDITOR = "hx" }`, set after `TERM`; an empty value removes the variable | `{}` |
+|`cursor-shape` | The cursor's shape until a program asks for another: `block`, `underline` or `bar`. Copy mode's cursor is always a block | `"block"` |
+|`word-separators` | The characters that end a word for copy mode's `w`, `b` and `e` | ``",│`\|:\"' ()[]{}<>\t"`` |
+|`clipboard-copy` | Let programs copy into the clipboard registers (OSC 52). Programs can never read them | `true` |
+|`prefix` | The key that starts the terminal's own commands below instead of reaching the program; pressed twice, the program gets it. A letter by default, typed the same way on AZERTY, QWERTY and Ergo-L. `"C-\\"` gives Neovim's `Ctrl-\` | `"C-g"` |
+
+Settings apply to terminals started after they change; a running terminal
+keeps the ones it was started with. The `prefix` applies at once.
+
+In the terminal, `Ctrl-g Ctrl-n` returns to the editor (docked, the terminal
+stays in view and `Ctrl-g q` hides it; see `[editor.dock]`), and `Shift-PageUp` and
+`Shift-PageDown` scroll back through the output; typing returns to the bottom.
+`Ctrl-g [` enters copy mode, where the keys move a cursor over the text rather
+than reaching the program: `h` `j` `k` `l`, `w` `b` `e` (and `W` `B` `E` for
+space-separated words), `0` `^` `$`, `H` `M` `L`, `g` and `G` for the top of the
+scrollback and the bottom, `Ctrl-u` `Ctrl-d` and the page keys, with a count
+before a motion. `v`, `V` (or `x`) and `Ctrl-v` select characters, lines or a
+block; `y` copies the selection into the default yank register and leaves copy
+mode. `/` and `?` search forwards and backwards with a regular expression — `^`
+and `$` are not anchored to lines — and `n` and `N` repeat the search. `q` or
+`Esc` leave copy mode.
+
+`Ctrl-g p` pastes the default yank register into the terminal and `Ctrl-g P`
+the clipboard; a paste from the terminal Helix runs in goes through as well.
+Pastes are bracketed when the program asks for it, so a shell does not run a
+pasted line by itself. A program that asks for the mouse (`htop`, `tmux`, an
+editor) gets clicks, drags and the wheel; hold `Shift` to keep them from it.
+Otherwise the wheel scrolls back through the output, or, in a full-screen
+program like `less`, sends the arrow keys.
+
+Several terminals can run at once; the title bar shows them as tabs, each by
+the name it was given or the title its program set, with `!` on one whose bell
+rang while another was shown. With tmux's keys for its windows, `Ctrl-g c`
+starts another terminal in the current document's directory, `Ctrl-g w`
+lists them (also `<space>T` and `:terminal-list`: what runs in each and in
+which directory), `Ctrl-g 1` to `Ctrl-g 9` show one by its number,
+`Ctrl-g (` and `Ctrl-g )` the previous and the next, `Ctrl-g ,` names the
+one shown (also `:terminal-rename`) and `Ctrl-g &` closes it after asking
+(also `:terminal-close`). `:terminal` comes back to the terminal shown last;
+`:terminal-new [directory]` starts another. A new terminal starts in the
+directory of the document focused at the time; a running one keeps its own,
+as its shell does.
+
+### `[editor.dock]` Section
+
+Where the fork's views go. Docked, a view takes a side of the screen and the
+documents make room for it; with `none`, it covers the documents while open.
+
+| Key | Description | Default |
+|--|--|---------|
+|`magit` | Magit's status, log and blame: `right`, `bottom` or `none` | `"right"` |
+|`terminal` | The integrated terminal | `"bottom"` |
+|`backlinks` | The Org-Roam backlinks panel; when Magit has the same side, the panel covers the documents' edge instead | `"right"` |
+|`right-size` | The right pane's width, in percent of the screen's | `40` |
+|`bottom-size` | The bottom pane's height, in percent of the documents' area | `40` |
+
+A pane that opens takes the keys. `Ctrl-w p` (or `<space>w p`) moves them from
+the documents to each docked pane that takes keys in turn, and back; a click
+on a pane or on a document does the same. In Magit's views `Esc` gives the
+keys back to the documents and `q` closes; in the terminal `Ctrl-g Ctrl-n`
+gives them back and `Ctrl-g q` hides it, its shells still running. Docked,
+Magit stays open when it opens something in the editor — a file visited, the
+commit message, a rebase's todo-list — and gives it the keys. A pane is only
+docked when it leaves the documents at least 30 columns and 6 lines;
+otherwise it covers them as with `none`.
+
+### `[editor.magit]` Section
+
+Set options for the Magit client (`<space>m`).
+
+| Key | Description | Default |
+|--|--|---------|
+|`wip` | Save uncommitted work to hidden work-in-progress refs (`refs/wip/…`) after writing a file in a repository, and before a command that can lose it | `false` |
+|`repository-directories` | Where the repository list (`R` in the Magit menu) looks for repositories; `~` is expanded | the current working directory |
+|`repository-depth` | How many directory levels below each of those directories the list searches | `2` |
+
+Example
+
+```toml
+[editor.magit]
+wip = true
+```
+
+The saves are commits on `refs/wip/wtree/<branch>` (the working tree's tracked
+files) and `refs/wip/index/<branch>` (the index); nothing else in the
+repository changes. They are listed by `w` and `W` in the log menu (`l`), and a
+save's files are put back with the reset menu's `w`.
+
+The repository list shows each repository's branch, its upstream, how many
+commits it is ahead (`↑`) and behind (`↓`), and `*` when it has uncommitted
+changes. `RET` opens a repository's status; a menu key opens that menu on the
+repository under the cursor. The search stops at a repository, so one inside
+another's working tree is not listed, and hidden directories are skipped.
+
+```toml
+[editor.magit]
+repository-directories = ["~/src", "~/work"]
+repository-depth = 2
+```
+
 ### `[editor.auto-pairs]` Section
 
 Enables automatic insertion of pairs to parentheses, brackets, etc. Can be a
