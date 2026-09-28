@@ -824,6 +824,20 @@ pub struct RoamConfig {
     /// What makes a project, and what keeps it from being stuck.
     #[serde(default)]
     pub stuck_projects: StuckProjects,
+    /// The command that makes a PDF of a LaTeX export, `%f` standing for
+    /// the `.tex` file, run in its directory. Empty: `latexmk` if it is
+    /// installed, else `pdflatex` twice.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub latex_compiler: Vec<String>,
+    /// Where `:org-icalendar-combine` writes the agenda's calendar,
+    /// relative to the notes directory unless absolute.
+    #[serde(default = "default_icalendar_file")]
+    pub icalendar_file: PathBuf,
+    /// Publishing projects, Org's `org-publish-project-alist`.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub publish: Vec<PublishProject>,
     /// Whether an entry with an open child can be marked done. Org's
     /// `org-enforce-todo-dependencies`, off by default as it is there.
     /// `:ORDERED:` and `:BLOCKER:` apply either way.
@@ -848,6 +862,73 @@ pub struct RoamTemplate {
     /// The file to create, relative to the notes directory.
     pub file: String,
     pub content: String,
+}
+
+fn default_icalendar_file() -> PathBuf {
+    PathBuf::from("agenda.ics")
+}
+
+/// A publishing project, `[[editor.roam.publish]]`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct PublishProject {
+    pub name: String,
+    /// Where its Org files are, relative to the notes directory unless
+    /// absolute.
+    #[serde(default = "default_publish_base")]
+    pub base_directory: PathBuf,
+    /// Where they are published, likewise.
+    pub publishing_directory: PathBuf,
+    /// `html` by default; any `:org-export` format but `pdf`.
+    #[serde(default = "default_publish_backend")]
+    pub backend: String,
+    #[serde(default = "default_true")]
+    pub recursive: bool,
+    /// A regular expression: files whose path under the base matches are
+    /// left out.
+    #[serde(default)]
+    pub exclude: Option<String>,
+    /// The extensions of the files copied as they are.
+    #[serde(default = "default_publish_attachments")]
+    pub attachments: Vec<String>,
+    /// Write a sitemap of the project, and publish it with the rest.
+    #[serde(default)]
+    pub sitemap: bool,
+    #[serde(default = "default_sitemap_title")]
+    pub sitemap_title: String,
+    #[serde(default = "default_sitemap_file")]
+    pub sitemap_file: String,
+    /// The body only, for pages another tool wraps.
+    #[serde(default)]
+    pub body_only: bool,
+}
+
+fn default_publish_base() -> PathBuf {
+    PathBuf::from(".")
+}
+
+fn default_publish_backend() -> String {
+    "html".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_publish_attachments() -> Vec<String> {
+    [
+        "png", "jpg", "jpeg", "gif", "svg", "webp", "css", "js", "pdf",
+    ]
+    .map(String::from)
+    .to_vec()
+}
+
+fn default_sitemap_title() -> String {
+    "Sitemap".to_string()
+}
+
+fn default_sitemap_file() -> String {
+    "sitemap.org".to_string()
 }
 
 fn default_agenda_columns() -> Vec<String> {
@@ -1040,6 +1121,9 @@ impl Default for RoamConfig {
             agenda_views: Vec::new(),
             stuck_projects: StuckProjects::default(),
             agenda_columns: default_agenda_columns(),
+            latex_compiler: Vec::new(),
+            icalendar_file: default_icalendar_file(),
+            publish: Vec::new(),
             todo_dependencies: false,
             pretty: true,
         }

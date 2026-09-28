@@ -1276,14 +1276,28 @@ evaluated.
 
 ### Task 1.25: Export and Publishing, Continued
 
-- [ ] More backends: plain text (ASCII and UTF-8), ODT, Beamer, Texinfo,
+- [x] More backends: plain text (ASCII and UTF-8), ODT, Beamer, Texinfo,
       man, and Org itself (for `#+INCLUDE` resolution).
-- [ ] iCalendar export of scheduled and deadline entries, which is how an
+- [x] iCalendar export of scheduled and deadline entries, which is how an
       agenda reaches a phone's calendar.
-- [ ] Compiling the LaTeX export to PDF when a TeX distribution is present.
-- [ ] `org-publish`: projects, a sitemap, attachments copied along, and only
+- [x] Compiling the LaTeX export to PDF when a TeX distribution is present.
+- [x] `org-publish`: projects, a sitemap, attachments copied along, and only
       what changed rebuilt.
-- [ ] Export of a subtree alone, body only, and in the background.
+- [x] Export of a subtree alone, body only, and in the background.
+
+*Done.* The new backends share the one reader and live in
+`helix_roam::export::{text, man, texinfo, beamer, odt, org}`; Beamer writes its
+frames around the LaTeX backend's own output. ODT is binary, so an export
+now carries bytes as well as text; its zip is written by hand, stored, with
+the `mimetype` entry first as the format asks, which keeps the crate free of
+a compression library. The Org backend works on the text rather than the
+tree, since its point is to give the text back. `helix_roam::icalendar` and
+`helix_roam::publish` are pure and tested on their own; publishing mirrors
+the base directory, which is what keeps relative links right, and decides
+what changed from modification times, so a change in an included file alone
+is not noticed (`force` is there for that). The PDF compile and the
+background exports run off the editor's thread and report back on the
+status line.
 
 ### Task 1.26: Babel, Continued
 

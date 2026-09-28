@@ -469,6 +469,69 @@ The template's escapes:
 |`%\1` | The first text answer again |
 |`%%` | A `%` |
 
+#### Export and publishing
+
+`:org-export <format>` writes the buffer next to its file. The formats:
+
+| Format | Writes |
+|--|--|
+| `html` (the default), `md`, `latex` | HTML, Markdown, LaTeX |
+| `pdf` | LaTeX, then its PDF, compiled in the background |
+| `beamer`, `beamer-pdf` | Beamer slides: the headlines at the frame level (`#+OPTIONS: H:2`, 1 by default) are frames, the ones above sections, the ones below blocks; `#+BEAMER_THEME:` picks the theme |
+| `ascii`, `utf8` | Plain text, filled to 72 columns, tables drawn; `utf8` with Unicode bullets, quotes and box drawing |
+| `man` | A man page (groff): first-level headlines are `.SH` sections |
+| `texi` | Texinfo, with a node and a menu for each headline down to the fourth level |
+| `odt` | An OpenDocument text, for LibreOffice or Word |
+| `org` | Org again, as `name.export.org`: `#+INCLUDE`s resolved, `noexport` and `COMMENT` subtrees and comments left out |
+
+After the format, `subtree` exports only the subtree at the cursor: the
+headline (or its `:EXPORT_TITLE:`) is the title, the file's `#+` settings still
+apply, and it goes to its `:EXPORT_FILE_NAME:` or to `name-<anchor>`. `body`
+leaves out what is around the body (HTML's page, LaTeX's preamble, the title
+and contents), for another tool to wrap. `async` runs the export in the
+background. For example `:org-export html subtree body`.
+
+The PDF is made by `latexmk` if it is installed, else `pdflatex` run twice, or
+by `latex-compiler` (`%f` for the `.tex` file), in the file's directory.
+
+`:org-icalendar-export` writes the buffer's dated entries to `name.ics`, and
+`:org-icalendar-combine` every agenda file's to `icalendar-file`: a scheduled
+entry is an event `S: …`, a deadline one `DL: …`, any other active timestamp one
+of its own, repeaters recur, and an unfinished task is also a to-do.
+
+`:org-publish [project] [force]` publishes a project (every one without a name)
+in the background: its Org files exported into the publishing directory, which
+mirrors the base directory so links between notes keep working, and its
+attachments copied. Only what changed since it was last published is done
+again, unless `force`.
+
+```toml
+[[editor.roam.publish]]
+name = "site"
+base-directory = "site"          # relative to the notes directory
+publishing-directory = "~/public_html"
+backend = "html"
+exclude = "^drafts/"
+sitemap = true
+sitemap-title = "All pages"
+```
+
+| Key | Description | Default |
+|--|--|---------|
+|`name` | What `:org-publish` calls it | |
+|`base-directory`, `publishing-directory` | Where the Org files are, and where they go; relative to the notes directory unless absolute | `"."`, |
+|`backend` | Any `:org-export` format but `pdf` | `"html"` |
+|`recursive` | Subdirectories too | `true` |
+|`exclude` | A regular expression: files whose path under the base matches are left out | |
+|`attachments` | The extensions of the files copied as they are | `["png", "jpg", "jpeg", "gif", "svg", "webp", "css", "js", "pdf"]` |
+|`sitemap`, `sitemap-title`, `sitemap-file` | Write a sitemap (an Org file in the base, published with the rest) | `false`, `"Sitemap"`, `"sitemap.org"` |
+|`body-only` | Publish the bodies alone | `false` |
+
+| Key | Description | Default |
+|--|--|---------|
+|`latex-compiler` | The command that makes a PDF of a LaTeX export, `%f` for the file | `[]` (`latexmk`, else `pdflatex`) |
+|`icalendar-file` | Where `:org-icalendar-combine` writes, relative to the notes directory unless absolute | `"agenda.ics"` |
+
 ### `[editor.integrated-terminal]` Section
 
 Set options for the integrated terminal (`:terminal`, `<space>t`).

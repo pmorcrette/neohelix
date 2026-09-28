@@ -157,7 +157,10 @@
 | `:org-clock-cancel` | Discard the running clock. |
 | `:org-clock-goto` | Jump to the entry with the running clock. |
 | `:org-clock-report` | Insert or refresh a clock report table. |
-| `:org-export` | Export the buffer next to its file: md, html (the default) or latex. |
+| `:org-export` | Export the buffer next to its file: html (the default), md, latex, pdf, beamer, beamer-pdf, ascii, utf8, man, texi, odt or org; then `subtree` for the subtree at the cursor, `body` for the body alone, `async` in the background. |
+| `:org-icalendar-export` | Write the buffer's scheduled, deadline and dated entries to an iCalendar file next to it. |
+| `:org-icalendar-combine` | Write every agenda file's entries to one iCalendar file, `roam.icalendar-file`. |
+| `:org-publish` | Publish a project of `roam.publish` (every one without a name), only what changed unless `force`. |
 | `:org-babel-execute` | Run the source block at the cursor and write its results (needs workspace trust). |
 | `:org-toggle-pretty` | Draw the buffer's entities (\alpha) and links as written, or as what they stand for. |
 | `:org-columns` | Show or hide the column view of the buffer, from its #+COLUMNS:. |

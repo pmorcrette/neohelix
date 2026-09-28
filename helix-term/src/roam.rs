@@ -4899,51 +4899,364 @@ impl helix_roam::export::Resolve for GraphLinks<'_> {
     }
 }
 
-/// Exports the buffer next to its file, as `name.md`, `name.html` or
-/// `name.tex`.
-pub fn export(editor: &mut Editor, backend: helix_roam::export::Backend) {
+/// Resolves `id:` links through the shared graph, locking it for each
+/// link: what an export running in the background uses.
+struct SharedLinks(std::sync::Arc<parking_lot::RwLock<helix_roam::RoamGraph>>);
+
+impl helix_roam::export::Resolve for SharedLinks {
+    fn id(&self, id: &helix_roam::Uuid) -> Option<helix_roam::export::IdTarget> {
+        GraphLinks(&self.0.read()).id(id)
+    }
+}
+
+/// What `:org-export` was asked for.
+#[derive(Debug, Clone, Copy)]
+pub struct ExportRequest {
+    pub backend: helix_roam::export::Backend,
+    /// The subtree at the cursor only.
+    pub subtree: bool,
+    /// The body without the document around it.
+    pub body_only: bool,
+    /// In the background, the editor staying usable.
+    pub background: bool,
+    /// Compile the LaTeX to a PDF (always in the background).
+    pub pdf: bool,
+}
+
+/// Exports the buffer (or its subtree at the cursor) next to its file:
+/// `name.html`, `name.tex`, … A subtree goes to its `:EXPORT_FILE_NAME:`,
+/// or to `name-<its anchor>`, so that it does not replace the whole
+/// file's export.
+pub fn export(editor: &mut Editor, request: ExportRequest) {
     let doc = doc!(editor);
     let Some(source) = doc.path().map(Path::to_path_buf) else {
         editor.set_error("Save the buffer first: the export is written next to it");
         return;
     };
-    let text = doc.text().to_string();
+    let full = doc.text().to_string();
+    let backend = request.backend;
+    let dir = source.parent().unwrap_or(Path::new("")).to_path_buf();
+    let stem = source
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default();
 
-    let exported = {
-        let graph = editor.roam.read();
-        helix_roam::export::export(&text, &source, backend, &GraphLinks(&graph))
+    let (text, target) = if request.subtree {
+        let (_, line) = text_and_line(editor);
+        let Some(found) = helix_roam::export::subtree(&full, line) else {
+            editor.set_error("The cursor is not in a subtree");
+            return;
+        };
+        let name = found
+            .file_name
+            .clone()
+            .unwrap_or_else(|| format!("{stem}-{}", found.anchor));
+        let target = dir.join(name).with_extension(backend.extension());
+        (found.text, target)
+    } else {
+        (full, source.with_extension(backend.extension()))
     };
-    let target = source.with_extension(backend.extension());
-    if let Err(err) = std::fs::write(&target, &exported.content) {
-        editor.set_error(format!("Could not write {}: {err}", target.display()));
+    let compiler = editor.config().roam.latex_compiler.clone();
+    let graph = editor.roam.clone();
+    let work = move || -> Result<String, String> {
+        let exported = helix_roam::export::export_with(
+            &text,
+            &source,
+            backend,
+            &SharedLinks(graph),
+            request.body_only,
+        );
+        std::fs::write(&target, exported.bytes())
+            .map_err(|err| format!("Could not write {}: {err}", target.display()))?;
+        let mut written = target
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if request.pdf {
+            let pdf = compile_pdf(&target, &compiler)?;
+            written = pdf
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_default();
+        }
+        Ok(match exported.warnings.as_slice() {
+            [] => format!("Exported to {written}"),
+            [one] => format!("Exported to {written}; {one}"),
+            many => format!(
+                "Exported to {written}; {} warnings, first: {}",
+                many.len(),
+                many[0]
+            ),
+        })
+    };
+
+    if request.background || request.pdf {
+        editor.set_status(if request.pdf {
+            "Exporting and compiling the PDF in the background…"
+        } else {
+            "Exporting in the background…"
+        });
+        tokio::spawn(async move {
+            let result = tokio::task::spawn_blocking(work)
+                .await
+                .unwrap_or_else(|err| Err(format!("The export stopped: {err}")));
+            crate::job::dispatch(move |editor, _| match result {
+                Ok(said) => editor.set_status(said),
+                Err(err) => editor.set_error(err),
+            })
+            .await;
+        });
         return;
     }
+    match work() {
+        Ok(said) => editor.set_status(said),
+        Err(err) => editor.set_error(err),
+    }
+}
 
-    let name = target
+/// Makes the PDF of the LaTeX file `tex`, in its directory: with
+/// `compiler` (`%f` the file) when it is set, else `latexmk`, else
+/// `pdflatex` twice (the second run settles the references).
+fn compile_pdf(tex: &Path, compiler: &[String]) -> Result<PathBuf, String> {
+    let dir = tex.parent().unwrap_or(Path::new("."));
+    let file = tex
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_default();
-    match exported.warnings.as_slice() {
-        [] => editor.set_status(format!("Exported to {name}")),
-        [one] => editor.set_status(format!("Exported to {name}; {one}")),
-        many => editor.set_status(format!(
-            "Exported to {name}; {} links could not be resolved, first: {}",
-            many.len(),
-            many[0]
-        )),
+    let found = |program: &str| helix_stdx::env::which(program).is_ok();
+    let runs: Vec<Vec<String>> = if !compiler.is_empty() {
+        vec![compiler
+            .iter()
+            .map(|arg| arg.replace("%f", &file))
+            .collect()]
+    } else if found("latexmk") {
+        vec![[
+            "latexmk",
+            "-pdf",
+            "-interaction=nonstopmode",
+            "-halt-on-error",
+            &file,
+        ]
+        .map(String::from)
+        .to_vec()]
+    } else if let Some(engine) = ["pdflatex", "xelatex", "lualatex"]
+        .into_iter()
+        .find(|p| found(p))
+    {
+        let run = [engine, "-interaction=nonstopmode", "-halt-on-error", &file]
+            .map(String::from)
+            .to_vec();
+        vec![run.clone(), run]
+    } else {
+        return Err(
+            "No TeX found to make the PDF: install latexmk or pdflatex, or set roam.latex-compiler"
+                .to_string(),
+        );
+    };
+    for run in runs {
+        let output = std::process::Command::new(&run[0])
+            .args(&run[1..])
+            .current_dir(dir)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|err| format!("Could not run {}: {err}", run[0]))?;
+        if !output.status.success() {
+            // TeX says what went wrong on a line starting with `!`.
+            let log = String::from_utf8_lossy(&output.stdout);
+            let why = log
+                .lines()
+                .find(|line| line.starts_with('!'))
+                .unwrap_or("see the .log file")
+                .to_string();
+            return Err(format!("{} failed: {why}", run[0]));
+        }
+    }
+    let pdf = tex.with_extension("pdf");
+    if pdf.exists() {
+        Ok(pdf)
+    } else {
+        Err(format!("{} made no PDF", tex.display()))
     }
 }
 
+/// Exports with the default flags: the whole buffer, in the foreground.
+fn export_as(editor: &mut Editor, backend: helix_roam::export::Backend) {
+    export(
+        editor,
+        ExportRequest {
+            backend,
+            subtree: false,
+            body_only: false,
+            background: false,
+            pdf: false,
+        },
+    );
+}
+
 pub fn export_markdown(editor: &mut Editor) {
-    export(editor, helix_roam::export::Backend::Markdown);
+    export_as(editor, helix_roam::export::Backend::Markdown);
 }
 
 pub fn export_html(editor: &mut Editor) {
-    export(editor, helix_roam::export::Backend::Html);
+    export_as(editor, helix_roam::export::Backend::Html);
 }
 
 pub fn export_latex(editor: &mut Editor) {
-    export(editor, helix_roam::export::Backend::Latex);
+    export_as(editor, helix_roam::export::Backend::Latex);
+}
+
+/// The buffer's scheduled, deadline and dated entries as an iCalendar file
+/// next to it.
+pub fn icalendar_export(editor: &mut Editor) {
+    let doc = doc!(editor);
+    let Some(source) = doc.path().map(Path::to_path_buf) else {
+        editor.set_error("Save the buffer first: the calendar is written next to it");
+        return;
+    };
+    let text = doc.text().to_string();
+    let settings = helix_roam::FileSettings::scan_at(&text, &source);
+    let entries = helix_roam::entry::entries(&text, &source, &settings);
+    let name = source
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let calendar = helix_roam::icalendar::calendar(&entries, &name, &utc_stamp());
+    let target = source.with_extension("ics");
+    match std::fs::write(&target, calendar) {
+        Ok(()) => editor.set_status(format!("Wrote {}", target.display())),
+        Err(err) => editor.set_error(format!("Could not write {}: {err}", target.display())),
+    }
+}
+
+/// Every agenda file's entries in one iCalendar file, `icalendar-file`.
+pub fn icalendar_combine(editor: &mut Editor) {
+    let target = {
+        let configured = editor.config().roam.icalendar_file.clone();
+        let configured = helix_stdx::path::expand_tilde(&configured).into_owned();
+        if configured.is_absolute() {
+            configured
+        } else {
+            notes_directory(editor).join(configured)
+        }
+    };
+    let calendar = {
+        let graph = editor.roam.read();
+        let mut entries: Vec<&helix_roam::Entry> = graph
+            .entries()
+            .filter(|entry| in_agenda_scope(editor, &entry.file_path))
+            .collect();
+        entries.sort_by(|a, b| (&a.file_path, a.line).cmp(&(&b.file_path, b.line)));
+        helix_roam::icalendar::calendar(entries, "Agenda", &utc_stamp())
+    };
+    match std::fs::write(&target, calendar) {
+        Ok(()) => editor.set_status(format!("Wrote {}", target.display())),
+        Err(err) => editor.set_error(format!("Could not write {}: {err}", target.display())),
+    }
+}
+
+/// Now, as iCalendar writes a moment in UTC: `20260928T121500Z`.
+fn utc_stamp() -> String {
+    let (date, time) = now();
+    format!(
+        "{}T{:02}{:02}00Z",
+        date.to_iso().replace('-', ""),
+        time.hour,
+        time.minute
+    )
+}
+
+/// Publishes the project named `name`, or every project, in the
+/// background; with `force`, every file, not only the changed ones.
+pub fn publish(editor: &mut Editor, name: Option<&str>, force: bool) {
+    let config = editor.config();
+    let notes = notes_directory(editor);
+    let resolve = |path: &Path| {
+        let path = helix_stdx::path::expand_tilde(path).into_owned();
+        if path.is_absolute() {
+            path
+        } else {
+            notes.join(path)
+        }
+    };
+    let chosen: Vec<&helix_view::editor::PublishProject> = config
+        .roam
+        .publish
+        .iter()
+        .filter(|project| name.is_none_or(|name| project.name == name))
+        .collect();
+    if chosen.is_empty() {
+        return editor.set_error(match name {
+            Some(name) => format!("No publishing project is called {name}"),
+            None => "No publishing project: add [[editor.roam.publish]] to the config".to_string(),
+        });
+    }
+    let mut projects = Vec::new();
+    for project in chosen {
+        let Some(backend) = helix_roam::export::Backend::parse(&project.backend) else {
+            return editor.set_error(format!(
+                "{}: unknown backend {}",
+                project.name, project.backend
+            ));
+        };
+        let exclude = match project
+            .exclude
+            .as_deref()
+            .map(helix_core::regex::Regex::new)
+        {
+            Some(Ok(regex)) => Some(regex),
+            Some(Err(err)) => {
+                return editor.set_error(format!("{}: exclude is no regex: {err}", project.name))
+            }
+            None => None,
+        };
+        projects.push(helix_roam::publish::Project {
+            name: project.name.clone(),
+            base: resolve(&project.base_directory),
+            publishing: resolve(&project.publishing_directory),
+            backend,
+            recursive: project.recursive,
+            exclude,
+            attachments: project.attachments.clone(),
+            sitemap: project.sitemap.then(|| helix_roam::publish::Sitemap {
+                file: project.sitemap_file.clone(),
+                title: project.sitemap_title.clone(),
+            }),
+            body_only: project.body_only,
+        });
+    }
+    let graph = editor.roam.clone();
+    editor.set_status(format!("Publishing {} project(s)…", projects.len()));
+    tokio::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            let links = SharedLinks(graph);
+            let mut said = Vec::new();
+            let mut warnings = Vec::new();
+            for project in &projects {
+                let report = helix_roam::publish::publish(project, &links, force)
+                    .map_err(|err| format!("{}: {err}", project.name))?;
+                said.push(format!(
+                    "{}: {} published, {} copied, {} up to date",
+                    project.name,
+                    report.published.len(),
+                    report.copied.len(),
+                    report.unchanged
+                ));
+                warnings.extend(report.warnings);
+            }
+            let mut message = said.join("; ");
+            if let Some(first) = warnings.first() {
+                message.push_str(&format!("; {} warning(s), first: {first}", warnings.len()));
+            }
+            Ok::<_, String>(message)
+        })
+        .await
+        .unwrap_or_else(|err| Err(format!("Publishing stopped: {err}")));
+        crate::job::dispatch(move |editor, _| match result {
+            Ok(said) => editor.set_status(said),
+            Err(err) => editor.set_error(err),
+        })
+        .await;
+    });
 }
 
 // ── Babel ─────────────────────────────────────────────────────────────────
