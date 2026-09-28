@@ -1254,20 +1254,25 @@ clocks as they were.
       dispatcher over all the views (`<space>na`).
 - [x] A match view (tags, properties, TODO states: Org's `m`) and a search
       view (words and regexps: `s`) over the whole notes directory.
-- [ ] Stuck projects, and the time grid of the day view.
-- [ ] Log mode and the clock report inside the agenda.
-- [ ] Bulk actions: mark entries, then change their state, reschedule,
+- [x] Stuck projects, and the time grid of the day view.
+- [x] Log mode and the clock report inside the agenda.
+- [x] Bulk actions: mark entries, then change their state, reschedule,
       refile or tag them together.
-- [ ] Interactive filters: by tag, category, effort, regexp (`/`, `<`, `_`).
-- [ ] Column view inside the agenda; diary entries and anniversaries.
-- [ ] Export of an agenda view to a file (text, HTML, iCalendar).
+- [x] Interactive filters: by tag, category, effort, regexp (`/`, `<`, `_`).
+- [x] Column view inside the agenda; diary entries and anniversaries.
+- [x] Export of an agenda view to a file (text, HTML, iCalendar).
 
-*In progress.* The index keeps an entry per headline (`helix_roam::entry`)
-beside the graph's nodes; the agenda, the TODO list and the new views read
+*Done.* The index keeps an entry per headline (`helix_roam::entry`) beside
+the graph's nodes; the agenda, the TODO list and the other views read
 entries, so an id is what links need, not what the agenda needs. The match
-and search languages are `helix_roam::search`, tested on their own; a search
-reads the entries' text from the buffers and files, since the index keeps
-no bodies.
+and search languages are `helix_roam::search`, the log, clock report, stuck
+projects and diary are `helix_roam::agenda` and `helix_roam::diary`, all
+tested on their own; a search reads the entries' text from the buffers and
+files, since the index keeps no bodies. The views stay pickers, so Org's
+single keys are Alt keys there (`Alt-/` for `/`, `Alt-B` for `B`), the
+picker's own typing being its search. Diary expressions are Lisp: the
+common forms are recognised by name, and any other is left out rather than
+evaluated.
 
 ### Task 1.25: Export and Publishing, Continued
 

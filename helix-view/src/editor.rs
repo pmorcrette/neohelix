@@ -816,6 +816,14 @@ pub struct RoamConfig {
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub agenda_views: Vec<AgendaView>,
+    /// What the agenda's column view (`Alt-c`) shows after each entry:
+    /// `TODO`, `PRIORITY`, `TAGS`, `CLOCKSUM` (the time clocked) or a
+    /// property's name.
+    #[serde(default = "default_agenda_columns")]
+    pub agenda_columns: Vec<String>,
+    /// What makes a project, and what keeps it from being stuck.
+    #[serde(default)]
+    pub stuck_projects: StuckProjects,
     /// Whether an entry with an open child can be marked done. Org's
     /// `org-enforce-todo-dependencies`, off by default as it is there.
     /// `:ORDERED:` and `:BLOCKER:` apply either way.
@@ -840,6 +848,39 @@ pub struct RoamTemplate {
     /// The file to create, relative to the notes directory.
     pub file: String,
     pub content: String,
+}
+
+fn default_agenda_columns() -> Vec<String> {
+    ["TODO", "PRIORITY", "Effort", "CLOCKSUM", "TAGS"]
+        .map(String::from)
+        .to_vec()
+}
+
+/// Org's `org-stuck-projects`, `[editor.roam.stuck-projects]`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct StuckProjects {
+    /// The match that makes an entry a project.
+    #[serde(rename = "match")]
+    pub query: String,
+    /// A project with an entry in one of these states below it is moving.
+    pub todo: Vec<String>,
+    /// So is one with an entry carrying one of these tags below it.
+    pub tags: Vec<String>,
+}
+
+impl Default for StuckProjects {
+    fn default() -> Self {
+        Self {
+            query: "+LEVEL=2/-DONE".to_string(),
+            todo: vec![
+                "TODO".to_string(),
+                "NEXT".to_string(),
+                "NEXTACTION".to_string(),
+            ],
+            tags: Vec::new(),
+        }
+    }
 }
 
 /// A custom agenda view, `[[editor.roam.agenda-views]]`.
@@ -890,6 +931,8 @@ pub enum AgendaBlockKind {
     TagsTodo,
     /// Entries whose text has the words.
     Search,
+    /// Projects with nothing to do next.
+    Stuck,
 }
 
 /// An `org-capture` template, `[[editor.roam.capture]]`.
@@ -995,6 +1038,8 @@ impl Default for RoamConfig {
             templates: Vec::new(),
             capture: Vec::new(),
             agenda_views: Vec::new(),
+            stuck_projects: StuckProjects::default(),
+            agenda_columns: default_agenda_columns(),
             todo_dependencies: false,
             pretty: true,
         }

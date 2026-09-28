@@ -16,6 +16,7 @@ pub mod columns;
 pub mod crypt;
 pub mod date;
 pub mod dependencies;
+pub mod diary;
 pub mod dynamic;
 pub mod entry;
 pub mod export;

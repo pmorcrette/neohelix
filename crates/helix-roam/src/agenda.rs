@@ -6,6 +6,7 @@
 //! function of entries and a date range is what lets the answer be tested
 //! without an editor.
 
+use crate::clock::Moment;
 use crate::entry::Entry;
 use crate::node::Timestamp;
 use crate::Date;
@@ -123,6 +124,164 @@ pub fn agenda<'a>(
     });
 
     items
+}
+
+/// What log mode adds to a day.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Logged {
+    /// The entry was closed then.
+    Closed,
+    /// Time was clocked on it, from then until `end`.
+    Clocked { end: Moment },
+}
+
+/// A line of log mode: something that happened on a day.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogItem<'a> {
+    pub day: Date,
+    /// When it happened, `(hour, minute)`.
+    pub time: (u32, u32),
+    pub entry: &'a Entry,
+    pub what: Logged,
+}
+
+fn day_of(moment: Moment) -> Date {
+    Date::from_days(moment.div_euclid(1440))
+}
+
+fn time_of_moment(moment: Moment) -> (u32, u32) {
+    let minutes = moment.rem_euclid(1440) as u32;
+    (minutes / 60, minutes % 60)
+}
+
+/// What was closed and what was clocked over `days` days from `from`, as
+/// Org's log mode adds to the agenda: finished work included, which the
+/// agenda otherwise leaves out.
+pub fn log<'a>(
+    entries: impl IntoIterator<Item = &'a Entry>,
+    from: Date,
+    days: i64,
+) -> Vec<LogItem<'a>> {
+    let to = from.offset_by(days.max(1) - 1);
+    let mut items = Vec::new();
+    for entry in entries {
+        if let Some(closed) = entry.closed {
+            if closed.day() >= from && closed.day() <= to {
+                items.push(LogItem {
+                    day: closed.day(),
+                    time: (closed.hour.unwrap_or(0), closed.minute.unwrap_or(0)),
+                    entry,
+                    what: Logged::Closed,
+                });
+            }
+        }
+        for &(start, end) in &entry.clocks {
+            // A running clock has not been spent yet.
+            let Some(end) = end else { continue };
+            let day = day_of(start);
+            if day >= from && day <= to {
+                items.push(LogItem {
+                    day,
+                    time: time_of_moment(start),
+                    entry,
+                    what: Logged::Clocked { end },
+                });
+            }
+        }
+    }
+    items.sort_by(|a, b| {
+        (a.day, a.time)
+            .cmp(&(b.day, b.time))
+            .then(a.entry.title.cmp(&b.entry.title))
+    });
+    items
+}
+
+/// The time clocked on each entry between `from` and `to` (moments), a
+/// running clock counting until `now`; only entries with some, in the
+/// order of their files. Org's clock report of an agenda span.
+pub fn clock_report<'a>(
+    entries: impl IntoIterator<Item = &'a Entry>,
+    from: Moment,
+    to: Moment,
+    now: Moment,
+) -> Vec<(&'a Entry, i64)> {
+    let mut report: Vec<(&Entry, i64)> = entries
+        .into_iter()
+        .filter_map(|entry| {
+            let minutes: i64 = entry
+                .clocks
+                .iter()
+                .map(|&(start, end)| {
+                    let end = end.unwrap_or(now);
+                    (end.min(to) - start.max(from)).max(0)
+                })
+                .sum();
+            (minutes > 0).then_some((entry, minutes))
+        })
+        .collect();
+    report.sort_by(|a, b| (&a.0.file_path, a.0.line).cmp(&(&b.0.file_path, b.0.line)));
+    report
+}
+
+/// The diary lines of `entries` that fall within `days` days from `from`:
+/// the day, the entry, and the text to show (the entry's title when the
+/// line has none).
+pub fn diary<'a>(
+    entries: impl IntoIterator<Item = &'a Entry>,
+    from: Date,
+    days: i64,
+) -> Vec<(Date, &'a Entry, String)> {
+    let mut found = Vec::new();
+    for entry in entries {
+        for line in &entry.diary {
+            for offset in 0..days.max(1) {
+                let day = from.offset_by(offset);
+                if let Some(text) = crate::diary::occurs(line, day) {
+                    let text = if text.is_empty() {
+                        entry.title.clone()
+                    } else {
+                        text
+                    };
+                    found.push((day, entry, text));
+                }
+            }
+        }
+    }
+    found.sort_by(|a, b| a.0.cmp(&b.0).then(a.2.cmp(&b.2)));
+    found
+}
+
+/// The projects with nothing to do next: Org's stuck projects.
+///
+/// `entries` are one file's, in order. A project is an entry `is_project`
+/// accepts; it is stuck unless something in its subtree has one of the
+/// `todo` keywords or one of the `tags`.
+pub fn stuck_projects<'a>(
+    entries: &'a [Entry],
+    is_project: impl Fn(&Entry) -> bool,
+    todo: &[String],
+    tags: &[String],
+) -> Vec<&'a Entry> {
+    entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| is_project(entry))
+        .filter(|&(at, project)| {
+            let moving = entries[at + 1..]
+                .iter()
+                .take_while(|below| below.level > project.level)
+                .any(|below| {
+                    below
+                        .todo
+                        .as_ref()
+                        .is_some_and(|state| todo.contains(&state.keyword))
+                        || below.tags.iter().any(|tag| tags.contains(tag))
+                });
+            !moving
+        })
+        .map(|(_, project)| project)
+        .collect()
 }
 
 /// What to narrow a TODO list to.

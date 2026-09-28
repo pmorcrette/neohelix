@@ -360,6 +360,13 @@ impl RoamGraph {
         self.entries.values().flatten()
     }
 
+    /// Every file's headlines, files in no particular order.
+    pub fn entries_by_file(&self) -> impl Iterator<Item = (&Path, &[crate::entry::Entry])> {
+        self.entries
+            .iter()
+            .map(|(path, entries)| (path.as_path(), entries.as_slice()))
+    }
+
     /// The headlines read from `path`.
     pub fn entries_in_file(&self, path: &Path) -> &[crate::entry::Entry] {
         self.entries.get(path).map_or(&[], Vec::as_slice)

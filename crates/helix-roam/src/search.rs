@@ -20,8 +20,8 @@ use crate::Date;
 /// `<+3d>`, `<2026-10-01>`). Special properties are `TODO`, `LEVEL`,
 /// `PRIORITY`, `CATEGORY`, `ITEM` (the title), `TAGS`, `SCHEDULED`,
 /// `DEADLINE` and `CLOSED`. After a `/`, a list of TODO keywords
-/// (`TODO|WAITING`, or `-DONE-CANCELLED` to leave some out), with `!` first
-/// for unfinished states only.
+/// (`TODO|WAITING`, or `-DONE-CANCELLED` to leave some out, which keeps
+/// the entries without a state), with `!` first for unfinished states only.
 #[derive(Debug, Clone)]
 pub struct Match {
     alternatives: Vec<Vec<(bool, Term)>>,
@@ -166,8 +166,10 @@ fn parse_todo(text: &str) -> TodoPart {
 
 impl TodoPart {
     fn matches(&self, entry: &Entry) -> bool {
+        // Leaving states out says nothing of entries without one, as in
+        // Org: `+LEVEL=2/-DONE` takes the plain headlines too.
         let Some(state) = &entry.todo else {
-            return false;
+            return !self.open && self.wanted.is_empty();
         };
         (!self.open || !state.done)
             && (self.wanted.is_empty() || self.wanted.contains(&state.keyword))
@@ -503,7 +505,10 @@ DEADLINE: <2026-10-01 Thu>
         assert_eq!(titles("ITEM={^R}"), ["Rapport", "Réponse du chef"]);
         assert_eq!(titles("work/!"), ["Rapport", "Réponse du chef"]);
         assert_eq!(titles("/TODO|NEXT"), ["Rapport", "Tondre"]);
-        assert_eq!(titles("/-DONE-WAITING"), ["Rapport", "Tondre"]);
+        assert_eq!(
+            titles("/-DONE-WAITING"),
+            ["Travail", "Rapport", "Maison", "Tondre"]
+        );
         assert_eq!(
             titles("TODO<>\"DONE\"&work"),
             ["Travail", "Rapport", "Réponse du chef"]

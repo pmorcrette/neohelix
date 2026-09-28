@@ -297,3 +297,74 @@ fn a_task_without_an_id_and_an_appointment_are_on_the_agenda() {
         ]
     );
 }
+
+#[test]
+fn log_mode_shows_what_was_closed_and_clocked() {
+    use helix_roam::agenda::{clock_report, log, Logged};
+    use helix_roam::clock::moment;
+    use helix_roam::date::Time;
+
+    let entries = nodes(
+        "* DONE Rapport\nCLOSED: [2026-09-19 Sat 18:00]\n:LOGBOOK:\n\
+         CLOCK: [2026-09-19 Sat 09:00]--[2026-09-19 Sat 10:30] =>  1:30\n\
+         CLOCK: [2026-09-18 Fri 23:00]--[2026-09-19 Sat 00:30] =>  1:30\n:END:\n\
+         * TODO Courant\n:LOGBOOK:\nCLOCK: [2026-09-19 Sat 14:00]\n:END:\n",
+    );
+    let items = log(&entries, day(2026, 9, 19), 1);
+    let seen: Vec<((u32, u32), bool)> = items
+        .iter()
+        .map(|item| (item.time, item.what == Logged::Closed))
+        .collect();
+    // The running clock is not logged; the clock begun the day before is
+    // that day's.
+    assert_eq!(seen, [((9, 0), false), ((18, 0), true)]);
+
+    let at = |hour, minute| moment(day(2026, 9, 19), Time { hour, minute });
+    let report = clock_report(&entries, at(0, 0), at(23, 59) + 1, at(15, 0));
+    let totals: Vec<(&str, i64)> = report
+        .iter()
+        .map(|(entry, minutes)| (entry.title.as_str(), *minutes))
+        .collect();
+    // Only the half hour after midnight counts from the clock across it,
+    // and the running one counts until now.
+    assert_eq!(totals, [("Rapport", 120), ("Courant", 60)]);
+}
+
+#[test]
+fn a_project_without_a_next_action_is_stuck() {
+    use helix_roam::agenda::stuck_projects;
+
+    let entries = nodes(
+        "#+TODO: TODO NEXT WAITING | DONE\n* Projets\n** Cuisine\n*** DONE Devis\n*** WAITING Artisan\n\
+         ** Jardin\n*** NEXT Tondre\n** Garage :someday:\n** Salon\n*** Idées :active:\n",
+    );
+    let stuck = stuck_projects(
+        &entries,
+        |entry| entry.level == 2 && !entry.tags.contains(&"someday".to_string()),
+        &["TODO".to_string(), "NEXT".to_string()],
+        &["active".to_string()],
+    );
+    let titles: Vec<&str> = stuck.iter().map(|entry| entry.title.as_str()).collect();
+    assert_eq!(titles, ["Cuisine"]);
+}
+
+#[test]
+fn diary_lines_land_on_their_days() {
+    use helix_roam::agenda::diary;
+
+    let entries = nodes(
+        "* Anniversaires\n%%(diary-anniversary 9 20 1990) Pierre (%d ans)\n\
+         * %%(diary-cyclic 7 9 14 2026)\n",
+    );
+    let found: Vec<(u32, String)> = diary(&entries, day(2026, 9, 19), 3)
+        .into_iter()
+        .map(|(day, _, text)| (day.day, text))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            (20, "Pierre (36 ans)".to_string()),
+            (21, "%%(diary-cyclic 7 9 14 2026)".to_string())
+        ]
+    );
+}

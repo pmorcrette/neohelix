@@ -40,6 +40,11 @@ pub struct Entry {
     /// The active timestamps in the entry's text, planning line aside:
     /// appointments, which the agenda shows on their day.
     pub timestamps: Vec<Timestamp>,
+    /// The `CLOCK:` lines of its logbook, start and end (`None` while
+    /// running), in minutes since the epoch.
+    pub clocks: Vec<(crate::clock::Moment, Option<crate::clock::Moment>)>,
+    /// Its `%%(diary-…)` lines, headline included.
+    pub diary: Vec<String>,
     /// The property drawer, keys lowercased.
     pub properties: Vec<(String, String)>,
     /// Titles of the headlines above, outermost first.
@@ -144,13 +149,19 @@ pub fn entries(text: &str, path: &Path, settings: &FileSettings) -> Vec<Entry> {
             deadline: None,
             closed: None,
             timestamps: Vec::new(),
+            clocks: Vec::new(),
+            diary: Vec::new(),
             properties: Vec::new(),
             outline_path,
             category: String::new(),
             id: None,
         };
-        // A timestamp in the headline is the entry's too.
+        // A timestamp in the headline is the entry's too, and so is a
+        // diary expression.
         entry.timestamps = active_timestamps(line);
+        if headline.title.starts_with("%%(") {
+            entry.diary.push(headline.title.clone());
+        }
         read_section(&lines, at + 1, settings, &mut entry);
         let own_category = entry.property("category").map(str::to_string);
         entry.category = own_category
@@ -211,6 +222,14 @@ fn read_section(lines: &[&str], from: usize, settings: &FileSettings, entry: &mu
                 }
                 entry.properties.push((key, value));
             }
+            continue;
+        }
+        if trimmed.starts_with("%%(") {
+            entry.diary.push(trimmed.to_string());
+            continue;
+        }
+        if let Some(clock) = crate::clock::parse_clock(trimmed) {
+            entry.clocks.push(clock);
             continue;
         }
         entry.timestamps.extend(active_timestamps(line));
@@ -278,6 +297,9 @@ Réunion <2026-09-30 Wed 14:00> puis <2026-10-02 Fri>--<2026-10-03 Sat>.
 #+end_src
 * DONE Fini
 CLOSED: [2026-09-27 Sun 18:00]
+:LOGBOOK:
+CLOCK: [2026-09-27 Sun 17:00]--[2026-09-27 Sun 17:45] =>  0:45
+:END:
 Pas daté [2026-09-01 Tue].
 ";
 
@@ -304,11 +326,15 @@ Pas daté [2026-09-01 Tue].
         assert_eq!(days, [30, 2]);
         assert!(report.is_open_task());
 
+        assert!(report.clocks.is_empty());
+
         let done = &found[2];
         assert_eq!(done.category, "perso");
         assert_eq!(done.inherited_tags, ["notes"]);
         assert_eq!(done.closed.map(|stamp| stamp.day), Some(27));
         assert!(done.timestamps.is_empty());
+        assert_eq!(done.clocks.len(), 1);
+        assert_eq!(done.clocks[0].1.map(|end| end - done.clocks[0].0), Some(45));
         assert!(!done.is_open_task());
     }
 

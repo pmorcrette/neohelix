@@ -298,15 +298,44 @@ the notes by default), whether or not it has an `:ID:`. `:org-agenda-dispatch`
 
 | Key | View |
 |--|--|
-| `a`, `d` | What is due this week, or today: scheduled entries, deadlines (from 14 days ahead), and appointments, the active timestamps in an entry's text, timed ones first |
+| `a`, `d` | What is due this week, or today, under a heading per day: scheduled entries, deadlines (from 14 days ahead), appointments (the active timestamps in an entry's text), timed ones first, and diary entries |
 | `t` | Every unfinished task |
 | `m` | The entries a match finds (`:org-agenda-match`) |
 | `M` | The same, unfinished tasks only (`:org-agenda-match-todo`) |
 | `s` | The entries whose text has the words (`:org-agenda-search`) |
+| `#` | The stuck projects: see `stuck-projects` below |
 
-In every view, `Alt-t` and `Alt-T` step the selected entry's state, `Alt-s`
-and `Alt-d` schedule it and set its deadline, `Alt-+` and `Alt--` change its
-priority, and `Alt-i` clocks in.
+The views are pickers: typing searches them, `Enter` goes to the entry, and
+Alt keys do the rest, as the keys of Org's agenda buffer do (`Alt-?` lists
+them):
+
+| Keys | What they do |
+|--|--|
+| `Alt-t`, `Alt-T` | Step the entry's state forward or back |
+| `Alt-s`, `Alt-d` | Schedule it, set its deadline |
+| `Alt-+`, `Alt--` | Raise or lower its priority |
+| `Alt-i` | Clock in on it |
+| `Alt-/` | Keep the entries with the tags (`+work -home`), inherited ones included; empty for all |
+| `Alt-<` | Keep the selected entry's category, or all again |
+| `Alt-_` | Keep the entries of an effort (`<0:30`, `>1:00`, `=45`) |
+| `Alt-=` | Keep the entries matching a regexp |
+| `Alt-\|` | Remove every filter |
+| `Alt-m`, `Alt-*`, `Alt-u` | Mark the entry (and move on), mark all shown, unmark all |
+| `Alt-B` | Act on the marked entries (or the selected one): set the state, schedule, set the deadline, add or remove a tag, refile under a node |
+| `Alt-f`, `Alt-b`, `Alt-.` | By day: the next span, the previous one, today's again |
+| `Alt-l` | By day: log mode, what was closed and clocked each day |
+| `Alt-r` | By day: a clock report of the span after the entries |
+| `Alt-g` | By day: the hours of the day and the time now between the timed entries (on by default for a single day) |
+| `Alt-c` | Columns after each entry: `agenda-columns` |
+| `Alt-w` | Write the view to a file: text, HTML for `.html`, iCalendar for `.ics` (its dated entries as events, its undated tasks as to-dos) |
+
+A diary entry is a `%%(…)` line in an entry, or its headline, as Emacs's
+calendar writes them: `%%(diary-anniversary 10 1 1990) Pierre (%d years)`,
+`%%(diary-date t 15 t)`, `%%(diary-block 9 28 2026 10 2 2026)`,
+`%%(diary-cyclic 14 9 1 2026)`, `%%(diary-float 11 4 4)` (the 4th Thursday of
+November) and `%%(org-anniversary 1990 10 1)`. Dates are month, day, year, as
+Emacs's default, except in `org-anniversary`. Other expressions are Lisp, and
+are left out.
 
 A match is Org's: `work+urgent-boss` wants the tags `work` and `urgent`
 (inherited ones count) and not `boss`, `|` separates alternatives, and
@@ -335,9 +364,16 @@ blocks = [
 
 A block's `type` is `agenda` (with `days`, 7 by default, and an optional match
 the entries must satisfy), `todo` (the unfinished tasks, of the keywords given
-if any), `tags` or `tags-todo` (a match) or `search` (words). `title` replaces
-the heading made from the block. A custom view's key takes over a built-in
-one's.
+if any), `tags` or `tags-todo` (a match), `search` (words) or `stuck`. `title`
+replaces the heading made from the block. A custom view's key takes over a
+built-in one's.
+
+| Key | Description | Default |
+|--|--|---------|
+|`stuck-projects.match` | What makes an entry a project | `"+LEVEL=2/-DONE"` |
+|`stuck-projects.todo` | A project with an entry below it in one of these states is not stuck | `["TODO", "NEXT", "NEXTACTION"]` |
+|`stuck-projects.tags` | Nor is one with an entry below it carrying one of these tags | `[]` |
+|`agenda-columns` | What the column view shows: `TODO`, `PRIORITY`, `TAGS`, `CLOCKSUM` (the time clocked) or a property | `["TODO", "PRIORITY", "Effort", "CLOCKSUM", "TAGS"]` |
 
 #### Capture
 

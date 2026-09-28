@@ -212,6 +212,7 @@ fn slugify(title: &str) -> String {
 }
 
 /// What the refile picker needs to know about a candidate target.
+#[derive(Debug, Clone)]
 pub struct RefileTarget {
     pub title: String,
     pub path: std::path::PathBuf,
@@ -1952,12 +1953,28 @@ fn state_change(
     settings: &helix_roam::FileSettings,
     forward: bool,
 ) -> Result<Edited, String> {
-    let startup = helix_roam::startup::Startup::of(settings);
     let (_, next) = helix_roam::restructure::todo_step(text, line, settings, forward)
         .map_err(|err| err.to_string())?;
-    let finishing = next
-        .as_deref()
-        .is_some_and(|state| settings.done_keywords.iter().any(|done| done == state));
+    state_set(editor, text, line, settings, next.as_deref())
+}
+
+/// Puts the entry at `line` in `next` (or no state), with what
+/// [`state_change`] does around it.
+fn state_set(
+    editor: &Editor,
+    text: &str,
+    line: usize,
+    settings: &helix_roam::FileSettings,
+    next: Option<&str>,
+) -> Result<Edited, String> {
+    if let Some(state) = next {
+        if !settings.is_todo_keyword(state) {
+            return Err(format!("{state} is not a TODO keyword of this file"));
+        }
+    }
+    let startup = helix_roam::startup::Startup::of(settings);
+    let finishing =
+        next.is_some_and(|state| settings.done_keywords.iter().any(|done| done == state));
     if finishing {
         let blocked = open_blockers(editor, text, line, settings);
         if !blocked.is_empty() {
@@ -1965,9 +1982,8 @@ fn state_change(
         }
     }
 
-    let change =
-        helix_roam::logging::change_state(text, line, settings, &startup, next.as_deref(), now())
-            .map_err(|err| err.to_string())?;
+    let change = helix_roam::logging::change_state(text, line, settings, &startup, next, now())
+        .map_err(|err| err.to_string())?;
     let done = match (change.repeated, &change.state) {
         (true, state) => format!(
             "Repeated: back to {}, dates moved on",
@@ -2036,6 +2052,10 @@ pub enum AgendaAction {
     Schedule(String),
     Deadline(String),
     ClockIn,
+    /// This state, or none.
+    SetState(Option<String>),
+    /// Add the tag, or remove it.
+    Tag(String, bool),
 }
 
 /// Acts on the entry at `line` of `path` without opening it, returning what
@@ -2091,6 +2111,18 @@ pub fn agenda_act(
                 said = "Clocked in".to_string();
                 helix_roam::clock::clock_in(text, line, now_moment()).map_err(|err| err.to_string())
             }
+            AgendaAction::SetState(ref state) => {
+                let edited = state_set(editor, text, line, &settings, state.as_deref())?;
+                said = edited.done;
+                note = edited.note;
+                Ok(edited.text)
+            }
+            AgendaAction::Tag(ref tag, add) => {
+                said = format!("{} :{tag}:", if add { "Tagged" } else { "Untagged" });
+                Ok(helix_roam::restructure::edit_tag(text, line, tag, add)
+                    .map_err(|err| err.to_string())?
+                    .unwrap_or_else(|| text.to_string()))
+            }
         }
     })?;
 
@@ -2101,6 +2133,40 @@ pub fn agenda_act(
         ask_for_note(pending, Some(path.to_path_buf()));
     }
     Ok(said)
+}
+
+/// Moves the entry at `line` of `path` under `target`, from the agenda:
+/// both files are changed where they are, buffer or disk.
+pub fn agenda_refile(
+    editor: &mut Editor,
+    path: &Path,
+    line: usize,
+    target: &RefileTarget,
+) -> Result<String, String> {
+    if path == target.path {
+        return Err("Refiling within the same file is not supported yet".to_string());
+    }
+    let target_text = match editor.document_by_path(&target.path) {
+        Some(doc) => doc.text().to_string(),
+        None => std::fs::read_to_string(&target.path)
+            .map_err(|err| format!("could not read {}: {err}", target.path.display()))?,
+    };
+    let mut moved = None;
+    edit_file(editor, path, |_, text| {
+        let refiling = helix_roam::restructure::refile_subtree(text, line, &target_text, target.id)
+            .map_err(|err| err.to_string())?;
+        let source = refiling.source.clone();
+        moved = Some(refiling);
+        Ok(source)
+    })?;
+    let Some(refiling) = moved else {
+        return Err("nothing was refiled".to_string());
+    };
+    edit_file(editor, &target.path, |_, _| Ok(refiling.target.clone()))?;
+    Ok(format!(
+        "Refiled \"{}\" under {}",
+        refiling.title, target.title
+    ))
 }
 
 /// What keeps the entry at `line` from being done, described for a message.
@@ -2400,6 +2466,7 @@ pub fn archive_subtree(editor: &mut Editor) {
 }
 
 /// One line of an agenda, flattened for the picker.
+#[derive(Debug, Clone, Default)]
 pub struct AgendaLine {
     pub when: String,
     pub what: String,
@@ -2408,23 +2475,190 @@ pub struct AgendaLine {
     pub line: usize,
     /// A habit's consistency graph, empty for anything else.
     pub habit: Vec<helix_roam::habit::Cell>,
+    /// Every tag of the entry, inherited ones included.
+    pub tags: Vec<String>,
+    pub category: String,
+    /// The `:Effort:` in minutes.
+    pub effort: Option<u32>,
+    /// The entry's title alone, without state, priority or tags.
+    pub title: String,
+    pub todo: Option<String>,
+    /// The day and time of day the line is for, in a view by day.
+    pub day: Option<helix_roam::Date>,
+    pub time: Option<(u32, u32)>,
+    /// The entry's drawer, for the column view.
+    pub properties: Vec<(String, String)>,
+    pub priority: Option<char>,
+    /// Minutes clocked on the entry, a running clock until now.
+    pub clocked: i64,
 }
 
 impl AgendaLine {
-    /// The heading of a block of a custom view.
+    /// A column's value for this line: `TODO`, `PRIORITY`, `TAGS`,
+    /// `CLOCKSUM` or a property.
+    pub fn column(&self, name: &str) -> String {
+        match name.to_ascii_uppercase().as_str() {
+            "TODO" => self.todo.clone().unwrap_or_default(),
+            "PRIORITY" => self.priority.map(String::from).unwrap_or_default(),
+            "TAGS" if self.tags.is_empty() => String::new(),
+            "TAGS" => format!(":{}:", self.tags.join(":")),
+            "CLOCKSUM" if self.clocked == 0 => String::new(),
+            "CLOCKSUM" => helix_roam::clock::format_duration(self.clocked),
+            "ITEM" => self.title.clone(),
+            _ => self
+                .properties
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                .map(|(_, value)| value.clone())
+                .unwrap_or_default(),
+        }
+    }
+}
+
+impl AgendaLine {
+    /// The heading of a block of a custom view, or any line that is no
+    /// entry: a time grid's hour, a report's total.
     fn heading(title: String) -> Self {
         Self {
             when: format!("── {title}"),
-            what: String::new(),
-            path: PathBuf::new(),
-            line: 0,
-            habit: Vec::new(),
+            ..Self::default()
         }
     }
 
     pub fn is_heading(&self) -> bool {
         self.path.as_os_str().is_empty()
     }
+}
+
+/// What an agenda view is narrowed to, as Org's `/`, `<`, `_` and `=`
+/// narrow its agenda buffer. Each part left empty lets everything through.
+#[derive(Debug, Clone, Default)]
+pub struct AgendaFilter {
+    /// Tags wanted (`true`) or refused (`false`).
+    pub tags: Vec<(bool, String)>,
+    pub category: Option<String>,
+    /// `<`, `>` or `=`, and minutes.
+    pub effort: Option<(char, u32)>,
+    pub regex: Option<helix_core::regex::Regex>,
+}
+
+impl AgendaFilter {
+    /// Reads `+work -home urgent`: a tag without a sign is wanted.
+    pub fn parse_tags(input: &str) -> Vec<(bool, String)> {
+        input
+            .split_whitespace()
+            .filter_map(|word| {
+                let (wanted, tag) = match word.strip_prefix('-') {
+                    Some(tag) => (false, tag),
+                    None => (true, word.strip_prefix('+').unwrap_or(word)),
+                };
+                let tag = tag.trim_matches(':');
+                (!tag.is_empty()).then(|| (wanted, tag.to_string()))
+            })
+            .collect()
+    }
+
+    /// Reads `<0:30`, `>1:00`, `=45` or `20` (at most, as Org's default).
+    pub fn parse_effort(input: &str) -> Result<(char, u32), String> {
+        let input = input.trim();
+        let (op, rest) = match input.chars().next() {
+            Some(op @ ('<' | '>' | '=')) => (op, &input[1..]),
+            _ => ('<', input),
+        };
+        effort_minutes(rest)
+            .map(|minutes| (op, minutes))
+            .ok_or_else(|| format!("`{input}` is not an effort; try <0:30 or >1:00"))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tags.is_empty()
+            && self.category.is_none()
+            && self.effort.is_none()
+            && self.regex.is_none()
+    }
+
+    /// Whether the line stays in view. Lines that are no entry always do.
+    pub fn matches(&self, line: &AgendaLine) -> bool {
+        if line.is_heading() {
+            return true;
+        }
+        let tags_ok = self
+            .tags
+            .iter()
+            .all(|(wanted, tag)| line.tags.contains(tag) == *wanted);
+        let category_ok = self
+            .category
+            .as_ref()
+            .is_none_or(|category| &line.category == category);
+        // An entry without an effort is not known to be short, nor long.
+        let effort_ok = self.effort.is_none_or(|(op, minutes)| {
+            line.effort.is_some_and(|effort| match op {
+                '<' => effort <= minutes,
+                '>' => effort >= minutes,
+                _ => effort == minutes,
+            })
+        });
+        let regex_ok = self
+            .regex
+            .as_ref()
+            .is_none_or(|regex| regex.is_match(&line.what));
+        tags_ok && category_ok && effort_ok && regex_ok
+    }
+
+    /// What the filter keeps, for the status line.
+    pub fn describe(&self) -> String {
+        let mut parts = Vec::new();
+        if !self.tags.is_empty() {
+            let tags: Vec<String> = self
+                .tags
+                .iter()
+                .map(|(wanted, tag)| format!("{}{tag}", if *wanted { '+' } else { '-' }))
+                .collect();
+            parts.push(tags.join(""));
+        }
+        if let Some(category) = &self.category {
+            parts.push(format!("category {category}"));
+        }
+        if let Some((op, minutes)) = self.effort {
+            parts.push(format!("effort {op}{}:{:02}", minutes / 60, minutes % 60));
+        }
+        if let Some(regex) = &self.regex {
+            parts.push(format!("{{{}}}", regex.as_str()));
+        }
+        parts.join(", ")
+    }
+}
+
+/// `1:30`, `90` or `1h30` as minutes.
+fn effort_minutes(text: &str) -> Option<u32> {
+    let text = text.trim();
+    if let Some((hours, minutes)) = text.split_once(':') {
+        return Some(hours.trim().parse::<u32>().ok()? * 60 + minutes.trim().parse::<u32>().ok()?);
+    }
+    if let Some((hours, minutes)) = text.split_once('h') {
+        let minutes = minutes.trim_end_matches(['m', 'i', 'n']);
+        let minutes = if minutes.is_empty() {
+            0
+        } else {
+            minutes.parse().ok()?
+        };
+        return Some(hours.trim().parse::<u32>().ok()? * 60 + minutes);
+    }
+    text.trim_end_matches(['m', 'i', 'n']).parse().ok()
+}
+
+/// How a view by day is shown, which its keys change: the span it starts
+/// from and what it adds to the entries.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ViewOptions {
+    /// Spans moved from today's: `-1` is the previous week of a week view.
+    pub shift: i64,
+    /// Log mode: what was closed and clocked on each day too.
+    pub log: bool,
+    /// A clock report of the span after the entries.
+    pub report: bool,
+    /// The hours of the day between the timed entries.
+    pub grid: bool,
 }
 
 /// Whether a node's file is one the agenda should read.
@@ -2445,19 +2679,22 @@ fn in_agenda_scope(editor: &Editor, path: &Path) -> bool {
 ///
 /// Snapshots what it needs from the graph rather than holding its lock, like
 /// the other pickers, so indexing stays free while it is open.
-pub fn agenda_lines(editor: &Editor, days: i64) -> Vec<AgendaLine> {
-    agenda_lines_matching(editor, days, None)
+pub fn agenda_lines(editor: &Editor, days: i64, options: &ViewOptions) -> Vec<AgendaLine> {
+    agenda_lines_matching(editor, days, None, options)
 }
 
-/// The agenda over `days` days, of the entries `filter` matches.
+/// The agenda over `days` days, of the entries `filter` matches, shown as
+/// `options` say.
 fn agenda_lines_matching(
     editor: &Editor,
     days: i64,
     filter: Option<&helix_roam::search::Match>,
+    options: &ViewOptions,
 ) -> Vec<AgendaLine> {
     use helix_roam::agenda::Reason;
 
     let today = helix_roam::Date::today();
+    let from = today.offset_by(options.shift * days.max(1));
     let graph = editor.roam.read();
     let entries: Vec<&helix_roam::Entry> = graph
         .entries()
@@ -2465,40 +2702,134 @@ fn agenda_lines_matching(
         .filter(|entry| filter.is_none_or(|filter| filter.matches(entry)))
         .collect();
 
-    helix_roam::agenda::agenda(entries, today, days)
-        .into_iter()
-        .map(|item| {
-            let what = match (item.reason, item.days_left) {
-                (Reason::Deadline, Some(days)) if days < 0 => {
-                    format!("Deadline: {} d. ago", -days)
-                }
-                (Reason::Deadline, Some(0)) => "Deadline: today".to_string(),
-                (Reason::Deadline, Some(days)) => format!("Deadline: in {days} d."),
-                (Reason::Deadline, None) => "Deadline".to_string(),
-                (Reason::Scheduled, _) => "Scheduled".to_string(),
-                (Reason::Timestamp, _) => String::new(),
-            };
-            let time = item
-                .time
-                .map(|(hour, minute)| format!("{hour:02}:{minute:02} "))
-                .unwrap_or_default();
+    // Every day of the span has its heading, even an empty one, and its
+    // rows: the agenda's items, the log's, the grid's hours. Rows with a
+    // time come first, in time order, as Org shows them.
+    let mut by_day: std::collections::BTreeMap<helix_roam::Date, Vec<AgendaLine>> = (0..days
+        .max(1))
+        .map(|offset| (from.offset_by(offset), Vec::new()))
+        .collect();
 
-            AgendaLine {
-                when: format!(
-                    "{} {}  {:<10} {time}{what}",
-                    item.day.to_iso(),
-                    item.day.weekday(),
-                    item.entry.category,
-                )
-                .trim_end()
-                .to_string(),
-                what: agenda_title(item.entry),
-                path: item.entry.file_path.clone(),
-                line: item.entry.line,
-                habit: habit_graph(editor, item.entry, today),
+    for item in helix_roam::agenda::agenda(entries.iter().copied(), from, days) {
+        let what = match (item.reason, item.days_left) {
+            (Reason::Deadline, Some(days)) if days < 0 => format!("Deadline: {} d. ago", -days),
+            (Reason::Deadline, Some(0)) => "Deadline: today".to_string(),
+            (Reason::Deadline, Some(days)) => format!("Deadline: in {days} d."),
+            (Reason::Deadline, None) => "Deadline".to_string(),
+            (Reason::Scheduled, _) => "Scheduled".to_string(),
+            (Reason::Timestamp, _) => String::new(),
+        };
+        let line = AgendaLine {
+            habit: habit_graph(editor, item.entry, today),
+            day: Some(item.day),
+            time: item.time,
+            ..entry_line(item.entry, day_row(&item.entry.category, item.time, &what))
+        };
+        by_day.entry(item.day).or_default().push(line);
+    }
+
+    for (day, entry, text) in helix_roam::agenda::diary(entries.iter().copied(), from, days) {
+        let line = AgendaLine {
+            day: Some(day),
+            what: text.clone(),
+            title: text,
+            ..entry_line(entry, day_row(&entry.category, None, "Diary"))
+        };
+        by_day.entry(day).or_default().push(line);
+    }
+
+    if options.log {
+        for item in helix_roam::agenda::log(entries.iter().copied(), from, days) {
+            let (hour, minute) = item.time;
+            let what = match item.what {
+                helix_roam::agenda::Logged::Closed => format!("{hour:02}:{minute:02} Closed"),
+                helix_roam::agenda::Logged::Clocked { end } => {
+                    let start = helix_roam::clock::moment(
+                        item.day,
+                        helix_roam::date::Time { hour, minute },
+                    );
+                    let end_of_day = end.rem_euclid(1440);
+                    format!(
+                        "{hour:02}:{minute:02}-{:02}:{:02} Clocked ({})",
+                        end_of_day / 60,
+                        end_of_day % 60,
+                        helix_roam::clock::format_duration(end - start)
+                    )
+                }
+            };
+            let line = AgendaLine {
+                day: Some(item.day),
+                time: Some(item.time),
+                ..entry_line(item.entry, day_row(&item.entry.category, None, &what))
+            };
+            by_day.entry(item.day).or_default().push(line);
+        }
+    }
+
+    let now = helix_roam::date::Time::now();
+    let mut lines = Vec::new();
+    for (day, mut rows) in by_day {
+        if options.grid {
+            for hour in (8..=20).step_by(2) {
+                rows.push(AgendaLine {
+                    time: Some((hour, 0)),
+                    ..AgendaLine::heading(String::new())
+                });
             }
-        })
-        .collect()
+            if day == today {
+                rows.push(AgendaLine {
+                    time: Some((now.hour, now.minute)),
+                    ..AgendaLine::heading(String::new())
+                });
+            }
+            for row in rows.iter_mut().filter(|row| row.is_heading()) {
+                let (hour, minute) = row.time.unwrap_or_default();
+                let mark = if day == today && (hour, minute) == (now.hour, now.minute) {
+                    "now ─ ─ ─ ─ ─ ─"
+                } else {
+                    "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄"
+                };
+                row.when = format!("{:<12}{hour:02}:{minute:02} {mark}", "");
+            }
+        }
+        // Timed rows first, by time; a grid hour before an entry at the
+        // same time; the rest in the order they came.
+        rows.sort_by_key(|row| (row.time.is_none(), row.time, !row.is_heading()));
+        let label = if day == today { " · today" } else { "" };
+        lines.push(AgendaLine::heading(format!(
+            "{} {}{label}",
+            day.weekday(),
+            day.to_iso()
+        )));
+        lines.extend(rows);
+    }
+
+    if options.report {
+        let start = helix_roam::clock::moment(from, helix_roam::date::Time { hour: 0, minute: 0 });
+        let end = start + days.max(1) * 1440;
+        let report =
+            helix_roam::agenda::clock_report(entries.iter().copied(), start, end, now_moment());
+        let total: i64 = report.iter().map(|(_, minutes)| minutes).sum();
+        lines.push(AgendaLine::heading(format!(
+            "Clock report: {}",
+            helix_roam::clock::format_duration(total)
+        )));
+        for (entry, minutes) in report {
+            let duration = helix_roam::clock::format_duration(minutes);
+            lines.push(entry_line(entry, day_row(&entry.category, None, &duration)));
+        }
+    }
+    lines
+}
+
+/// The first column of a row under a day: category, time, what it is.
+fn day_row(category: &str, time: Option<(u32, u32)>, what: &str) -> String {
+    let time = time
+        .map(|(hour, minute)| format!("{hour:02}:{minute:02} "))
+        .unwrap_or_default();
+    format!("  {category:<10}{time}{what}")
+        .trim_end()
+        .to_string()
 }
 
 /// The consistency graph of an entry that is a habit.
@@ -2607,6 +2938,30 @@ pub fn search_lines(editor: &Editor, search: &helix_roam::search::Search) -> Vec
     lines
 }
 
+/// The projects with nothing to do next, as `stuck-projects` defines them.
+pub fn stuck_lines(editor: &Editor) -> Result<Vec<AgendaLine>, String> {
+    let config = editor.config().roam.stuck_projects.clone();
+    let is_project = helix_roam::search::Match::parse(&config.query, helix_roam::Date::today())?;
+    let graph = editor.roam.read();
+    let mut files: Vec<(&Path, &[helix_roam::Entry])> = graph
+        .entries_by_file()
+        .filter(|(path, _)| in_agenda_scope(editor, path))
+        .collect();
+    files.sort_by_key(|(path, _)| *path);
+    Ok(files
+        .into_iter()
+        .flat_map(|(_, entries)| {
+            helix_roam::agenda::stuck_projects(
+                entries,
+                |entry| is_project.matches(entry),
+                &config.todo,
+                &config.tags,
+            )
+        })
+        .map(|entry| entry_line(entry, entry.category.clone()))
+        .collect())
+}
+
 /// The lines of one block of a custom agenda view.
 pub fn block_lines(
     editor: &Editor,
@@ -2622,7 +2977,7 @@ pub fn block_lines(
             let filter = (!query.is_empty())
                 .then(|| Match::parse(query, today))
                 .transpose()?;
-            agenda_lines_matching(editor, block.days, filter.as_ref())
+            agenda_lines_matching(editor, block.days, filter.as_ref(), &ViewOptions::default())
         }
         AgendaBlockKind::Todo => match_lines(editor, &Match::parse(&format!("/!{query}"), today)?),
         AgendaBlockKind::Tags => match_lines(editor, &Match::parse(query, today)?),
@@ -2630,6 +2985,7 @@ pub fn block_lines(
             match_lines(editor, &Match::parse(&format!("{query}/!"), today)?)
         }
         AgendaBlockKind::Search => search_lines(editor, &Search::parse(query)?),
+        AgendaBlockKind::Stuck => stuck_lines(editor)?,
     })
 }
 
@@ -2654,6 +3010,7 @@ pub fn custom_view_lines(
                     AgendaBlockKind::Tags => format!("Match: {query}"),
                     AgendaBlockKind::TagsTodo => format!("Tasks matching: {query}"),
                     AgendaBlockKind::Search => format!("Search: {query}"),
+                    AgendaBlockKind::Stuck => "Stuck projects".to_string(),
                 }
             });
             lines.push(AgendaLine::heading(title));
@@ -2667,11 +3024,160 @@ pub fn custom_view_lines(
 /// first column shows.
 fn entry_line(entry: &helix_roam::Entry, when: String) -> AgendaLine {
     AgendaLine {
-        habit: Vec::new(),
         when,
         what: agenda_title(entry),
         path: entry.file_path.clone(),
         line: entry.line,
+        tags: entry.all_tags().cloned().collect(),
+        category: entry.category.clone(),
+        effort: entry.property("effort").and_then(effort_minutes),
+        title: entry.title.clone(),
+        todo: entry.todo.as_ref().map(|state| state.keyword.clone()),
+        properties: entry.properties.clone(),
+        priority: entry.priority,
+        clocked: {
+            let now = now_moment();
+            entry
+                .clocks
+                .iter()
+                .map(|&(start, end)| (end.unwrap_or(now) - start).max(0))
+                .sum()
+        },
+        ..AgendaLine::default()
+    }
+}
+
+/// How an agenda view is written to a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgendaExport {
+    Text,
+    Html,
+    ICalendar,
+}
+
+impl AgendaExport {
+    /// By the file's extension: `.html`, `.ics`, anything else as text.
+    pub fn for_path(path: &Path) -> Self {
+        match path.extension().and_then(|ext| ext.to_str()) {
+            Some(ext) if ext.eq_ignore_ascii_case("html") || ext.eq_ignore_ascii_case("htm") => {
+                Self::Html
+            }
+            Some(ext) if ext.eq_ignore_ascii_case("ics") => Self::ICalendar,
+            _ => Self::Text,
+        }
+    }
+}
+
+/// The lines of an agenda view as a file: plain text as shown, an HTML
+/// page, or an iCalendar of its dated entries (and its undated tasks).
+pub fn agenda_export(lines: &[AgendaLine], title: &str, format: AgendaExport) -> String {
+    match format {
+        AgendaExport::Text => {
+            let width = lines
+                .iter()
+                .map(|line| line.when.chars().count())
+                .max()
+                .unwrap_or(0);
+            let mut out = format!("{title}\n\n");
+            for line in lines {
+                let pad = width - line.when.chars().count();
+                let row = format!("{}{}  {}", line.when, " ".repeat(pad), line.what);
+                out.push_str(row.trim_end());
+                out.push('\n');
+            }
+            out
+        }
+        AgendaExport::Html => {
+            let escape = |text: &str| {
+                text.replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;")
+                    .replace('"', "&quot;")
+            };
+            let mut out = format!(
+                "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n<title>{0}</title>\n\
+                 <style>body{{font-family:sans-serif}}td{{padding:0 1em}}tr.heading td{{font-weight:bold;padding-top:1em}}</style>\n\
+                 </head>\n<body>\n<h1>{0}</h1>\n<table>\n",
+                escape(title)
+            );
+            for line in lines {
+                if line.is_heading() {
+                    out.push_str(&format!(
+                        "<tr class=\"heading\"><td colspan=\"2\">{}</td></tr>\n",
+                        escape(line.when.trim_start_matches("── "))
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "<tr><td>{}</td><td>{}</td></tr>\n",
+                        escape(line.when.trim()),
+                        escape(&line.what)
+                    ));
+                }
+            }
+            out.push_str("</table>\n</body>\n</html>\n");
+            out
+        }
+        AgendaExport::ICalendar => {
+            // Commas, semicolons and backslashes are escaped in text values.
+            let escape = |text: &str| {
+                text.replace('\\', "\\\\")
+                    .replace(',', "\\,")
+                    .replace(';', "\\;")
+            };
+            let stamp = {
+                let (date, time) = now();
+                format!(
+                    "{}T{:02}{:02}00Z",
+                    date.to_iso().replace('-', ""),
+                    time.hour,
+                    time.minute
+                )
+            };
+            let mut out = String::from(
+                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//neohelix//agenda//EN\r\n",
+            );
+            let mut seen = std::collections::BTreeSet::new();
+            for line in lines.iter().filter(|line| !line.is_heading()) {
+                let uid = format!(
+                    "{}-{}-{}@neohelix",
+                    line.path
+                        .display()
+                        .to_string()
+                        .replace(['/', '\\', ' '], "_"),
+                    line.line,
+                    line.day.map(|day| day.to_iso()).unwrap_or_default()
+                );
+                if !seen.insert(uid.clone()) {
+                    continue;
+                }
+                match line.day {
+                    Some(day) => {
+                        let date = day.to_iso().replace('-', "");
+                        let start = match line.time {
+                            Some((hour, minute)) => {
+                                format!("DTSTART:{date}T{hour:02}{minute:02}00")
+                            }
+                            None => format!("DTSTART;VALUE=DATE:{date}"),
+                        };
+                        out.push_str(&format!(
+                            "BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTAMP:{stamp}\r\n{start}\r\nSUMMARY:{}\r\nCATEGORIES:{}\r\nEND:VEVENT\r\n",
+                            escape(&line.title),
+                            escape(&line.category)
+                        ));
+                    }
+                    None if line.todo.is_some() => {
+                        out.push_str(&format!(
+                            "BEGIN:VTODO\r\nUID:{uid}\r\nDTSTAMP:{stamp}\r\nSUMMARY:{}\r\nCATEGORIES:{}\r\nEND:VTODO\r\n",
+                            escape(&line.title),
+                            escape(&line.category)
+                        ));
+                    }
+                    None => {}
+                }
+            }
+            out.push_str("END:VCALENDAR\r\n");
+            out
+        }
     }
 }
 
