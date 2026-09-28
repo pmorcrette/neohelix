@@ -20,9 +20,10 @@ use crate::compositor::{Component, Context, Event, EventResult};
 
 /// The view showing the running shell, under a one-line title bar.
 pub struct TerminalView {
-    /// Set by `Ctrl-\`, which only means "leave" if `Ctrl-n` follows.
+    /// Set by the prefix (`Ctrl-g`), which only means something if one of
+    /// the terminal's command keys follows.
     pending_escape: bool,
-    /// Set by `Ctrl-\ &`: the next key says whether to close the terminal.
+    /// Set by `Ctrl-g &`: the next key says whether to close the terminal.
     confirm_close: bool,
     /// Until when the title bar flashes for the bell.
     bell_until: Option<std::time::Instant>,
@@ -560,14 +561,26 @@ fn translate_key(code: KeyCode) -> Option<Key> {
     })
 }
 
-/// Whether this is the first key of the `Ctrl-\ Ctrl-n` escape sequence.
+/// Whether `key` is the configured prefix, the first key of the terminal's
+/// own commands (`Ctrl-g Ctrl-n` by default).
 ///
 /// A terminal sends `0x1c` for both `Ctrl-\` and `Ctrl-4`, and the decoder
-/// reports the digit form, so both are accepted — no shell could tell them
-/// apart either.
-fn is_escape_prefix(key: KeyEvent) -> bool {
-    key.modifiers.contains(KeyModifiers::CONTROL)
-        && matches!(key.code, KeyCode::Char('\\') | KeyCode::Char('4'))
+/// reports the digit form, so a `C-\` prefix accepts both — no shell could
+/// tell them apart either.
+fn is_escape_prefix(key: KeyEvent, prefix: KeyEvent) -> bool {
+    if key == prefix {
+        return true;
+    }
+    let backslash = KeyEvent {
+        code: KeyCode::Char('\\'),
+        modifiers: KeyModifiers::CONTROL,
+    };
+    prefix == backslash
+        && key
+            == KeyEvent {
+                code: KeyCode::Char('4'),
+                modifiers: KeyModifiers::CONTROL,
+            }
 }
 
 fn translate_modifiers(modifiers: KeyModifiers) -> Modifiers {
@@ -758,6 +771,7 @@ impl Component for TerminalView {
                 (text, shown)
             })
             .collect();
+        let prefix_key = cx.editor.config().integrated_terminal.prefix_label();
         let Some(terminal) = cx.editor.terminals.current_mut() else {
             return;
         };
@@ -770,6 +784,9 @@ impl Component for TerminalView {
         // Cleared, so that nothing of the editor underneath shows through.
         surface.clear_with(title_area, bar_style);
         let close_question;
+        let docked_hint =
+            format!(" {prefix_key} Ctrl-n: editor  q: hide  [: copy  p: paste  c: new  w: list ");
+        let hint_text = format!(" {prefix_key} Ctrl-n: back  [: copy  p: paste  c: new  w: list ");
         let (prefix, hint) = match &self.copy {
             _ if self.confirm_close => {
                 close_question = format!(
@@ -786,14 +803,8 @@ impl Component for TerminalView {
                 " v select  y copy  / search  q done ",
             ),
             None if docked.is_some() && !focused => (String::new(), " Ctrl-w p or click: focus "),
-            None if docked.is_some() => (
-                String::new(),
-                " Ctrl-\\ Ctrl-n: editor  q: hide  [: copy  p: paste  c: new  w: list ",
-            ),
-            None => (
-                String::new(),
-                " Ctrl-\\ Ctrl-n: back  [: copy  p: paste  c: new  w: list ",
-            ),
+            None if docked.is_some() => (String::new(), docked_hint.as_str()),
+            None => (String::new(), hint_text.as_str()),
         };
         let hint_width = hint.chars().count() as u16;
         let show_hint = area.width >= hint_width + 24 || self.confirm_close;
@@ -978,7 +989,7 @@ impl Component for TerminalView {
             return EventResult::Consumed(Some(close));
         }
 
-        // `Ctrl-\ &` asked whether to close the terminal: `y` does.
+        // `Ctrl-g &` asked whether to close the terminal: `y` does.
         if self.confirm_close {
             self.confirm_close = false;
             if key.code == KeyCode::Char('y') && key.modifiers.is_empty() {
@@ -989,7 +1000,8 @@ impl Component for TerminalView {
             return EventResult::Consumed(None);
         }
 
-        // `Ctrl-\ Ctrl-n` hands the keyboard back, as it does in Neovim. The
+        // `Ctrl-g Ctrl-n` hands the keyboard back, as Neovim's `Ctrl-\
+        // Ctrl-n` does, with a prefix every layout types without AltGr. The
         // first key is held rather than sent, because it only means "leave"
         // if the second one follows.
         if self.pending_escape {
@@ -1002,26 +1014,27 @@ impl Component for TerminalView {
                         self.leave_copy_mode(cx.editor);
                     }
                     cx.editor.dock.focus(None);
-                    cx.editor.set_status(
-                        "Ctrl-w p or <space>t comes back to the terminal; Ctrl-\\ q hides it",
-                    );
+                    let prefix = cx.editor.config().integrated_terminal.prefix_label();
+                    cx.editor.set_status(format!(
+                        "Ctrl-w p or <space>t comes back to the terminal; {prefix} q hides it"
+                    ));
                     return EventResult::Consumed(None);
                 }
                 return EventResult::Consumed(Some(close));
             }
-            // `Ctrl-\ q`: hide the terminal; its shells keep running.
+            // `Ctrl-g q`: hide the terminal; its shells keep running.
             if key.code == KeyCode::Char('q') && key.modifiers.is_empty() {
                 if self.copy.is_some() {
                     self.leave_copy_mode(cx.editor);
                 }
                 return EventResult::Consumed(Some(close));
             }
-            // `Ctrl-\ [`: copy mode, as tmux's prefix and `[`.
+            // `Ctrl-g [`: copy mode, as tmux's prefix and `[`.
             if key.code == KeyCode::Char('[') && !key.modifiers.contains(KeyModifiers::CONTROL) {
                 self.enter_copy_mode(cx.editor);
                 return EventResult::Consumed(None);
             }
-            // `Ctrl-\ p` pastes the default register, `Ctrl-\ P` the
+            // `Ctrl-g p` pastes the default register, `Ctrl-g P` the
             // clipboard.
             if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
                 let register = match key.code {
@@ -1093,12 +1106,19 @@ impl Component for TerminalView {
                     _ => {}
                 }
             }
-            // It was not the escape sequence after all, so the shell gets the
-            // Ctrl-\ it should have had, followed by this key.
-            if let Some(terminal) = cx.editor.terminals.current() {
-                terminal.write(vec![0x1c]);
+            // It was not one of the terminal's commands after all, so the
+            // program gets the prefix it should have had, followed by this
+            // key — or only once, when the prefix was pressed twice.
+            let prefix = cx.editor.config().integrated_terminal.prefix;
+            if let Some(bytes) = Self::encode(cx.editor, prefix) {
+                if let Some(terminal) = cx.editor.terminals.current() {
+                    terminal.write(bytes);
+                }
             }
-        } else if is_escape_prefix(*key) {
+            if is_escape_prefix(*key, prefix) {
+                return EventResult::Consumed(None);
+            }
+        } else if is_escape_prefix(*key, cx.editor.config().integrated_terminal.prefix) {
             self.pending_escape = true;
             return EventResult::Consumed(None);
         } else if self.copy.is_some() {
@@ -1251,24 +1271,33 @@ mod tests {
     }
 
     #[test]
-    fn both_spellings_of_the_escape_prefix_are_accepted() {
-        // A terminal sends 0x1c for Ctrl-\ and Ctrl-4 alike.
-        for code in [KeyCode::Char('\\'), KeyCode::Char('4')] {
-            assert!(is_escape_prefix(KeyEvent {
-                code,
-                modifiers: KeyModifiers::CONTROL,
-            }));
-        }
-
-        // Without Ctrl, or with any other key, it is ordinary input.
-        assert!(!is_escape_prefix(KeyEvent {
-            code: KeyCode::Char('4'),
-            modifiers: KeyModifiers::NONE,
-        }));
-        assert!(!is_escape_prefix(KeyEvent {
-            code: KeyCode::Char('n'),
+    fn the_prefix_is_the_configured_key_and_ctrl_backslash_has_two_spellings() {
+        let ctrl = |c| KeyEvent {
+            code: KeyCode::Char(c),
             modifiers: KeyModifiers::CONTROL,
-        }));
+        };
+        let default = helix_view::editor::IntegratedTerminalConfig::default().prefix;
+        assert_eq!(default, ctrl('g'));
+        assert!(is_escape_prefix(ctrl('g'), default));
+        assert!(!is_escape_prefix(ctrl('\\'), default));
+        assert!(!is_escape_prefix(ctrl('n'), default));
+
+        // A terminal sends 0x1c for Ctrl-\ and Ctrl-4 alike.
+        for key in [ctrl('\\'), ctrl('4')] {
+            assert!(is_escape_prefix(key, ctrl('\\')));
+        }
+        // Without Ctrl, it is ordinary input.
+        assert!(!is_escape_prefix(
+            KeyEvent {
+                code: KeyCode::Char('4'),
+                modifiers: KeyModifiers::NONE,
+            },
+            ctrl('\\')
+        ));
+        assert_eq!(
+            helix_view::editor::IntegratedTerminalConfig::default().prefix_label(),
+            "Ctrl-g"
+        );
     }
 
     #[test]

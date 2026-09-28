@@ -287,6 +287,52 @@ directory = "~/org"
 The graph backs `:roam-node-find` (`<space>nf`) and the backlinks panel opened
 by `:roam-backlinks-toggle` (`<space>nb`). `:roam-reindex` rebuilds it from
 scratch, which is needed after Org files change outside the editor.
+`<space>ni` inserts a link to a node (`:roam-node-insert`) and `<space>nC`
+creates a node from a template (`:roam-capture`).
+
+#### Capture
+
+`:org-capture` (`<space>nc`) files a note, a task or a list item into its place
+without going there first: a picker offers the templates (`:org-capture t`
+names one by its key), their `%^{…}` questions are asked, and the text goes in.
+The file then opens on it, unless the template is `immediate`. Without any
+template configured, `t` files a task into `inbox.org`.
+
+```toml
+[[editor.roam.capture]]
+key = "t"
+description = "Task"
+file = "inbox.org"
+outline = ["Tasks"]
+template = "* TODO %?\n  %U\n  %a"
+
+[[editor.roam.capture]]
+key = "j"
+description = "Journal"
+file = "journal.org"
+datetree = true
+template = "* %U %^{Title}\n%?"
+
+[[editor.roam.capture]]
+key = "s"
+description = "Shopping"
+type = "checkitem"
+file = "lists.org"
+outline = ["Shopping"]
+template = "%^{Item}"
+immediate = true
+```
+
+| Key | Description | Default |
+|--|--|---------|
+|`key`, `description` | What selects the template, and what the picker shows | |
+|`type` | `entry` (a headline, made a child of the place), `item`, `checkitem` or `plain` | `"entry"` |
+|`file` | Where it goes, relative to the notes directory unless absolute; created if missing | `"inbox.org"` |
+|`outline` | Headlines from the top of the file down to the place, created if missing | `[]` (the file) |
+|`datetree` | File it under `2026` / `2026-09 September` / `2026-09-28 Monday` beneath the place | `false` |
+|`template` | The text, with Org's escapes: `%?` the cursor, `%t` `%T` `%u` `%U` today's timestamps (active or inactive, with the time for the capitals), `%a` a link to where the capture started, `%i` the selected text there, `%f` `%F` that file's name and path, `%^{Prompt}` or `%^{Prompt\|default\|other}` a question, `%\1` the first answer again, `%%` a `%` | |
+|`prepend` | First among what is already there rather than last | `false` |
+|`immediate` | Write it and stay where you are | `false` |
 
 ### `[editor.integrated-terminal]` Section
 
@@ -302,14 +348,15 @@ Set options for the integrated terminal (`:terminal`, `<space>t`).
 |`cursor-shape` | The cursor's shape until a program asks for another: `block`, `underline` or `bar`. Copy mode's cursor is always a block | `"block"` |
 |`word-separators` | The characters that end a word for copy mode's `w`, `b` and `e` | ``",│`\|:\"' ()[]{}<>\t"`` |
 |`clipboard-copy` | Let programs copy into the clipboard registers (OSC 52). Programs can never read them | `true` |
+|`prefix` | The key that starts the terminal's own commands below instead of reaching the program; pressed twice, the program gets it. A letter by default, typed the same way on AZERTY, QWERTY and Ergo-L. `"C-\\"` gives Neovim's `Ctrl-\` | `"C-g"` |
 
 Settings apply to terminals started after they change; a running terminal
-keeps the ones it was started with.
+keeps the ones it was started with. The `prefix` applies at once.
 
-In the terminal, `Ctrl-\ Ctrl-n` returns to the editor (docked, the terminal
-stays in view and `Ctrl-\ q` hides it; see `[editor.dock]`), and `Shift-PageUp` and
+In the terminal, `Ctrl-g Ctrl-n` returns to the editor (docked, the terminal
+stays in view and `Ctrl-g q` hides it; see `[editor.dock]`), and `Shift-PageUp` and
 `Shift-PageDown` scroll back through the output; typing returns to the bottom.
-`Ctrl-\ [` enters copy mode, where the keys move a cursor over the text rather
+`Ctrl-g [` enters copy mode, where the keys move a cursor over the text rather
 than reaching the program: `h` `j` `k` `l`, `w` `b` `e` (and `W` `B` `E` for
 space-separated words), `0` `^` `$`, `H` `M` `L`, `g` and `G` for the top of the
 scrollback and the bottom, `Ctrl-u` `Ctrl-d` and the page keys, with a count
@@ -319,7 +366,7 @@ mode. `/` and `?` search forwards and backwards with a regular expression — `^
 and `$` are not anchored to lines — and `n` and `N` repeat the search. `q` or
 `Esc` leave copy mode.
 
-`Ctrl-\ p` pastes the default yank register into the terminal and `Ctrl-\ P`
+`Ctrl-g p` pastes the default yank register into the terminal and `Ctrl-g P`
 the clipboard; a paste from the terminal Helix runs in goes through as well.
 Pastes are bracketed when the program asks for it, so a shell does not run a
 pasted line by itself. A program that asks for the mouse (`htop`, `tmux`, an
@@ -329,12 +376,12 @@ program like `less`, sends the arrow keys.
 
 Several terminals can run at once; the title bar shows them as tabs, each by
 the name it was given or the title its program set, with `!` on one whose bell
-rang while another was shown. With tmux's keys for its windows, `Ctrl-\ c`
-starts another terminal in the current document's directory, `Ctrl-\ w`
+rang while another was shown. With tmux's keys for its windows, `Ctrl-g c`
+starts another terminal in the current document's directory, `Ctrl-g w`
 lists them (also `<space>T` and `:terminal-list`: what runs in each and in
-which directory), `Ctrl-\ 1` to `Ctrl-\ 9` show one by its number,
-`Ctrl-\ (` and `Ctrl-\ )` the previous and the next, `Ctrl-\ ,` names the
-one shown (also `:terminal-rename`) and `Ctrl-\ &` closes it after asking
+which directory), `Ctrl-g 1` to `Ctrl-g 9` show one by its number,
+`Ctrl-g (` and `Ctrl-g )` the previous and the next, `Ctrl-g ,` names the
+one shown (also `:terminal-rename`) and `Ctrl-g &` closes it after asking
 (also `:terminal-close`). `:terminal` comes back to the terminal shown last;
 `:terminal-new [directory]` starts another. A new terminal starts in the
 directory of the document focused at the time; a running one keeps its own,
@@ -356,8 +403,8 @@ documents make room for it; with `none`, it covers the documents while open.
 A pane that opens takes the keys. `Ctrl-w p` (or `<space>w p`) moves them from
 the documents to each docked pane that takes keys in turn, and back; a click
 on a pane or on a document does the same. In Magit's views `Esc` gives the
-keys back to the documents and `q` closes; in the terminal `Ctrl-\ Ctrl-n`
-gives them back and `Ctrl-\ q` hides it, its shells still running. Docked,
+keys back to the documents and `q` closes; in the terminal `Ctrl-g Ctrl-n`
+gives them back and `Ctrl-g q` hides it, its shells still running. Docked,
 Magit stays open when it opens something in the editor — a file visited, the
 commit message, a rebase's todo-list — and gives it the keys. A pane is only
 docked when it leaves the documents at least 30 columns and 6 lines;

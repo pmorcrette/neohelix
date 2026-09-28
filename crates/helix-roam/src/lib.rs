@@ -27,6 +27,7 @@ pub mod list;
 pub mod logging;
 pub mod markup;
 mod node;
+pub mod org_capture;
 pub mod outline;
 pub mod parser;
 pub mod pretty;

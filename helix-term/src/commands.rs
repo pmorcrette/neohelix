@@ -430,6 +430,7 @@ impl MappableCommand {
         roam_rename_node, "Rename the node at the cursor and the links naming it",
         roam_unlinked_references, "List where this node is named without a link",
         roam_capture, "Create an Org-Roam node from a template",
+        org_capture, "Capture a note or a task into its place, from a template",
         org_insert_heading, "Insert a heading after the current subtree",
         org_promote, "Promote the headline at the cursor",
         org_demote, "Demote the headline at the cursor",
@@ -3610,7 +3611,7 @@ pub fn spawn_terminal(editor: &mut Editor, directory: Option<PathBuf>) -> Option
 /// shell if none is running.
 ///
 /// The shells live in the editor rather than in the view, so closing the
-/// view with `Ctrl-\ Ctrl-n` and reopening comes back to the same session.
+/// view with `Ctrl-g Ctrl-n` and reopening comes back to the same session.
 pub fn terminal_view(editor: &mut Editor) -> Option<Box<dyn Component>> {
     editor
         .terminals
@@ -3618,7 +3619,8 @@ pub fn terminal_view(editor: &mut Editor) -> Option<Box<dyn Component>> {
     if editor.terminals.is_empty() {
         spawn_terminal(editor, None)?;
     }
-    editor.set_status("Terminal: Ctrl-\\ Ctrl-n returns to the editor");
+    let prefix = editor.config().integrated_terminal.prefix_label();
+    editor.set_status(format!("Terminal: {prefix} Ctrl-n returns to the editor"));
     Some(Box::new(ui::terminal::TerminalView::new()))
 }
 
@@ -3631,8 +3633,9 @@ pub fn new_terminal_view(
         .terminals
         .remove_where(|entry| entry.terminal.has_exited());
     let number = spawn_terminal(editor, directory)?;
+    let prefix = editor.config().integrated_terminal.prefix_label();
     editor.set_status(format!(
-        "Terminal {number}: Ctrl-\\ Ctrl-n returns to the editor"
+        "Terminal {number}: {prefix} Ctrl-n returns to the editor"
     ));
     Some(Box::new(ui::terminal::TerminalView::new()))
 }
@@ -5221,6 +5224,136 @@ fn capture_title_prompt(template: helix_roam::capture::Template) -> Box<dyn Comp
             }
         },
     ))
+}
+
+/// `org-capture`: pick a template, answer its questions, and the capture is
+/// filed. With `key`, the template with that key, without the picker. What
+/// `%a`, `%i` and `%f` refer to is taken now, from where it starts.
+pub fn org_capture_picker(editor: &mut Editor, key: Option<&str>) -> Option<Box<dyn Component>> {
+    let templates = crate::roam::org_capture_templates(editor);
+    let context = crate::roam::org_capture_context(editor);
+
+    let chosen = match key {
+        Some(key) => match templates.iter().find(|template| template.key == key) {
+            Some(template) => Some(template.clone()),
+            None => {
+                editor.set_error(format!("No capture template with the key {key}"));
+                return None;
+            }
+        },
+        // One template is not a choice.
+        None if templates.len() == 1 => templates.first().cloned(),
+        None => None,
+    };
+    if let Some(template) = chosen {
+        return org_capture_questions(editor, template, context);
+    }
+
+    let columns = [
+        ui::PickerColumn::new(
+            "key",
+            |item: &helix_view::editor::OrgCaptureTemplate, _: &PathStyleConfig| {
+                item.key.as_str().into()
+            },
+        ),
+        ui::PickerColumn::new(
+            "template",
+            |item: &helix_view::editor::OrgCaptureTemplate, _: &PathStyleConfig| {
+                item.description.as_str().into()
+            },
+        ),
+        ui::PickerColumn::new(
+            "into",
+            |item: &helix_view::editor::OrgCaptureTemplate, _: &PathStyleConfig| {
+                let mut place = item.file.clone();
+                for headline in &item.outline {
+                    place.push_str(" / ");
+                    place.push_str(headline);
+                }
+                if item.datetree {
+                    place.push_str(" / (date)");
+                }
+                place.into()
+            },
+        ),
+    ];
+    let picker = Picker::new(
+        columns,
+        1, // template
+        templates,
+        PathStyleConfig::new(&editor.theme),
+        move |cx, template, _action| {
+            let (template, context) = (template.clone(), context.clone());
+            cx.jobs.callback(async move {
+                let call: job::Callback = job::Callback::EditorCompositor(Box::new(
+                    move |editor: &mut Editor, compositor: &mut Compositor| {
+                        if let Some(next) = org_capture_questions(editor, template, context) {
+                            compositor.push(next);
+                        }
+                    },
+                ));
+                Ok(call)
+            });
+        },
+    );
+    Some(Box::new(overlaid(picker)))
+}
+
+/// Asks the template's `%^{…}` questions one after the other, then files
+/// the capture; with none to ask, files it at once.
+fn org_capture_questions(
+    editor: &mut Editor,
+    template: helix_view::editor::OrgCaptureTemplate,
+    context: helix_roam::org_capture::Context,
+) -> Option<Box<dyn Component>> {
+    let questions = helix_roam::org_capture::questions(&template.template);
+    let Some(question) = questions.get(context.answers.len()).cloned() else {
+        crate::roam::org_capture(editor, &template, &context);
+        return None;
+    };
+    let label = match &question.default {
+        Some(default) => format!("{} [{default}]: ", question.prompt),
+        None => format!("{}: ", question.prompt),
+    };
+    let choices = question.choices.clone();
+    Some(Box::new(ui::Prompt::new(
+        label.into(),
+        None,
+        move |_editor, input| {
+            choices
+                .iter()
+                .filter(|choice| choice.contains(input))
+                .map(|choice| (0.., choice.clone().into()))
+                .collect()
+        },
+        move |cx, input, event| {
+            if event != PromptEvent::Validate {
+                return;
+            }
+            let answer = match input.trim() {
+                "" => question.default.clone().unwrap_or_default(),
+                answer => answer.to_string(),
+            };
+            let (template, mut context) = (template.clone(), context.clone());
+            context.answers.push(answer);
+            cx.jobs.callback(async move {
+                let call: job::Callback = job::Callback::EditorCompositor(Box::new(
+                    move |editor: &mut Editor, compositor: &mut Compositor| {
+                        if let Some(next) = org_capture_questions(editor, template, context) {
+                            compositor.push(next);
+                        }
+                    },
+                ));
+                Ok(call)
+            });
+        },
+    )))
+}
+
+fn org_capture(cx: &mut Context) {
+    if let Some(component) = org_capture_picker(cx.editor, None) {
+        cx.push_layer(component);
+    }
 }
 
 /// Opens the capture flow.

@@ -2442,6 +2442,26 @@ roam_component_command!(
     crate::commands::roam_unlinked_picker
 );
 roam_component_command!(roam_capture, crate::commands::roam_capture_picker);
+
+fn org_capture(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let key = args.first().map(|key| key.to_string());
+    let callback = async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                if let Some(component) = crate::commands::org_capture_picker(editor, key.as_deref())
+                {
+                    compositor.push(component);
+                }
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
 roam_buffer_command!(org_insert_heading, crate::roam::insert_heading);
 roam_buffer_command!(org_promote, crate::roam::promote_heading);
 roam_buffer_command!(org_demote, crate::roam::demote_heading);
@@ -6081,6 +6101,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-capture",
+        aliases: &[],
+        doc: "Capture a note or a task into its place: pick a template, or name it by its key.",
+        fun: org_capture,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
             ..Signature::DEFAULT
         },
     },

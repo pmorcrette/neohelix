@@ -522,10 +522,22 @@ fn open_externally(editor: &mut Editor, url: &str) {
 /// Prefers the id of the node the cursor is in, since that is the link that
 /// survives the file being renamed or the headline being reworded.
 pub fn store_link(editor: &mut Editor) {
+    let stored = match link_here(editor) {
+        Ok(link) => link,
+        Err(err) => return editor.set_error(err),
+    };
+    match editor.registers.write(LINK_REGISTER, vec![stored.clone()]) {
+        Ok(()) => editor.set_status(format!("Stored {stored}")),
+        Err(err) => editor.set_error(err.to_string()),
+    }
+}
+
+/// A link to the cursor's location: the id of the node it is in when it
+/// has one, else the file and line.
+fn link_here(editor: &Editor) -> Result<String, &'static str> {
     let offset = cursor_offset(editor);
     let Some(path) = doc!(editor).path().map(Path::to_path_buf) else {
-        editor.set_error("the buffer has no path to link to");
-        return;
+        return Err("the buffer has no path to link to");
     };
     let text = doc!(editor).text().to_string();
     let line = doc!(editor).text().byte_to_line(offset);
@@ -539,10 +551,11 @@ pub fn store_link(editor: &mut Editor) {
         Some((id, title)) => helix_roam::hyperlink::format_link(&format!("id:{id}"), Some(&title)),
         None => {
             // No node here: a file link with the line, which at least lands.
+            // A headline is described by its words, not its stars.
             let title = text
                 .lines()
                 .nth(line)
-                .map(str::trim)
+                .map(|l| l.trim().trim_start_matches('*').trim())
                 .filter(|l| !l.is_empty())
                 .unwrap_or("")
                 .to_string();
@@ -552,11 +565,7 @@ pub fn store_link(editor: &mut Editor) {
             )
         }
     };
-
-    match editor.registers.write(LINK_REGISTER, vec![stored.clone()]) {
-        Ok(()) => editor.set_status(format!("Stored {stored}")),
-        Err(err) => editor.set_error(err.to_string()),
-    }
+    Ok(stored)
 }
 
 /// Inserts the stored link at the cursor.
@@ -1172,6 +1181,118 @@ pub fn capture_templates(editor: &Editor) -> Vec<helix_roam::capture::Template> 
             content: template.content.clone(),
         })
         .collect()
+}
+
+/// `org-capture`'s templates, or the built-in one: a task filed into
+/// `inbox.org`, stamped and linked to where it was captured, as Org's own
+/// default template is.
+pub fn org_capture_templates(editor: &Editor) -> Vec<helix_view::editor::OrgCaptureTemplate> {
+    let configured = &editor.config().roam.capture;
+    if !configured.is_empty() {
+        return configured.clone();
+    }
+    vec![helix_view::editor::OrgCaptureTemplate {
+        key: "t".into(),
+        description: "Task".into(),
+        kind: helix_view::editor::OrgCaptureKind::Entry,
+        file: "inbox.org".into(),
+        outline: Vec::new(),
+        datetree: false,
+        template: "* TODO %?\n  %U\n  %a".into(),
+        prepend: false,
+        immediate: false,
+    }]
+}
+
+/// What a capture's escapes refer to, taken where it starts: the link to
+/// the cursor, the selection (when more than a character), the file.
+pub fn org_capture_context(editor: &Editor) -> helix_roam::org_capture::Context {
+    let (view, doc) = current_ref!(editor);
+    let selection = doc.selection(view.id).primary();
+    let initial = if selection.len() > 1 {
+        selection.fragment(doc.text().slice(..)).to_string()
+    } else {
+        String::new()
+    };
+    let (date, time) = now();
+    helix_roam::org_capture::Context {
+        date,
+        time,
+        link: link_here(editor).ok(),
+        initial: initial.trim_end_matches('\n').to_string(),
+        file: doc.path().map(Path::to_path_buf),
+        answers: Vec::new(),
+    }
+}
+
+/// Files a capture where `template` says, then goes to it unless the
+/// template is `immediate`. An open buffer for the file gets the text,
+/// unsaved like any other change; otherwise the file does.
+pub fn org_capture(
+    editor: &mut Editor,
+    template: &helix_view::editor::OrgCaptureTemplate,
+    cx: &helix_roam::org_capture::Context,
+) {
+    use helix_roam::org_capture::{expand, place, Kind, Place};
+    use helix_view::editor::OrgCaptureKind;
+
+    let path = {
+        let file = Path::new(&template.file);
+        if file.is_absolute() {
+            file.to_path_buf()
+        } else {
+            notes_directory(editor).join(file)
+        }
+    };
+    if editor.document_by_path(&path).is_none() && !path.exists() {
+        let created = path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::write(&path, ""));
+        if let Err(err) = created {
+            return editor.set_error(format!("could not create {}: {err}", path.display()));
+        }
+    }
+
+    let kind = match template.kind {
+        OrgCaptureKind::Entry => Kind::Entry,
+        OrgCaptureKind::Item => Kind::Item,
+        OrgCaptureKind::Checkitem => Kind::CheckItem,
+        OrgCaptureKind::Plain => Kind::Plain,
+    };
+    let at = Place {
+        outline: template.outline.clone(),
+        datetree: template.datetree,
+        prepend: template.prepend,
+    };
+    let expanded = expand(&template.template, cx);
+    let mut cursor = 0;
+    let result = edit_file(editor, &path, |_, text| {
+        let insertion = place(text, &at, kind, &expanded, cx.date);
+        cursor = insertion.cursor;
+        let mut after = text.to_string();
+        after.insert_str(insertion.at, &insertion.text);
+        Ok(after)
+    });
+    if let Err(err) = result {
+        return editor.set_error(format!("Not captured: {err}"));
+    }
+
+    let name = path
+        .strip_prefix(notes_directory(editor))
+        .unwrap_or(&path)
+        .display()
+        .to_string();
+    if template.immediate {
+        return editor.set_status(format!("Captured into {name}"));
+    }
+    if let Err(err) = editor.open(&path, helix_view::editor::Action::Replace) {
+        return editor.set_error(format!("could not open {name}: {err}"));
+    }
+    jump_to_byte(editor, cursor);
+    // A capture is for typing: straight into insert mode, at `%?`.
+    editor.mode = helix_view::document::Mode::Insert;
+    editor.set_status(format!("Captured into {name}"));
 }
 
 /// Creates a node from `template`, opens it, and leaves the cursor at `%?`.

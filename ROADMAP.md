@@ -1203,6 +1203,97 @@ writes. Written together, `\x1b:` is Alt-`:` to a terminal, so "escape the
 prompt, then `:w`" silently became neither — the file was never saved, and
 the run looked like a command that had changed nothing.*
 
+### Task 1.23: Capture
+
+*Tasks 1.23 to 1.28 come from comparing the fork with Org, feature by
+feature; what only Emacs can do (Customize, elisp in templates) is left
+out.* Org-Roam's capture creates nodes; Org's
+`org-capture` files a note, a task or a list item into a chosen place from
+anywhere, and is what a Doom or Spacemacs user reaches for first.
+
+- [x] Templates in the configuration, each with a key, a description, what
+      it writes (an entry, an item, a checkbox item, plain text) and where
+      (a file, a path of headlines in it, a date tree), first or last there.
+- [x] Org's `%`-escapes: `%?`, `%t` `%T` `%u` `%U`, `%a`, `%i`, `%f` `%F`,
+      `%^{Prompt|default|choices}` and `%\1`.
+- [x] A picker over the templates and a key for it (`<space>nc`), with
+      `:org-capture <key>` to skip the picker.
+- [ ] The rest of the escapes: `%^t` and `%^T` (a date asked for), `%^g` and
+      `%^G` (tags), `%^{Prop}p` (a property), `%<…>` (a formatted date),
+      `%c` (the clipboard), `%k` and `%K` (the clocked entry).
+- [ ] The other targets: `file+regexp`, `id`, `clock` (the entry being clocked),
+      and a date tree by week.
+- [ ] A capture buffer: the text shown in its own buffer first, `C-c C-c`
+      files it and `C-c C-k` drops it, with refile from there; and
+      `:clock-in` / `:clock-resume` properties.
+
+*In progress.* The escapes, the placing and the date tree are pure text
+work in `helix_roam::org_capture`, so what a capture writes is tested
+without the editor; the editor applies it as one insertion (into the open
+buffer, or the file when it is not open) and goes there, unless the
+template is `immediate`. Without templates, `t` files a task into
+`inbox.org`, as Org's default does.
+
+### Task 1.24: The Agenda, Continued
+
+- [ ] Custom agenda views, Org's `org-agenda-custom-commands`: a name, a
+      key, and blocks of the existing views with their filters.
+- [ ] A match view (tags, properties, TODO states: Org's `m`) and a search
+      view (words and regexps: `s`) over the whole notes directory.
+- [ ] Stuck projects, and the time grid of the day view.
+- [ ] Log mode and the clock report inside the agenda.
+- [ ] Bulk actions: mark entries, then change their state, reschedule,
+      refile or tag them together.
+- [ ] Interactive filters: by tag, category, effort, regexp (`/`, `<`, `_`).
+- [ ] Column view inside the agenda; diary entries and anniversaries.
+- [ ] Export of an agenda view to a file (text, HTML, iCalendar).
+
+### Task 1.25: Export and Publishing, Continued
+
+- [ ] More backends: plain text (ASCII and UTF-8), ODT, Beamer, Texinfo,
+      man, and Org itself (for `#+INCLUDE` resolution).
+- [ ] iCalendar export of scheduled and deadline entries, which is how an
+      agenda reaches a phone's calendar.
+- [ ] Compiling the LaTeX export to PDF when a TeX distribution is present.
+- [ ] `org-publish`: projects, a sitemap, attachments copied along, and only
+      what changed rebuilt.
+- [ ] Export of a subtree alone, body only, and in the background.
+
+### Task 1.26: Babel, Continued
+
+- [ ] `:var` taking another block's result, a named table or a list, which
+      is what makes blocks compose.
+- [ ] Sessions (`:session`): a long-running interpreter per session name.
+- [ ] Compiled languages (C, C++, Rust, Go), built in a scratch directory.
+- [ ] Detangling (writing edits of tangled files back into the blocks) and a
+      library of reusable blocks (Org's Library of Babel).
+- [ ] `:cache`, and `:results` for graphics (`file`) now that attachments
+      exist.
+
+### Task 1.27: Tables, Continued
+
+- [ ] Tables in other languages' comments (`orgtbl-mode`) and radio tables
+      that send a table's contents into a block of another syntax.
+- [ ] Import from and export to CSV and TSV.
+- [ ] Editing a long field in a buffer of its own (Org's `C-c \``).
+- [ ] Plots of a table through gnuplot (Org's `org-plot`).
+- [ ] What Org gets from Calc and elisp in formulas and the fork's evaluator
+      does not: units, symbolic arithmetic, the date functions.
+
+### Task 1.28: Everyday Conveniences
+
+- [ ] Fast tag selection: the tags of `#+TAGS` on keys, toggled in one popup.
+- [ ] Tag groups and hierarchies (`#+TAGS: [ Project : Work Home ]`), which
+      searches and the agenda expand.
+- [ ] Speed keys: one-key commands when the cursor is on a headline's stars.
+- [ ] Radio targets (`<<<target>>>`), which turn every mention into a link.
+- [ ] Timers: a relative timer, a countdown and a pomodoro in the status line.
+- [ ] Clocking, continued: idle detection, the history of clocked entries,
+      and resuming the last one.
+- [ ] `shell:` links, behind the same trust decision as Babel.
+- [ ] An interactive graph in a browser (Org-Roam UI); Graphviz covers the
+      static one.
+
 ---
 
 ## Phase 2: Magit Client (`crates/helix-magit`)
@@ -2531,6 +2622,23 @@ started with a custom `TERM` and environment; checked in the editor (shell,
 `TERM`, a variable and a bar cursor from the configuration, an underline
 cursor set by a program). The `TerminalConfig` the task opened with is
 upstream's debugger terminal, which is left alone.
+
+### Task 3.8: A Prefix Every Keyboard Types
+
+- [x] The terminal's own commands started with `Ctrl-\`, Neovim's key, which
+      AZERTY types with AltGr (`AltGr-8`) and Ergo-L puts on a layer. Make
+      the prefix configurable and default to one typed the same way on
+      AZERTY, QWERTY and Ergo-L.
+
+*Done.* `prefix` in `[editor.integrated-terminal]`, a key in Helix's own
+notation, `"C-g"` by default: a letter, so no layout needs AltGr or a layer
+for it, and one shells hardly use (readline's abort). Every command follows
+it as before: `Ctrl-g Ctrl-n` back to the editor, `Ctrl-g q` hides, `Ctrl-g
+[` copy mode, `Ctrl-g p`, `c`, `w`, `1`–`9`, `(` `)`, `,` and `&`. The prefix
+pressed twice sends it to the program, and one followed by any other key
+sends both, so nothing is lost to a program that uses it. `"C-\\"` brings
+Neovim's key back, `Ctrl-4` included (the same byte). The hints in the title
+bar and the status line name the configured prefix.
 
 ---
 

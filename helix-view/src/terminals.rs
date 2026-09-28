@@ -2,8 +2,8 @@
 //! `:terminal-new`, and which one the terminal view shows.
 //!
 //! Terminals are numbered from 1, and a new one takes the lowest number no
-//! other terminal has, as tmux numbers its windows, so that `Ctrl-\ 1` to
-//! `Ctrl-\ 9` stay short. A number stays with its terminal until it closes.
+//! other terminal has, as tmux numbers its windows, so that `Ctrl-g 1` to
+//! `Ctrl-g 9` stay short. A number stays with its terminal until it closes.
 
 /// One terminal and what the list knows about it.
 #[derive(Debug)]

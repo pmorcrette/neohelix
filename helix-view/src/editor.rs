@@ -609,6 +609,20 @@ pub struct IntegratedTerminalConfig {
     /// Let programs copy into the clipboard registers (OSC 52). Programs can
     /// never read them.
     pub clipboard_copy: bool,
+    /// The key that starts the terminal's own commands (`Ctrl-g Ctrl-n`
+    /// back to the editor, `Ctrl-g [` copy mode, …) instead of reaching the
+    /// program. `Ctrl-g` by default: a letter, so it is typed the same way
+    /// on AZERTY, QWERTY and Ergo-L, and one shells hardly use. Pressed
+    /// twice, the program gets it.
+    #[serde(serialize_with = "serialize_key")]
+    pub prefix: crate::input::KeyEvent,
+}
+
+fn serialize_key<S: serde::Serializer>(
+    key: &crate::input::KeyEvent,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&key.to_string())
 }
 
 /// `[editor.dock]`: which of the fork's views are docked, and where.
@@ -663,8 +677,41 @@ impl Default for IntegratedTerminalConfig {
             cursor_shape: TerminalCursorShape::Block,
             word_separators: pty.word_separators,
             clipboard_copy: pty.clipboard_copy,
+            prefix: crate::input::KeyEvent {
+                code: crate::keyboard::KeyCode::Char('g'),
+                modifiers: crate::keyboard::KeyModifiers::CONTROL,
+            },
         }
     }
+}
+
+impl IntegratedTerminalConfig {
+    /// The prefix as the terminal's hints spell it: `Ctrl-g`.
+    pub fn prefix_label(&self) -> String {
+        key_label(self.prefix)
+    }
+}
+
+/// A key spelled for people rather than for the config file: `Ctrl-g`
+/// rather than `C-g`.
+pub fn key_label(key: crate::input::KeyEvent) -> String {
+    use crate::keyboard::KeyModifiers;
+    let mut label = String::new();
+    for (modifier, name) in [
+        (KeyModifiers::CONTROL, "Ctrl-"),
+        (KeyModifiers::ALT, "Alt-"),
+        (KeyModifiers::SHIFT, "Shift-"),
+    ] {
+        if key.modifiers.contains(modifier) {
+            label.push_str(name);
+        }
+    }
+    let bare = crate::input::KeyEvent {
+        code: key.code,
+        modifiers: KeyModifiers::NONE,
+    };
+    label.push_str(&bare.to_string());
+    label
 }
 
 impl IntegratedTerminalConfig {
@@ -744,6 +791,12 @@ pub struct RoamConfig {
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub templates: Vec<RoamTemplate>,
+    /// `org-capture`'s templates: what a capture writes, and where.
+    ///
+    /// Empty means one built-in template, a task filed into `inbox.org`.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub capture: Vec<OrgCaptureTemplate>,
     /// Whether an entry with an open child can be marked done. Org's
     /// `org-enforce-todo-dependencies`, off by default as it is there.
     /// `:ORDERED:` and `:BLOCKER:` apply either way.
@@ -770,6 +823,57 @@ pub struct RoamTemplate {
     pub content: String,
 }
 
+/// An `org-capture` template, `[[editor.roam.capture]]`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct OrgCaptureTemplate {
+    /// Key that selects this template, in the picker and as
+    /// `:org-capture <key>`.
+    pub key: String,
+    /// What the picker shows.
+    pub description: String,
+    /// What is written: an `entry` (a headline), an `item`, a `checkitem`
+    /// or `plain` text.
+    #[serde(default, rename = "type")]
+    pub kind: OrgCaptureKind,
+    /// The file it goes into, relative to the notes directory unless
+    /// absolute; created if missing.
+    #[serde(default = "default_capture_file")]
+    pub file: String,
+    /// Headlines from the top of the file down to where it goes, created
+    /// if missing. Empty is the file itself.
+    #[serde(default)]
+    pub outline: Vec<String>,
+    /// File it under a date tree for today (`2026` / `2026-09 September` /
+    /// `2026-09-28 Monday`), beneath `outline`.
+    #[serde(default)]
+    pub datetree: bool,
+    /// The text, with Org's `%`-escapes: `%?` `%t` `%T` `%u` `%U` `%a`
+    /// `%i` `%f` `%F` `%^{Prompt|default|choice}` `%\1` `%%`.
+    pub template: String,
+    /// First among what is already there, rather than last.
+    #[serde(default)]
+    pub prepend: bool,
+    /// Write it and stay where you are, rather than going to it.
+    #[serde(default)]
+    pub immediate: bool,
+}
+
+fn default_capture_file() -> String {
+    "inbox.org".to_string()
+}
+
+/// What an `org-capture` template writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OrgCaptureKind {
+    #[default]
+    Entry,
+    Item,
+    Checkitem,
+    Plain,
+}
+
 impl Default for RoamConfig {
     fn default() -> Self {
         Self {
@@ -778,6 +882,7 @@ impl Default for RoamConfig {
             dailies_directory: PathBuf::from("daily"),
             agenda_files: Vec::new(),
             templates: Vec::new(),
+            capture: Vec::new(),
             todo_dependencies: false,
             pretty: true,
         }

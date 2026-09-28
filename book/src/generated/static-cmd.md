@@ -119,14 +119,15 @@
 | `org_store_link` | Store a link to the cursor's location |  |
 | `org_insert_link` | Insert the stored Org link |  |
 | `org_create_id` | Give the entry at the cursor an :ID: |  |
-| `roam_node_insert` | Insert a link to an Org-Roam node, creating it if needed |  |
+| `roam_node_insert` | Insert a link to an Org-Roam node, creating it if needed | normal: `` <space>ni ``, select: `` <space>ni `` |
 | `roam_random_node` | Open a random Org-Roam node |  |
 | `roam_ref_find` | Find an Org-Roam node by one of its refs |  |
 | `roam_alias_add` | Add an alias to the node at the cursor |  |
 | `roam_alias_remove` | Remove an alias from the node at the cursor |  |
 | `roam_rename_node` | Rename the node at the cursor and the links naming it |  |
 | `roam_unlinked_references` | List where this node is named without a link |  |
-| `roam_capture` | Create an Org-Roam node from a template |  |
+| `roam_capture` | Create an Org-Roam node from a template | normal: `` <space>nC ``, select: `` <space>nC `` |
+| `org_capture` | Capture a note or a task into its place, from a template | normal: `` <space>nc ``, select: `` <space>nc `` |
 | `org_insert_heading` | Insert a heading after the current subtree |  |
 | `org_promote` | Promote the headline at the cursor |  |
 | `org_demote` | Demote the headline at the cursor |  |
