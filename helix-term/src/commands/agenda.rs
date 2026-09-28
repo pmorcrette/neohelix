@@ -316,7 +316,10 @@ pub struct AgendaView {
     options: Option<ViewOptions>,
     filter: AgendaFilter,
     /// Entries marked for a bulk action, by file and line.
-    marks: std::collections::BTreeSet<(PathBuf, usize)>,
+    /// with each entry's title, which finds it again when an edit moved it.
+    marks: std::collections::BTreeMap<EntryKey, String>,
+    /// Marks the last rebuild could not find again.
+    lost_marks: usize,
     /// The lines the picker was given, in order.
     shown: Vec<AgendaLine>,
     /// Whether the entries show `agenda-columns` after them.
@@ -341,6 +344,7 @@ impl AgendaView {
             options,
             filter: AgendaFilter::default(),
             marks: Default::default(),
+            lost_marks: 0,
             shown: Vec::new(),
             columns: false,
         };
@@ -377,19 +381,37 @@ impl AgendaView {
 
     /// Shows `lines` through the filter, with the marks.
     fn show(&mut self, editor: &Editor, lines: Vec<AgendaLine>, keep: Option<EntryKey>) {
-        // Marks on entries no longer there go.
-        let present: std::collections::BTreeSet<EntryKey> = lines
+        // An edit that adds lines (a planning line, a state's log) moves the
+        // entries below it, so a mark follows its entry by title: to the
+        // same line if the entry is still there, else to the nearest entry
+        // of that title in the file. A mark whose entry is gone goes.
+        let present: Vec<(EntryKey, &str)> = lines
             .iter()
             .filter(|line| !line.is_heading())
-            .map(|line| (line.path.clone(), line.line))
+            .map(|line| ((line.path.clone(), line.line), line.title.as_str()))
             .collect();
-        self.marks.retain(|mark| present.contains(mark));
+        let mut kept = std::collections::BTreeMap::new();
+        self.lost_marks = 0;
+        for ((path, line), title) in std::mem::take(&mut self.marks) {
+            let found = present
+                .iter()
+                .filter(|(key, own)| key.0 == path && *own == title)
+                .min_by_key(|(key, _)| key.1.abs_diff(line))
+                .map(|(key, _)| key.clone());
+            match found {
+                Some(key) if !kept.contains_key(&key) => {
+                    kept.insert(key, title);
+                }
+                _ => self.lost_marks += 1,
+            }
+        }
+        self.marks = kept;
 
         let mut shown: Vec<AgendaLine> = lines
             .into_iter()
             .filter(|line| self.filter.matches(line))
             .map(|mut line| {
-                if self.marks.contains(&(line.path.clone(), line.line)) {
+                if self.marks.contains_key(&(line.path.clone(), line.line)) {
                     line.when = format!("» {}", line.when);
                 }
                 line
@@ -419,6 +441,17 @@ impl AgendaView {
             Err(err) => editor.set_error(err),
         }
         self.refresh(editor, Some((path, line)));
+        self.say_lost_marks(editor);
+    }
+
+    /// Says when marks could not follow their entries after an edit.
+    fn say_lost_marks(&self, editor: &mut Editor) {
+        if self.lost_marks > 0 {
+            editor.set_error(format!(
+                "{} mark(s) lost: the entries are no longer found",
+                self.lost_marks
+            ));
+        }
     }
 
     /// Says what the view is narrowed to and how many are marked.
@@ -609,9 +642,14 @@ impl Component for AgendaView {
                 return Consumed(None);
             }
             crate::alt!('m') => {
-                if let Some(key) = self.selected() {
-                    if !self.marks.remove(&key) {
-                        self.marks.insert(key.clone());
+                let title = self
+                    .picker
+                    .content
+                    .selection()
+                    .map(|line| line.title.clone());
+                if let (Some(key), Some(title)) = (self.selected(), title) {
+                    if self.marks.remove(&key).is_none() {
+                        self.marks.insert(key.clone(), title);
                     }
                     let next = self.next_after(&key).or(Some(key));
                     self.refresh(cx.editor, next);
@@ -624,7 +662,7 @@ impl Component for AgendaView {
                     .shown
                     .iter()
                     .filter(|line| !line.is_heading())
-                    .map(|line| (line.path.clone(), line.line))
+                    .map(|line| ((line.path.clone(), line.line), line.title.clone()))
                     .collect();
                 let keep = self.selected();
                 self.refresh(cx.editor, keep);
@@ -642,7 +680,7 @@ impl Component for AgendaView {
                 let marks: Vec<EntryKey> = if self.marks.is_empty() {
                     self.selected().into_iter().collect()
                 } else {
-                    self.marks.iter().cloned().collect()
+                    self.marks.keys().cloned().collect()
                 };
                 if marks.is_empty() {
                     cx.editor.set_error("Nothing marked");
@@ -728,6 +766,7 @@ impl Component for AgendaView {
                     Err(err) => editor.set_error(err),
                 }
                 view.refresh(editor, Some((path.clone(), line)));
+                view.say_lost_marks(editor);
             });
         }
         self.picker.handle_event(event, cx)

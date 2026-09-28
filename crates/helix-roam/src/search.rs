@@ -109,12 +109,14 @@ pub fn relative_date(text: &str, today: Date) -> Option<Date> {
 impl Match {
     /// Reads a match string; dates in it are relative to `today`.
     pub fn parse(input: &str, today: Date) -> Result<Self, String> {
-        let (terms, todo) = match input.split_once('/') {
-            Some((terms, todo)) => (terms, Some(parse_todo(todo))),
-            None => (input, None),
+        let parts = split_outside(input, '/');
+        let (terms, todo) = match parts.as_slice() {
+            [terms] => (*terms, None),
+            [terms, ..] => (*terms, Some(parse_todo(&input[terms.len() + 1..]))),
+            [] => (input, None),
         };
-        let alternatives = terms
-            .split('|')
+        let alternatives = split_outside(terms, '|')
+            .into_iter()
             .map(|alternative| parse_terms(alternative.trim(), today))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self { alternatives, todo })
@@ -129,6 +131,38 @@ impl Match {
                     .all(|(wanted, term)| term.holds(entry) == *wanted)
             })
     }
+}
+
+/// Splits `text` at `separator`, except inside a `{regexp}`, a `"string"`
+/// or a `<date>`, where it is part of the value.
+fn split_outside(text: &str, separator: char) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut closing = None;
+    let mut start = 0;
+    for (at, c) in text.char_indices() {
+        match closing {
+            Some(close) if c == close => closing = None,
+            Some(_) => {}
+            None => match c {
+                '{' => closing = Some('}'),
+                '"' => closing = Some('"'),
+                // After an operator, `<` opens a date; elsewhere it is one.
+                '<' if text[at + 1..]
+                    .starts_with(|c: char| c == '+' || c == '-' || c.is_alphanumeric())
+                    && text[..at].ends_with(['=', '<', '>']) =>
+                {
+                    closing = Some('>')
+                }
+                c if c == separator => {
+                    parts.push(&text[start..at]);
+                    start = at + c.len_utf8();
+                }
+                _ => {}
+            },
+        }
+    }
+    parts.push(&text[start..]);
+    parts
 }
 
 fn parse_todo(text: &str) -> TodoPart {
@@ -503,6 +537,13 @@ DEADLINE: <2026-10-01 Thu>
         assert_eq!(titles("DEADLINE<=<+3d>"), ["Rapport"]);
         assert_eq!(titles("LEVEL=1"), ["Travail", "Maison"]);
         assert_eq!(titles("ITEM={^R}"), ["Rapport", "Réponse du chef"]);
+        // A `|` or a `/` in a value belongs to it.
+        assert_eq!(titles("ITEM={^(Fini|Tondre)$}"), ["Fini", "Tondre"]);
+        assert_eq!(titles("ITEM=\"a/b\"|ITEM={^Fini$}/DONE"), ["Fini"]);
+        assert_eq!(
+            titles("DEADLINE<=<+3d>|LEVEL=1"),
+            ["Travail", "Rapport", "Maison"]
+        );
         assert_eq!(titles("work/!"), ["Rapport", "Réponse du chef"]);
         assert_eq!(titles("/TODO|NEXT"), ["Rapport", "Tondre"]);
         assert_eq!(

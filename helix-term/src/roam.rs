@@ -2136,7 +2136,8 @@ pub fn agenda_act(
 }
 
 /// Moves the entry at `line` of `path` under `target`, from the agenda:
-/// both files are changed where they are, buffer or disk.
+/// both files are changed where they are, buffer or disk, the target
+/// first, so that a failure leaves the entry twice rather than nowhere.
 pub fn agenda_refile(
     editor: &mut Editor,
     path: &Path,
@@ -2151,18 +2152,18 @@ pub fn agenda_refile(
         None => std::fs::read_to_string(&target.path)
             .map_err(|err| format!("could not read {}: {err}", target.path.display()))?,
     };
-    let mut moved = None;
-    edit_file(editor, path, |_, text| {
-        let refiling = helix_roam::restructure::refile_subtree(text, line, &target_text, target.id)
-            .map_err(|err| err.to_string())?;
-        let source = refiling.source.clone();
-        moved = Some(refiling);
-        Ok(source)
-    })?;
-    let Some(refiling) = moved else {
-        return Err("nothing was refiled".to_string());
+    let source_text = match editor.document_by_path(path) {
+        Some(doc) => doc.text().to_string(),
+        None => std::fs::read_to_string(path)
+            .map_err(|err| format!("could not read {}: {err}", path.display()))?,
     };
+    let refiling =
+        helix_roam::restructure::refile_subtree(&source_text, line, &target_text, target.id)
+            .map_err(|err| err.to_string())?;
+    // The target first: should the source then fail to be written, the
+    // entry is in both files rather than in neither.
     edit_file(editor, &target.path, |_, _| Ok(refiling.target.clone()))?;
+    edit_file(editor, path, |_, _| Ok(refiling.source.clone()))?;
     Ok(format!(
         "Refiled \"{}\" under {}",
         refiling.title, target.title
