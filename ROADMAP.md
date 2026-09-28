@@ -1246,9 +1246,13 @@ clocks as they were.
 
 ### Task 1.24: The Agenda, Continued
 
-- [ ] Custom agenda views, Org's `org-agenda-custom-commands`: a name, a
-      key, and blocks of the existing views with their filters.
-- [ ] A match view (tags, properties, TODO states: Org's `m`) and a search
+- [x] Every headline on the agenda, not only the nodes: a task filed by a
+      capture has no `:ID:`. Appointments (active timestamps in an entry's
+      text) on their day, timed ones first; the category shown, as Org does.
+- [x] Custom agenda views, Org's `org-agenda-custom-commands`: a name, a
+      key, and blocks of the existing views with their filters; and a
+      dispatcher over all the views (`<space>na`).
+- [x] A match view (tags, properties, TODO states: Org's `m`) and a search
       view (words and regexps: `s`) over the whole notes directory.
 - [ ] Stuck projects, and the time grid of the day view.
 - [ ] Log mode and the clock report inside the agenda.
@@ -1257,6 +1261,13 @@ clocks as they were.
 - [ ] Interactive filters: by tag, category, effort, regexp (`/`, `<`, `_`).
 - [ ] Column view inside the agenda; diary entries and anniversaries.
 - [ ] Export of an agenda view to a file (text, HTML, iCalendar).
+
+*In progress.* The index keeps an entry per headline (`helix_roam::entry`)
+beside the graph's nodes; the agenda, the TODO list and the new views read
+entries, so an id is what links need, not what the agenda needs. The match
+and search languages are `helix_roam::search`, tested on their own; a search
+reads the entries' text from the buffers and files, since the index keeps
+no bodies.
 
 ### Task 1.25: Export and Publishing, Continued
 

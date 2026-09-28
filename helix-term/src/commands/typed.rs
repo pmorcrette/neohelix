@@ -2447,6 +2447,79 @@ roam_component_command!(
     crate::commands::org_capture_refile_picker
 );
 
+/// Builds an agenda component from a command's argument, if one was given.
+type AgendaMaker = fn(&mut Editor, Option<&str>) -> Option<Box<dyn Component>>;
+
+/// Pushes the agenda component `make` builds from the command's one
+/// argument, as typed (`None` without one).
+fn agenda_command(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+    make: AgendaMaker,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let arg = args
+        .first()
+        .map(|arg| arg.trim().to_string())
+        .filter(|arg| !arg.is_empty());
+    let callback = async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                if let Some(component) = make(editor, arg.as_deref()) {
+                    compositor.push(component);
+                }
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
+fn org_agenda_dispatch(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    agenda_command(cx, args, event, crate::commands::org_agenda_dispatch_picker)
+}
+
+fn org_agenda_match(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    agenda_command(cx, args, event, |editor, query| match query {
+        Some(query) => crate::commands::org_match_picker(editor, query, false),
+        None => Some(crate::commands::org_agenda_query_prompt(Some(false))),
+    })
+}
+
+fn org_agenda_match_todo(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    agenda_command(cx, args, event, |editor, query| match query {
+        Some(query) => crate::commands::org_match_picker(editor, query, true),
+        None => Some(crate::commands::org_agenda_query_prompt(Some(true))),
+    })
+}
+
+fn org_agenda_search(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    agenda_command(cx, args, event, |editor, query| match query {
+        Some(query) => crate::commands::org_search_picker(editor, query),
+        None => Some(crate::commands::org_agenda_query_prompt(None)),
+    })
+}
+
 fn org_capture(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
@@ -5043,6 +5116,53 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-agenda-dispatch",
+        aliases: &["agenda"],
+        doc: "Pick an agenda view, built-in or from `agenda-views`, or name it by its key.",
+        fun: org_agenda_dispatch,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-agenda-match",
+        aliases: &[],
+        doc: "List the entries matching tags, properties and states: `+work-boss|urgent/TODO`.",
+        fun: org_agenda_match,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            raw_after: Some(0),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-agenda-match-todo",
+        aliases: &[],
+        doc: "List the unfinished tasks matching tags, properties and states.",
+        fun: org_agenda_match_todo,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            raw_after: Some(0),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-agenda-search",
+        aliases: &[],
+        doc: "List the entries whose text has the words: `rust -draft \"a phrase\" {regexp}`.",
+        fun: org_agenda_search,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            raw_after: Some(0),
             ..Signature::DEFAULT
         },
     },

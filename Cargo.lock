@@ -1773,6 +1773,7 @@ dependencies = [
  "ignore",
  "parking_lot",
  "petgraph",
+ "regex",
  "tempfile",
  "tokio",
  "unicode-segmentation",

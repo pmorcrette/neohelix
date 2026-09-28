@@ -290,6 +290,55 @@ scratch, which is needed after Org files change outside the editor.
 `<space>ni` inserts a link to a node (`:roam-node-insert`) and `<space>nC`
 creates a node from a template (`:roam-capture`).
 
+#### Agenda
+
+The agenda reads every headline of the agenda's files (`agenda-files`, all of
+the notes by default), whether or not it has an `:ID:`. `:org-agenda-dispatch`
+(`<space>na`, or `:agenda <key>`) offers its views, as Org's `C-c a` does:
+
+| Key | View |
+|--|--|
+| `a`, `d` | What is due this week, or today: scheduled entries, deadlines (from 14 days ahead), and appointments, the active timestamps in an entry's text, timed ones first |
+| `t` | Every unfinished task |
+| `m` | The entries a match finds (`:org-agenda-match`) |
+| `M` | The same, unfinished tasks only (`:org-agenda-match-todo`) |
+| `s` | The entries whose text has the words (`:org-agenda-search`) |
+
+In every view, `Alt-t` and `Alt-T` step the selected entry's state, `Alt-s`
+and `Alt-d` schedule it and set its deadline, `Alt-+` and `Alt--` change its
+priority, and `Alt-i` clocks in.
+
+A match is Org's: `work+urgent-boss` wants the tags `work` and `urgent`
+(inherited ones count) and not `boss`, `|` separates alternatives, and
+`{^proj}` is a tag regexp. Properties are compared with `=`, `<>`, `<`, `<=`,
+`>`, `>=`: `Effort>0:30`, `PRIORITY="A"`, `ITEM={report}`, `DEADLINE<=<+3d>`,
+`LEVEL=1`; `TODO`, `CATEGORY`, `TAGS`, `SCHEDULED` and `CLOSED` are there too.
+After a `/`, the TODO keywords: `/NEXT|WAITING`, `/-DONE`, and `/!` for
+unfinished ones only. A search wants every word (`rust async`), none of the
+ones after a `-`, a `"phrase"` as written, and a `{regexp}`; case does not
+matter.
+
+Views of one's own, Org's custom agenda commands, show blocks of these one
+after the other:
+
+```toml
+[[editor.roam.agenda-views]]
+key = "w"
+name = "Work"
+blocks = [
+  { type = "agenda", days = 1, match = "work" },
+  { type = "todo", match = "NEXT|WAITING" },
+  { type = "tags-todo", match = "work+urgent" },
+  { type = "search", match = "\"code review\"", title = "Reviews" },
+]
+```
+
+A block's `type` is `agenda` (with `days`, 7 by default, and an optional match
+the entries must satisfy), `todo` (the unfinished tasks, of the keywords given
+if any), `tags` or `tags-todo` (a match) or `search` (words). `title` replaces
+the heading made from the block. A custom view's key takes over a built-in
+one's.
+
 #### Capture
 
 `:org-capture` (`<space>nc`) files a note, a task or a list item into its place

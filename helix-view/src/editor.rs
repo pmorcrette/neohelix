@@ -811,6 +811,11 @@ pub struct RoamConfig {
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub capture: Vec<OrgCaptureTemplate>,
+    /// Agenda views of one's own, Org's `org-agenda-custom-commands`:
+    /// blocks of the built-in views, each narrowed by a match.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub agenda_views: Vec<AgendaView>,
     /// Whether an entry with an open child can be marked done. Org's
     /// `org-enforce-todo-dependencies`, off by default as it is there.
     /// `:ORDERED:` and `:BLOCKER:` apply either way.
@@ -835,6 +840,56 @@ pub struct RoamTemplate {
     /// The file to create, relative to the notes directory.
     pub file: String,
     pub content: String,
+}
+
+/// A custom agenda view, `[[editor.roam.agenda-views]]`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct AgendaView {
+    /// What selects it in the agenda dispatcher.
+    pub key: String,
+    pub name: String,
+    /// What it shows, one block after the other.
+    pub blocks: Vec<AgendaBlock>,
+}
+
+/// One block of a custom agenda view.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct AgendaBlock {
+    #[serde(rename = "type")]
+    pub kind: AgendaBlockKind,
+    /// For `agenda`, a match the entries must satisfy; for `todo`, the TODO
+    /// keywords (`NEXT|WAITING`); for `tags` and `tags-todo`, the match;
+    /// for `search`, the words.
+    #[serde(default, rename = "match")]
+    pub query: String,
+    /// For `agenda`: how many days from today.
+    #[serde(default = "default_agenda_days")]
+    pub days: i64,
+    /// A heading for the block instead of the one made from it.
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+fn default_agenda_days() -> i64 {
+    7
+}
+
+/// The built-in views a custom one is made of, named as in Org.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgendaBlockKind {
+    /// What is due, by day.
+    Agenda,
+    /// Unfinished tasks.
+    Todo,
+    /// Entries matching tags, properties and states.
+    Tags,
+    /// The same, unfinished tasks only.
+    TagsTodo,
+    /// Entries whose text has the words.
+    Search,
 }
 
 /// An `org-capture` template, `[[editor.roam.capture]]`.
@@ -939,6 +994,7 @@ impl Default for RoamConfig {
             agenda_files: Vec::new(),
             templates: Vec::new(),
             capture: Vec::new(),
+            agenda_views: Vec::new(),
             todo_dependencies: false,
             pretty: true,
         }

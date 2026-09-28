@@ -2403,10 +2403,28 @@ pub fn archive_subtree(editor: &mut Editor) {
 pub struct AgendaLine {
     pub when: String,
     pub what: String,
+    /// Empty for a block's heading, which is no entry.
     pub path: PathBuf,
     pub line: usize,
     /// A habit's consistency graph, empty for anything else.
     pub habit: Vec<helix_roam::habit::Cell>,
+}
+
+impl AgendaLine {
+    /// The heading of a block of a custom view.
+    fn heading(title: String) -> Self {
+        Self {
+            when: format!("── {title}"),
+            what: String::new(),
+            path: PathBuf::new(),
+            line: 0,
+            habit: Vec::new(),
+        }
+    }
+
+    pub fn is_heading(&self) -> bool {
+        self.path.as_os_str().is_empty()
+    }
 }
 
 /// Whether a node's file is one the agenda should read.
@@ -2428,6 +2446,15 @@ fn in_agenda_scope(editor: &Editor, path: &Path) -> bool {
 /// Snapshots what it needs from the graph rather than holding its lock, like
 /// the other pickers, so indexing stays free while it is open.
 pub fn agenda_lines(editor: &Editor, days: i64) -> Vec<AgendaLine> {
+    agenda_lines_matching(editor, days, None)
+}
+
+/// The agenda over `days` days, of the entries `filter` matches.
+fn agenda_lines_matching(
+    editor: &Editor,
+    days: i64,
+    filter: Option<&helix_roam::search::Match>,
+) -> Vec<AgendaLine> {
     use helix_roam::agenda::Reason;
 
     let today = helix_roam::Date::today();
@@ -2435,6 +2462,7 @@ pub fn agenda_lines(editor: &Editor, days: i64) -> Vec<AgendaLine> {
     let entries: Vec<&helix_roam::Entry> = graph
         .entries()
         .filter(|entry| in_agenda_scope(editor, &entry.file_path))
+        .filter(|entry| filter.is_none_or(|filter| filter.matches(entry)))
         .collect();
 
     helix_roam::agenda::agenda(entries, today, days)
@@ -2528,6 +2556,111 @@ pub fn filtered_todo_lines(
         .into_iter()
         .map(|entry| entry_line(entry, entry.category.clone()))
         .collect()
+}
+
+/// The entries in the agenda's files that `matcher` matches, in file
+/// order: Org's tags view.
+pub fn match_lines(editor: &Editor, matcher: &helix_roam::search::Match) -> Vec<AgendaLine> {
+    let graph = editor.roam.read();
+    let mut entries: Vec<&helix_roam::Entry> = graph
+        .entries()
+        .filter(|entry| in_agenda_scope(editor, &entry.file_path))
+        .filter(|entry| matcher.matches(entry))
+        .collect();
+    entries.sort_by(|a, b| (&a.file_path, a.line).cmp(&(&b.file_path, b.line)));
+    entries
+        .into_iter()
+        .map(|entry| entry_line(entry, entry.category.clone()))
+        .collect()
+}
+
+/// The entries in the agenda's files whose headline and text have what
+/// `search` looks for: Org's search view. The text is read from the
+/// file's buffer when it is open, from the disk otherwise.
+pub fn search_lines(editor: &Editor, search: &helix_roam::search::Search) -> Vec<AgendaLine> {
+    let graph = editor.roam.read();
+    let files: std::collections::BTreeSet<&Path> = graph
+        .entries()
+        .map(|entry| entry.file_path.as_path())
+        .filter(|path| in_agenda_scope(editor, path))
+        .collect();
+    let mut lines = Vec::new();
+    for path in files {
+        let text = match editor.document_by_path(path) {
+            Some(doc) => doc.text().to_string(),
+            None => match std::fs::read_to_string(path) {
+                Ok(text) => text,
+                Err(_) => continue,
+            },
+        };
+        let all: Vec<&str> = text.lines().collect();
+        for entry in graph.entries_in_file(path) {
+            let own = all
+                .get(entry.line..entry.end.min(all.len()))
+                .unwrap_or_default()
+                .join("\n");
+            if search.matches(&own) {
+                lines.push(entry_line(entry, entry.category.clone()));
+            }
+        }
+    }
+    lines
+}
+
+/// The lines of one block of a custom agenda view.
+pub fn block_lines(
+    editor: &Editor,
+    block: &helix_view::editor::AgendaBlock,
+) -> Result<Vec<AgendaLine>, String> {
+    use helix_roam::search::{Match, Search};
+    use helix_view::editor::AgendaBlockKind;
+
+    let today = helix_roam::Date::today();
+    let query = block.query.trim();
+    Ok(match block.kind {
+        AgendaBlockKind::Agenda => {
+            let filter = (!query.is_empty())
+                .then(|| Match::parse(query, today))
+                .transpose()?;
+            agenda_lines_matching(editor, block.days, filter.as_ref())
+        }
+        AgendaBlockKind::Todo => match_lines(editor, &Match::parse(&format!("/!{query}"), today)?),
+        AgendaBlockKind::Tags => match_lines(editor, &Match::parse(query, today)?),
+        AgendaBlockKind::TagsTodo => {
+            match_lines(editor, &Match::parse(&format!("{query}/!"), today)?)
+        }
+        AgendaBlockKind::Search => search_lines(editor, &Search::parse(query)?),
+    })
+}
+
+/// A custom agenda view's lines: its blocks one after the other, each under
+/// a heading when there are several.
+pub fn custom_view_lines(
+    editor: &Editor,
+    view: &helix_view::editor::AgendaView,
+) -> Result<Vec<AgendaLine>, String> {
+    use helix_view::editor::AgendaBlockKind;
+
+    let mut lines = Vec::new();
+    for block in &view.blocks {
+        if view.blocks.len() > 1 {
+            let title = block.title.clone().unwrap_or_else(|| {
+                let query = block.query.trim();
+                match block.kind {
+                    AgendaBlockKind::Agenda if block.days == 1 => "Today".to_string(),
+                    AgendaBlockKind::Agenda => format!("Next {} days", block.days),
+                    AgendaBlockKind::Todo if query.is_empty() => "Tasks".to_string(),
+                    AgendaBlockKind::Todo => format!("Tasks: {query}"),
+                    AgendaBlockKind::Tags => format!("Match: {query}"),
+                    AgendaBlockKind::TagsTodo => format!("Tasks matching: {query}"),
+                    AgendaBlockKind::Search => format!("Search: {query}"),
+                }
+            });
+            lines.push(AgendaLine::heading(title));
+        }
+        lines.extend(block_lines(editor, block)?);
+    }
+    Ok(lines)
 }
 
 /// An entry as a line of a list that is not by day: `when` says what the

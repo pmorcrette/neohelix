@@ -103,6 +103,10 @@
 | `:org-agenda-unrestrict` | Lift the agenda restriction. |
 | `:org-agenda-scope` | Say which files the agenda currently reads. |
 | `:org-agenda`, `:org-agenda-day` | Show what is due today. |
+| `:org-agenda-dispatch`, `:agenda` | Pick an agenda view, built-in or from `agenda-views`, or name it by its key. |
+| `:org-agenda-match` | List the entries matching tags, properties and states: `+work-boss|urgent/TODO`. |
+| `:org-agenda-match-todo` | List the unfinished tasks matching tags, properties and states. |
+| `:org-agenda-search` | List the entries whose text has the words: `rust -draft "a phrase" {regexp}`. |
 | `:org-agenda-week` | Show what is due over the next seven days. |
 | `:org-todo-list`, `:org-todos` | List every unfinished task, whatever its dates. |
 | `:org-insert-item` | Insert a list item after the one at the cursor. |

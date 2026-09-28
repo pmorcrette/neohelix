@@ -447,6 +447,7 @@ impl MappableCommand {
         org_agenda_unrestrict, "Lift the agenda restriction",
         org_agenda_scope, "Say which files the agenda reads",
         org_agenda_week, "Show the week's agenda",
+        org_agenda_dispatch, "Pick an agenda view",
         org_todo_list, "List every unfinished task",
         org_todo_filtered, "List unfinished tasks matching a keyword, tag or priority",
         org_insert_item, "Insert a list item after the one at the cursor",
@@ -4491,6 +4492,222 @@ pub fn org_filtered_todo_picker(
     ))
 }
 
+/// Shows the entries a match finds: Org's tags view, or with `todo_only`
+/// its tags-todo view.
+pub fn org_match_picker(
+    editor: &mut Editor,
+    query: &str,
+    todo_only: bool,
+) -> Option<Box<dyn Component>> {
+    let query = if todo_only && !query.contains('/') {
+        format!("{query}/!")
+    } else {
+        query.to_string()
+    };
+    let matcher = match helix_roam::search::Match::parse(&query, helix_roam::Date::today()) {
+        Ok(matcher) => matcher,
+        Err(err) => {
+            editor.set_error(err);
+            return None;
+        }
+    };
+    let lines = crate::roam::match_lines(editor, &matcher);
+    if lines.is_empty() {
+        editor.set_status(format!("Nothing matches {query}"));
+        return None;
+    }
+    Some(agenda_view(
+        editor,
+        lines,
+        "category",
+        Box::new(move |editor| crate::roam::match_lines(editor, &matcher)),
+    ))
+}
+
+/// Shows the entries whose text has the words: Org's search view.
+pub fn org_search_picker(editor: &mut Editor, query: &str) -> Option<Box<dyn Component>> {
+    let search = match helix_roam::search::Search::parse(query) {
+        Ok(search) => search,
+        Err(err) => {
+            editor.set_error(err);
+            return None;
+        }
+    };
+    let lines = crate::roam::search_lines(editor, &search);
+    if lines.is_empty() {
+        editor.set_status(format!("Nothing has {query}"));
+        return None;
+    }
+    Some(agenda_view(
+        editor,
+        lines,
+        "category",
+        Box::new(move |editor| crate::roam::search_lines(editor, &search)),
+    ))
+}
+
+/// Shows a custom agenda view, its blocks one after the other.
+pub fn org_custom_view_picker(
+    editor: &mut Editor,
+    view: helix_view::editor::AgendaView,
+) -> Option<Box<dyn Component>> {
+    let lines = match crate::roam::custom_view_lines(editor, &view) {
+        Ok(lines) => lines,
+        Err(err) => {
+            editor.set_error(format!("{}: {err}", view.name));
+            return None;
+        }
+    };
+    if lines.iter().all(crate::roam::AgendaLine::is_heading) {
+        editor.set_status(format!("{}: nothing to show", view.name));
+        return None;
+    }
+    Some(agenda_view(
+        editor,
+        lines,
+        "when",
+        Box::new(move |editor| crate::roam::custom_view_lines(editor, &view).unwrap_or_default()),
+    ))
+}
+
+/// What the agenda dispatcher offers: a built-in view or one's own.
+#[derive(Clone)]
+enum AgendaChoice {
+    Days(i64),
+    Todo,
+    Match { todo_only: bool },
+    Search,
+    Custom(helix_view::editor::AgendaView),
+}
+
+/// A line of the agenda dispatcher.
+#[derive(Clone)]
+struct AgendaEntry {
+    key: String,
+    name: String,
+    choice: AgendaChoice,
+}
+
+/// The agenda dispatcher, Org's `C-c a`: the built-in views and the custom
+/// ones from `[[editor.roam.agenda-views]]`, by key. With `key`, the view
+/// opens without the picker.
+pub fn org_agenda_dispatch_picker(
+    editor: &mut Editor,
+    key: Option<&str>,
+) -> Option<Box<dyn Component>> {
+    let builtin = [
+        ("a", "Agenda for the week", AgendaChoice::Days(7)),
+        ("d", "Agenda for today", AgendaChoice::Days(1)),
+        ("t", "Every unfinished task", AgendaChoice::Todo),
+        (
+            "m",
+            "Match tags, properties and states",
+            AgendaChoice::Match { todo_only: false },
+        ),
+        (
+            "M",
+            "Match, unfinished tasks only",
+            AgendaChoice::Match { todo_only: true },
+        ),
+        ("s", "Search for words in the text", AgendaChoice::Search),
+    ];
+    let custom = editor.config().roam.agenda_views.clone();
+    // A custom view takes a built-in one's key over, as in Org.
+    let mut entries: Vec<AgendaEntry> = custom
+        .into_iter()
+        .map(|view| AgendaEntry {
+            key: view.key.clone(),
+            name: view.name.clone(),
+            choice: AgendaChoice::Custom(view),
+        })
+        .collect();
+    for (key, name, choice) in builtin {
+        if !entries.iter().any(|entry| entry.key == key) {
+            entries.push(AgendaEntry {
+                key: key.to_string(),
+                name: name.to_string(),
+                choice,
+            });
+        }
+    }
+
+    if let Some(key) = key {
+        return match entries.into_iter().find(|entry| entry.key == key) {
+            Some(entry) => open_agenda_choice(editor, entry.choice),
+            None => {
+                editor.set_error(format!("No agenda view with the key {key}"));
+                None
+            }
+        };
+    }
+
+    let columns = [
+        ui::PickerColumn::new("key", |item: &AgendaEntry, _: &()| item.key.as_str().into()),
+        ui::PickerColumn::new("view", |item: &AgendaEntry, _: &()| {
+            item.name.as_str().into()
+        }),
+    ];
+    let picker = Picker::new(columns, 1, entries, (), |cx, entry, _action| {
+        let choice = entry.choice.clone();
+        cx.jobs.callback(async move {
+            let call: job::Callback = job::Callback::EditorCompositor(Box::new(
+                move |editor: &mut Editor, compositor: &mut Compositor| {
+                    if let Some(view) = open_agenda_choice(editor, choice) {
+                        compositor.push(view);
+                    }
+                },
+            ));
+            Ok(call)
+        });
+    });
+    Some(Box::new(overlaid(picker)))
+}
+
+/// Opens what the dispatcher chose, asking first for a match or words.
+fn open_agenda_choice(editor: &mut Editor, choice: AgendaChoice) -> Option<Box<dyn Component>> {
+    match choice {
+        AgendaChoice::Days(days) => org_agenda_picker(editor, days),
+        AgendaChoice::Todo => org_todo_list_picker(editor),
+        AgendaChoice::Custom(view) => org_custom_view_picker(editor, view),
+        AgendaChoice::Match { todo_only } => Some(org_agenda_query_prompt(Some(todo_only))),
+        AgendaChoice::Search => Some(org_agenda_query_prompt(None)),
+    }
+}
+
+/// Asks for a match (`Some(todo_only)`) or the words of a search (`None`),
+/// then shows what it finds.
+pub fn org_agenda_query_prompt(todo_only: Option<bool>) -> Box<dyn Component> {
+    let label = match todo_only {
+        Some(_) => "Match (+work-boss|urgent/TODO): ",
+        None => "Search (words -not \"a phrase\" {regexp}): ",
+    };
+    Box::new(ui::Prompt::new(
+        label.into(),
+        None,
+        |_editor, _input| Vec::new(),
+        move |cx, input, event| {
+            if event != PromptEvent::Validate {
+                return;
+            }
+            let input = input.to_string();
+            cx.jobs.callback(async move {
+                let call: job::Callback = job::Callback::EditorCompositor(Box::new(
+                    move |editor: &mut Editor, compositor: &mut Compositor| {
+                        let view = match todo_only {
+                            Some(todo_only) => org_match_picker(editor, &input, todo_only),
+                            None => org_search_picker(editor, &input),
+                        };
+                        if let Some(view) = view {
+                            compositor.push(view);
+                        }
+                    },
+                ));
+                Ok(call)
+            });
+        },
+    ))
+}
+
 /// Rebuilds an agenda's lines from the index, after an action changed it.
 type AgendaLines = Box<dyn Fn(&Editor) -> Vec<crate::roam::AgendaLine>>;
 
@@ -4513,6 +4730,7 @@ impl AgendaView {
         self.picker
             .content
             .selection()
+            .filter(|line| !line.is_heading())
             .map(|line| (line.path.clone(), line.line))
     }
 
@@ -4551,6 +4769,15 @@ impl Component for AgendaView {
         use crate::roam::AgendaAction;
 
         if let compositor::Event::Key(key) = event {
+            // A block's heading goes nowhere, and does not close the view.
+            let on_heading = self
+                .picker
+                .content
+                .selection()
+                .is_some_and(crate::roam::AgendaLine::is_heading);
+            if on_heading && *key == crate::key!(Enter) {
+                return compositor::EventResult::Consumed(None);
+            }
             let action = match *key {
                 crate::alt!('t') => Some(AgendaAction::State(true)),
                 crate::alt!('T') => Some(AgendaAction::State(false)),
@@ -4668,6 +4895,9 @@ fn agenda_picker(
         ui::PickerColumn::new(
             "path",
             |item: &crate::roam::AgendaLine, config: &PathStyleConfig| {
+                if item.is_heading() {
+                    return "".into();
+                }
                 config.stylize(Some(item.path.as_path()), Some(item.line))
             },
         ),
@@ -4679,6 +4909,9 @@ fn agenda_picker(
         lines,
         PathStyleConfig::new(&editor.theme),
         |cx, item, action| {
+            if item.is_heading() {
+                return;
+            }
             if let Err(err) = cx.editor.open(&item.path, action) {
                 cx.editor
                     .set_error(format!("Failed to open '{}': {}", item.path.display(), err));
@@ -5118,6 +5351,12 @@ fn org_agenda_scope(cx: &mut Context) {
 
 fn org_agenda_day(cx: &mut Context) {
     if let Some(picker) = org_agenda_picker(cx.editor, 1) {
+        cx.push_layer(picker);
+    }
+}
+
+fn org_agenda_dispatch(cx: &mut Context) {
+    if let Some(picker) = org_agenda_dispatch_picker(cx.editor, None) {
         cx.push_layer(picker);
     }
 }

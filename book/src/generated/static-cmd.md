@@ -144,6 +144,7 @@
 | `org_agenda_unrestrict` | Lift the agenda restriction |  |
 | `org_agenda_scope` | Say which files the agenda reads |  |
 | `org_agenda_week` | Show the week's agenda |  |
+| `org_agenda_dispatch` | Pick an agenda view | normal: `` <space>na ``, select: `` <space>na `` |
 | `org_todo_list` | List every unfinished task |  |
 | `org_todo_filtered` | List unfinished tasks matching a keyword, tag or priority |  |
 | `org_insert_item` | Insert a list item after the one at the cursor |  |

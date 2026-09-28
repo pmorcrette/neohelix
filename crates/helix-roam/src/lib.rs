@@ -36,6 +36,7 @@ pub mod protocol;
 pub mod query;
 pub mod restructure;
 pub mod scanner;
+pub mod search;
 pub mod sort;
 pub mod source;
 pub mod startup;

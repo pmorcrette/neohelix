@@ -245,6 +245,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "n" => { "Notes (Org-Roam)"
                 "f" => roam_node_find,
                 "b" => roam_backlinks_toggle,
+                "a" => org_agenda_dispatch,
                 "c" => org_capture,
                 "C" => roam_capture,
                 "i" => roam_node_insert,
