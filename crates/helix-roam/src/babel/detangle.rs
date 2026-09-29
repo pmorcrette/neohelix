@@ -26,13 +26,24 @@ pub struct Chunk {
     pub code: String,
 }
 
-/// `[[file:PATH::SEARCH][LABEL]]` at the end of a comment line.
-fn link(line: &str) -> Option<(&str, &str, &str)> {
+/// `[[file:PATH::SEARCH][LABEL]]` at the end of a comment line, with the
+/// comment's start before it.
+fn link(line: &str) -> Option<(&str, &str, &str, &str)> {
     let start = line.find("[[file:")?;
     let rest = line[start + 7..].trim_end().strip_suffix("]]")?;
     let (target, label) = rest.split_once("][")?;
     let (path, search) = target.split_once("::").unwrap_or((target, ""));
-    Some((path, search, label))
+    Some((line[..start].trim(), path, search, label))
+}
+
+/// Why a chunk was not written back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unapplied {
+    /// No block of the Org file is the one the link names.
+    NoBlock,
+    /// The block's references were expanded when it was tangled, so its
+    /// tangled code is not its body: writing it back would lose them.
+    Noweb,
 }
 
 /// The chunks of `tangled`, the text of the file at `tangled_path`.
@@ -42,13 +53,15 @@ pub fn chunks(tangled: &str, tangled_path: &Path) -> Vec<Chunk> {
     let mut found = Vec::new();
     let mut at = 0;
     while at < lines.len() {
-        let Some((path, search, label)) = link(lines[at]) else {
+        let Some((prefix, path, search, label)) = link(lines[at]) else {
             at += 1;
             continue;
         };
-        let ending = format!("{label} ends here");
-        let Some(end) = (at + 1..lines.len()).find(|&i| lines[i].trim_end().ends_with(&ending))
-        else {
+        // The whole end line as tangling writes it, not code that happens to
+        // end the same way.
+        let ending = format!("{prefix} {label} ends here");
+        let ending = ending.trim();
+        let Some(end) = (at + 1..lines.len()).find(|&i| lines[i].trim() == ending) else {
             at += 1;
             continue;
         };
@@ -76,14 +89,17 @@ pub fn block_for(org: &str, chunk: &Chunk) -> Option<SourceBlock> {
         .map(|index| all[index].clone())
 }
 
-/// `org` with the chunk's code back in its block, or `None` when no block
-/// matches it. A block already holding that code comes back unchanged.
-pub fn apply(org: &str, chunk: &Chunk) -> Option<String> {
-    let block = block_for(org, chunk)?;
+/// `org` with the chunk's code back in its block. A block already holding
+/// that code comes back unchanged.
+pub fn apply(org: &str, chunk: &Chunk) -> Result<String, Unapplied> {
+    let block = block_for(org, chunk).ok_or(Unapplied::NoBlock)?;
     if source::body(org, &block) == chunk.code {
-        return Some(org.to_string());
+        return Ok(org.to_string());
     }
-    Some(source::replace_body(org, &block, &chunk.code))
+    if source::tangles_expanded(org, &block) {
+        return Err(Unapplied::Noweb);
+    }
+    Ok(source::replace_body(org, &block, &chunk.code))
 }
 
 #[cfg(test)]
@@ -136,5 +152,55 @@ def helper():
         let named = chunks(&tools.content.replace("return 1", "return 2"), &tools.path);
         let org = apply(&org, &named[0]).unwrap();
         assert!(org.contains("    return 2\n"), "{org}");
+    }
+
+    #[test]
+    fn code_ending_like_the_marker_does_not_end_the_chunk() {
+        let tangled = "# [[file:n.org::*A][A:1]]\necho A:1 ends here\n# A:1 ends here\n";
+        let found = chunks(tangled, Path::new("/n/a.sh"));
+        assert_eq!(found[0].code, "echo A:1 ends here\n");
+    }
+
+    #[test]
+    fn blocks_sharing_a_name_go_back_each_to_its_own() {
+        let org = "\
+#+NAME: part
+#+begin_src sh :tangle a.sh :comments link
+echo one
+#+end_src
+#+NAME: part
+#+begin_src sh :tangle a.sh :comments link
+echo two
+#+end_src
+";
+        let tangled = source::tangle(org, Path::new("/n/n.org")).unwrap();
+        assert!(tangled[0].content.contains("[[file:n.org::part][part:2]]"));
+        let edited = tangled[0].content.replace("echo two", "echo deux");
+        let mut out = org.to_string();
+        for chunk in chunks(&edited, &tangled[0].path) {
+            out = apply(&out, &chunk).unwrap();
+        }
+        assert!(
+            out.contains("echo one\n") && out.contains("echo deux\n"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn expanded_references_are_not_written_back() {
+        let org = "\
+#+NAME: greet
+#+begin_src sh
+echo hi
+#+end_src
+#+begin_src sh :tangle a.sh :comments link :noweb yes
+<<greet>>
+echo done
+#+end_src
+";
+        let tangled = source::tangle(org, Path::new("/n/n.org")).unwrap();
+        let found = chunks(&tangled[0].content, &tangled[0].path);
+        assert_eq!(found[0].code, "echo hi\necho done\n");
+        assert_eq!(apply(org, &found[0]), Err(Unapplied::Noweb));
     }
 }

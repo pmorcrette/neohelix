@@ -556,7 +556,8 @@ confirmed first. The languages: `sh`, `bash`, `zsh`, `fish`, `python`, `ruby`,
 `#+CALL: name(word="hi") :results output` runs the block named `name` with
 those variables, from the file or the library, and writes the results under
 the call. `:org-babel-detangle`, in a file tangled with `:comments link`,
-writes its edited code back into the blocks it came from.
+writes its edited code back into the blocks it came from; a block whose
+noweb references were expanded is left as it is.
 
 ### `[editor.integrated-terminal]` Section
 

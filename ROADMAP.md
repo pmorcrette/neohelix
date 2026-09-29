@@ -1326,8 +1326,10 @@ the code unless it has one. `:cache yes` hashes (FNV-1a) the body, the
 language and the variables' values. `:comments link` tangles each block
 between a link to it (`[[file:x.org::*Heading][Heading:2]]`) and an end
 line, and `babel::detangle` reads those back: a block is found again by its
-name, or by its heading and its place under it, so moving blocks between
-headings breaks the link as it does in Org.
+name (and its place among blocks sharing it), or by its heading and its
+place under it, so moving blocks between headings breaks the link as it
+does in Org. A block whose noweb references were expanded is not written
+back, since its tangled code is not its body.
 
 ### Task 1.27: Tables, Continued
 

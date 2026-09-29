@@ -590,11 +590,7 @@ pub fn tangle(text: &str, org_path: &Path) -> Result<Vec<Tangled>, TangleError> 
             Some(path) => dir.join(path),
         };
 
-        let expand = matches!(
-            header_value(header, "noweb"),
-            Some("yes" | "tangle" | "no-export" | "strip-export" | "strip-tangle")
-        );
-        let code = if expand {
+        let code = if noweb_on_tangle(header) {
             expand_noweb(&bodies[index], &bodies, &by_name, &mut Vec::new())?
         } else {
             bodies[index].clone()
@@ -649,6 +645,31 @@ pub fn tangle(text: &str, org_path: &Path) -> Result<Vec<Tangled>, TangleError> 
     Ok(files)
 }
 
+/// Whether `:noweb` expands references when tangling.
+fn noweb_on_tangle(header: &[(String, String)]) -> bool {
+    matches!(
+        header_value(header, "noweb"),
+        Some("yes" | "tangle" | "no-export" | "strip-export" | "strip-tangle")
+    )
+}
+
+/// Whether tangling `block` of `text` puts other blocks' code in place of
+/// references in it: then its tangled code is not its body.
+pub fn tangles_expanded(text: &str, block: &SourceBlock) -> bool {
+    noweb_on_tangle(&effective_header(text, block))
+        && body(text, block)
+            .lines()
+            .any(|line| noweb_reference(line).is_some())
+}
+
+/// The `<<name>>` on `line`: where it starts, the name, and where it ends.
+fn noweb_reference(line: &str) -> Option<(usize, &str, usize)> {
+    let open = line.find("<<")?;
+    let close = line[open + 2..].find(">>")? + open + 2;
+    let name = &line[open + 2..close];
+    (!name.is_empty() && !name.contains(char::is_whitespace)).then_some((open, name, close + 2))
+}
+
 /// How a line comment starts in `language`, for the tangled file's links.
 pub fn comment_prefix(language: &str) -> &'static str {
     match language {
@@ -663,10 +684,16 @@ pub fn comment_prefix(language: &str) -> &'static str {
 
 /// Where the tangled block `index` of `all` points back to: its name, or
 /// the headline above it and its place among that headline's blocks, as
-/// `(search, label)`: `(name, name)` or `(*Heading, Heading:2)`.
+/// `(search, label)`: `(name, name)` or `(*Heading, Heading:2)`. Blocks
+/// sharing a name are told apart by their place among them: `name:2`.
 pub fn link_target(text: &str, all: &[SourceBlock], index: usize) -> (String, String) {
     let block = &all[index];
     if let Some(name) = &block.name {
+        let same = |other: &SourceBlock| other.name.as_ref() == Some(name);
+        if all.iter().filter(|other| same(other)).count() > 1 {
+            let number = all[..=index].iter().filter(|other| same(other)).count();
+            return (name.clone(), format!("{name}:{number}"));
+        }
         return (name.clone(), name.clone());
     }
     let lines: Vec<&str> = text.lines().collect();
@@ -702,16 +729,7 @@ fn expand_noweb(
     let mut out = String::new();
 
     for line in code.lines() {
-        let reference = line.find("<<").and_then(|open| {
-            let close = line[open + 2..].find(">>")? + open + 2;
-            let name = &line[open + 2..close];
-            (!name.is_empty() && !name.contains(char::is_whitespace)).then_some((
-                open,
-                name,
-                close + 2,
-            ))
-        });
-        let Some((open, name, after)) = reference else {
+        let Some((open, name, after)) = noweb_reference(line) else {
             out.push_str(line);
             out.push('\n');
             continue;

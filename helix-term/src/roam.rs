@@ -5464,6 +5464,8 @@ fn run_block(
         if let Some(parent) = file.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
+        // So that it existing afterwards says this run wrote it.
+        let _ = std::fs::remove_file(file);
     }
     let _ = std::fs::create_dir_all(&plan.dir);
 
@@ -5650,19 +5652,21 @@ pub fn babel_detangle(editor: &mut Editor) {
     let mut files: Vec<PathBuf> = chunks.iter().map(|chunk| chunk.org.clone()).collect();
     files.sort();
     files.dedup();
-    let (mut written, mut missing) = (0, Vec::new());
+    use helix_roam::babel::detangle::Unapplied;
+    let (mut written, mut missing, mut expanded) = (0, Vec::new(), Vec::new());
     for org in files {
         let result = edit_file(editor, &org, |_, org_text| {
             let mut out = org_text.to_string();
             for chunk in chunks.iter().filter(|chunk| chunk.org == org) {
                 match helix_roam::babel::detangle::apply(&out, chunk) {
-                    Some(after) => {
+                    Ok(after) => {
                         if after != out {
                             written += 1;
                         }
                         out = after;
                     }
-                    None => missing.push(chunk.label.clone()),
+                    Err(Unapplied::NoBlock) => missing.push(chunk.label.clone()),
+                    Err(Unapplied::Noweb) => expanded.push(chunk.label.clone()),
                 }
             }
             Ok(out)
@@ -5672,12 +5676,22 @@ pub fn babel_detangle(editor: &mut Editor) {
             return;
         }
     }
-    if missing.is_empty() {
+    let mut problems = Vec::new();
+    if !missing.is_empty() {
+        problems.push(format!("no block for {}", missing.join(", ")));
+    }
+    if !expanded.is_empty() {
+        problems.push(format!(
+            "{} kept: their noweb references were expanded",
+            expanded.join(", ")
+        ));
+    }
+    if problems.is_empty() {
         editor.set_status(format!("Detangled: {written} block(s) changed"));
     } else {
         editor.set_error(format!(
-            "Detangled {written} block(s); no block for {}",
-            missing.join(", ")
+            "Detangled {written} block(s); {}",
+            problems.join("; ")
         ));
     }
 }
@@ -5726,7 +5740,11 @@ fn finish_block(
             return;
         };
         let text = doc.text().to_string();
-        let results = helix_roam::babel::results_lines(&stdout, plan);
+        let mut results = helix_roam::babel::results_lines(&stdout, plan);
+        // A failed run's results are not ones to reuse as cached.
+        if let (true, Some(hash), Some(first)) = (failed, &plan.cache, results.first_mut()) {
+            *first = first.replacen(&format!("[{hash}]"), "", 1);
+        }
         let after = match &plan.call {
             // The `#+CALL:` line nearest to where it was.
             Some(call) => {

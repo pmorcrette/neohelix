@@ -221,6 +221,12 @@ fn resolve(
 /// `a=1 b="two words"` into its assignments, keeping quoted spaces; also
 /// splits on commas outside quotes, as a `#+CALL:`'s arguments are.
 fn split_assignments(value: &str) -> Vec<String> {
+    split_words(value, true)
+}
+
+/// Words split on whitespace outside quotes, and on commas too if `commas`.
+/// Command-line words keep theirs: `-Wl,-rpath,/opt/lib` is one.
+fn split_words(value: &str, commas: bool) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();
     let mut quoted = false;
@@ -230,7 +236,7 @@ fn split_assignments(value: &str) -> Vec<String> {
                 quoted = !quoted;
                 current.push(c);
             }
-            c if (c.is_whitespace() || c == ',') && !quoted => {
+            c if (c.is_whitespace() || (commas && c == ',')) && !quoted => {
                 if !current.is_empty() {
                     out.push(std::mem::take(&mut current));
                 }
@@ -306,7 +312,7 @@ fn compiled_source(
             let mut out = String::new();
             match header("includes") {
                 Some(includes) => {
-                    for include in split_assignments(&includes) {
+                    for include in split_words(&includes, false) {
                         let include = include.trim_matches('"');
                         let include = if include.starts_with('<') {
                             include.to_string()
@@ -363,7 +369,7 @@ fn compiled_source(
                 code.to_string()
             } else {
                 let imports: Vec<String> = match header("imports") {
-                    Some(imports) => split_assignments(&imports)
+                    Some(imports) => split_words(&imports, false)
                         .into_iter()
                         .map(|import| format!("\"{}\"", import.trim_matches('"')))
                         .collect(),
@@ -534,7 +540,7 @@ fn plan_inner(
     }
 
     let args = value("cmdline").map_or_else(Vec::new, |line| {
-        split_assignments(&line)
+        split_words(&line, false)
             .into_iter()
             .map(|arg| arg.trim_matches('"').to_string())
             .collect()
@@ -542,7 +548,7 @@ fn plan_inner(
     let words = |key: &str| -> Vec<String> {
         value(key)
             .map(|flags| {
-                split_assignments(&flags)
+                split_words(&flags, false)
                     .into_iter()
                     .map(|flag| flag.trim_matches('"').to_string())
                     .collect()
@@ -652,6 +658,11 @@ pub fn plan_call(
     library: &[String],
 ) -> Result<Plan, BabelError> {
     let sources = std::iter::once(text).chain(library.iter().map(String::as_str));
+    // What the variables name is found in the calling file too, not only
+    // in the file the block is in.
+    let lookup: Vec<String> = std::iter::once(text.to_string())
+        .chain(library.iter().cloned())
+        .collect();
     for source_text in sources {
         let blocks = source::blocks(source_text);
         if let Some(block) = blocks
@@ -662,7 +673,7 @@ pub fn plan_call(
                 source_text,
                 block,
                 org_path,
-                library,
+                &lookup,
                 &call.args,
                 &call.header,
             )?;
@@ -1214,5 +1225,39 @@ echo $((x * 2))
             &[]
         )
         .is_err());
+    }
+
+    #[test]
+    fn a_library_block_called_on_a_table_of_the_calling_file() {
+        let library = "\
+#+NAME: count
+#+begin_src python :var rows=0
+return len(rows)
+#+end_src
+"
+        .to_string();
+        let text = "\
+#+NAME: mine
+| a |
+| b |
+
+#+CALL: count(rows=mine)
+";
+        let call = call_at(text, 4).unwrap();
+        let plan = plan_call(text, &call, Path::new("/n/a.org"), &[library]).unwrap();
+        assert!(
+            plan.script.starts_with("rows = [[\"a\"], [\"b\"]]\n"),
+            "{}",
+            plan.script
+        );
+    }
+
+    #[test]
+    fn commas_split_arguments_but_not_command_line_words() {
+        assert_eq!(split_assignments("a=1,b=\"x, y\""), ["a=1", "b=\"x, y\""]);
+        assert_eq!(
+            split_words("-Wl,-rpath,/opt/lib -O2", false),
+            ["-Wl,-rpath,/opt/lib", "-O2"]
+        );
     }
 }
