@@ -58,10 +58,19 @@ pub fn chunks(tangled: &str, tangled_path: &Path) -> Vec<Chunk> {
             continue;
         };
         // The whole end line as tangling writes it, not code that happens to
-        // end the same way.
+        // end the same way; and the last one before the next chunk, since
+        // the code may hold that very line too.
         let ending = format!("{prefix} {label} ends here");
         let ending = ending.trim();
-        let Some(end) = (at + 1..lines.len()).find(|&i| lines[i].trim() == ending) else {
+        let is_end = |i: &usize| lines[*i].trim() == ending;
+        let next = (at + 1..lines.len())
+            .find(|&i| link(lines[i]).is_some())
+            .unwrap_or(lines.len());
+        let end = (at + 1..next)
+            .rev()
+            .find(is_end)
+            .or_else(|| (at + 1..lines.len()).find(is_end));
+        let Some(end) = end else {
             at += 1;
             continue;
         };
@@ -159,6 +168,13 @@ def helper():
         let tangled = "# [[file:n.org::*A][A:1]]\necho A:1 ends here\n# A:1 ends here\n";
         let found = chunks(tangled, Path::new("/n/a.sh"));
         assert_eq!(found[0].code, "echo A:1 ends here\n");
+
+        // Even the marker's own line in the code.
+        let tangled = "# [[file:n.org::*A][A:1]]\n# A:1 ends here\necho\n# A:1 ends here\n\n\
+                       # [[file:n.org::*A][A:2]]\necho two\n# A:2 ends here\n";
+        let found = chunks(tangled, Path::new("/n/a.sh"));
+        assert_eq!(found[0].code, "# A:1 ends here\necho\n");
+        assert_eq!(found[1].code, "echo two\n");
     }
 
     #[test]
