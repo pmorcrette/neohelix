@@ -20,8 +20,8 @@ use crate::Date;
 /// `<+3d>`, `<2026-10-01>`). Special properties are `TODO`, `LEVEL`,
 /// `PRIORITY`, `CATEGORY`, `ITEM` (the title), `TAGS`, `SCHEDULED`,
 /// `DEADLINE` and `CLOSED`. After a `/`, a list of TODO keywords
-/// (`TODO|WAITING`, or `-DONE-CANCELLED` to leave some out), with `!` first
-/// for unfinished states only.
+/// (`TODO|WAITING`, or `-DONE-CANCELLED` to leave some out, which keeps
+/// the entries without a state), with `!` first for unfinished states only.
 #[derive(Debug, Clone)]
 pub struct Match {
     alternatives: Vec<Vec<(bool, Term)>>,
@@ -61,6 +61,7 @@ struct TodoPart {
     unwanted: Vec<String>,
 }
 
+/// A regexp from a match or a search, which ignores case as Org's do.
 fn regex(pattern: &str) -> Result<Regex, String> {
     RegexBuilder::new(pattern)
         .case_insensitive(true)
@@ -109,12 +110,14 @@ pub fn relative_date(text: &str, today: Date) -> Option<Date> {
 impl Match {
     /// Reads a match string; dates in it are relative to `today`.
     pub fn parse(input: &str, today: Date) -> Result<Self, String> {
-        let (terms, todo) = match input.split_once('/') {
-            Some((terms, todo)) => (terms, Some(parse_todo(todo))),
-            None => (input, None),
+        let parts = split_outside(input, '/');
+        let (terms, todo) = match parts.as_slice() {
+            [terms] => (*terms, None),
+            [terms, ..] => (*terms, Some(parse_todo(&input[terms.len() + 1..]))),
+            [] => (input, None),
         };
-        let alternatives = terms
-            .split('|')
+        let alternatives = split_outside(terms, '|')
+            .into_iter()
             .map(|alternative| parse_terms(alternative.trim(), today))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self { alternatives, todo })
@@ -131,6 +134,39 @@ impl Match {
     }
 }
 
+/// Splits `text` at `separator`, except inside a `{regexp}`, a `"string"`
+/// or a `<date>`, where it is part of the value.
+fn split_outside(text: &str, separator: char) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut closing = None;
+    let mut start = 0;
+    for (at, c) in text.char_indices() {
+        match closing {
+            Some(close) if c == close => closing = None,
+            Some(_) => {}
+            None => match c {
+                '{' => closing = Some('}'),
+                '"' => closing = Some('"'),
+                // After an operator, `<` opens a date; elsewhere it is one.
+                '<' if text[at + 1..]
+                    .starts_with(|c: char| c == '+' || c == '-' || c.is_alphanumeric())
+                    && text[..at].ends_with(['=', '<', '>']) =>
+                {
+                    closing = Some('>')
+                }
+                c if c == separator => {
+                    parts.push(&text[start..at]);
+                    start = at + c.len_utf8();
+                }
+                _ => {}
+            },
+        }
+    }
+    parts.push(&text[start..]);
+    parts
+}
+
+/// Reads the part of a match after its `/`.
 fn parse_todo(text: &str) -> TodoPart {
     let mut part = TodoPart::default();
     let mut text = text.trim();
@@ -166,8 +202,10 @@ fn parse_todo(text: &str) -> TodoPart {
 
 impl TodoPart {
     fn matches(&self, entry: &Entry) -> bool {
+        // Leaving states out says nothing of entries without one, as in
+        // Org: `+LEVEL=2/-DONE` takes the plain headlines too.
         let Some(state) = &entry.todo else {
-            return false;
+            return !self.open && self.wanted.is_empty();
         };
         (!self.open || !state.done)
             && (self.wanted.is_empty() || self.wanted.contains(&state.keyword))
@@ -175,6 +213,7 @@ impl TodoPart {
     }
 }
 
+/// What a tag or a property's name is made of.
 fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, '_' | '@' | '#' | '%')
 }
@@ -290,6 +329,7 @@ enum Found {
     Missing,
 }
 
+/// The property `name` of `entry`, special ones included.
 fn property_of(entry: &Entry, name: &str) -> Found {
     let stamp =
         |stamp: Option<crate::Timestamp>| stamp.map_or(Found::Missing, |s| Found::Date(s.day()));
@@ -326,6 +366,7 @@ fn property_of(entry: &Entry, name: &str) -> Found {
     }
 }
 
+/// `left op right`.
 fn compare<T: PartialOrd>(op: Op, left: T, right: T) -> bool {
     match op {
         Op::Eq => left == right,
@@ -501,9 +542,19 @@ DEADLINE: <2026-10-01 Thu>
         assert_eq!(titles("DEADLINE<=<+3d>"), ["Rapport"]);
         assert_eq!(titles("LEVEL=1"), ["Travail", "Maison"]);
         assert_eq!(titles("ITEM={^R}"), ["Rapport", "Réponse du chef"]);
+        // A `|` or a `/` in a value belongs to it.
+        assert_eq!(titles("ITEM={^(Fini|Tondre)$}"), ["Fini", "Tondre"]);
+        assert_eq!(titles("ITEM=\"a/b\"|ITEM={^Fini$}/DONE"), ["Fini"]);
+        assert_eq!(
+            titles("DEADLINE<=<+3d>|LEVEL=1"),
+            ["Travail", "Rapport", "Maison"]
+        );
         assert_eq!(titles("work/!"), ["Rapport", "Réponse du chef"]);
         assert_eq!(titles("/TODO|NEXT"), ["Rapport", "Tondre"]);
-        assert_eq!(titles("/-DONE-WAITING"), ["Rapport", "Tondre"]);
+        assert_eq!(
+            titles("/-DONE-WAITING"),
+            ["Travail", "Rapport", "Maison", "Tondre"]
+        );
         assert_eq!(
             titles("TODO<>\"DONE\"&work"),
             ["Travail", "Rapport", "Réponse du chef"]

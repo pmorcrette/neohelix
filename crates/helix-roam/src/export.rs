@@ -1,4 +1,5 @@
-//! Export to Markdown, HTML and LaTeX.
+//! Export to Markdown, HTML, LaTeX and Beamer, plain text (ASCII and
+//! UTF-8), man pages, Texinfo, OpenDocument and Org itself.
 //!
 //! One reader turns the Org text into a small tree of elements, and each
 //! backend writes that tree out. The reader is not Org's full element
@@ -22,12 +23,33 @@ use crate::parser::FileSettings;
 use crate::restructure::{headline_level, is_planning_line};
 use crate::source::{common_indent, unescape};
 
+mod beamer;
+mod man;
+mod odt;
+mod org;
+mod texinfo;
+mod text;
+
 /// The formats this can write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
     Markdown,
     Html,
     Latex,
+    /// LaTeX slides: frames from the headlines at the frame level.
+    Beamer,
+    /// Plain text, in ASCII only.
+    Ascii,
+    /// Plain text, with UTF-8's bullets, quotes and box drawing.
+    Utf8,
+    /// A man page, in groff.
+    Man,
+    Texinfo,
+    /// An OpenDocument text, which is a zip: see [`Exported::binary`].
+    Odt,
+    /// Org again, with its `#+INCLUDE`s resolved and what is not exported
+    /// left out.
+    Org,
 }
 
 impl Backend {
@@ -37,7 +59,13 @@ impl Backend {
         match self {
             Backend::Markdown => "md",
             Backend::Html => "html",
-            Backend::Latex => "tex",
+            Backend::Latex | Backend::Beamer => "tex",
+            Backend::Ascii | Backend::Utf8 => "txt",
+            Backend::Man => "man",
+            Backend::Texinfo => "texi",
+            Backend::Odt => "odt",
+            // Not `org`, which would be the file itself.
+            Backend::Org => "export.org",
         }
     }
 
@@ -47,7 +75,9 @@ impl Backend {
     /// file from inside a PDF leads nowhere a reader can use.
     pub fn link_extension(self) -> &'static str {
         match self {
-            Backend::Latex => "pdf",
+            Backend::Latex | Backend::Beamer => "pdf",
+            Backend::Texinfo => "info",
+            Backend::Org => "org",
             other => other.extension(),
         }
     }
@@ -58,6 +88,13 @@ impl Backend {
             "md" | "markdown" => Some(Backend::Markdown),
             "html" => Some(Backend::Html),
             "latex" | "tex" => Some(Backend::Latex),
+            "beamer" => Some(Backend::Beamer),
+            "ascii" => Some(Backend::Ascii),
+            "txt" | "text" | "utf8" | "utf-8" => Some(Backend::Utf8),
+            "man" => Some(Backend::Man),
+            "texi" | "texinfo" => Some(Backend::Texinfo),
+            "odt" => Some(Backend::Odt),
+            "org" => Some(Backend::Org),
             _ => None,
         }
     }
@@ -92,6 +129,15 @@ impl Resolve for NoResolve {
 pub struct Exported {
     pub content: String,
     pub warnings: Vec<String>,
+    /// What a binary format (OpenDocument) writes, instead of `content`.
+    pub binary: Option<Vec<u8>>,
+}
+
+impl Exported {
+    /// The bytes to write to the exported file.
+    pub fn bytes(&self) -> &[u8] {
+        self.binary.as_deref().unwrap_or(self.content.as_bytes())
+    }
 }
 
 /// The anchor a headline exports with: its `:CUSTOM_ID:` if it has one, or
@@ -218,6 +264,13 @@ struct Options {
     /// `#+CITE_EXPORT:`'s processor: `basic` unless it says `biblatex` or
     /// `natbib`, which only LaTeX has.
     cite_export: String,
+    /// `H:`, the deepest headline that is a section; Beamer's frame level.
+    headline_levels: Option<usize>,
+    /// `#+BEAMER_THEME:`.
+    beamer_theme: Option<String>,
+    /// The body alone, without the document around it: set by the caller,
+    /// not by the file.
+    body_only: bool,
 }
 
 impl Default for Options {
@@ -234,6 +287,9 @@ impl Default for Options {
             exclude_tags: vec!["noexport".to_string()],
             bibliography: Vec::new(),
             cite_export: "basic".to_string(),
+            headline_levels: None,
+            beamer_theme: None,
+            body_only: false,
         }
     }
 }
@@ -293,6 +349,10 @@ fn read_options(text: &str) -> Options {
                 .next()
                 .unwrap_or("basic")
                 .to_ascii_lowercase();
+        } else if let Some(value) = keyword(line, "beamer_theme") {
+            options.beamer_theme = Some(value.to_string());
+        } else if let Some(value) = keyword(line, "beamer_frame_level") {
+            options.headline_levels = value.parse().ok();
         } else if let Some(value) = keyword(line, "exclude_tags") {
             options.exclude_tags = value.split_whitespace().map(str::to_string).collect();
         } else if let Some(value) = keyword(line, "options") {
@@ -313,6 +373,7 @@ fn read_options(text: &str) -> Options {
                     "todo" => options.todo = on,
                     "tags" => options.tags = on,
                     "pri" => options.priority = on,
+                    "H" => options.headline_levels = value.parse().ok(),
                     _ => {}
                 }
             }
@@ -1587,14 +1648,116 @@ impl Context<'_> {
     }
 }
 
+/// A subtree made into a document of its own, for exporting it alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Subtree {
+    /// The document: the file's settings, the headline as its title, and
+    /// the subtree's contents with their headlines promoted under it.
+    pub text: String,
+    pub title: String,
+    /// `:EXPORT_FILE_NAME:`, where Org writes a subtree's export.
+    pub file_name: Option<String>,
+    /// The headline's anchor, to name the file after when it has none.
+    pub anchor: String,
+}
+
+/// The subtree at `line` of `text` as a document of its own, as Org's
+/// subtree export sees it: the file's `#+` settings still apply (its
+/// `#+TITLE:` aside), `:EXPORT_TITLE:` or the headline is the title, and the
+/// headline's planning line and drawer are not part of the text.
+pub fn subtree(text: &str, line: usize) -> Option<Subtree> {
+    let settings = FileSettings::scan(text);
+    let lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let (start, end, level) = crate::restructure::subtree_range(&lines, line)?;
+    let headline = crate::parser::parse_headline(&lines[start], &settings)?;
+
+    let mut out: Vec<String> = lines
+        .iter()
+        .take_while(|line| headline_level(line).is_none())
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            trimmed.starts_with("#+") && keyword(trimmed, "title").is_none()
+        })
+        .cloned()
+        .collect();
+
+    let mut at = start + 1;
+    if lines.get(at).is_some_and(|line| is_planning_line(line)) {
+        at += 1;
+    }
+    let mut properties = Vec::new();
+    if lines
+        .get(at)
+        .is_some_and(|line| line.trim().eq_ignore_ascii_case(":PROPERTIES:"))
+    {
+        let close = (at + 1..end).find(|&i| lines[i].trim().eq_ignore_ascii_case(":END:"));
+        if let Some(close) = close {
+            for line in &lines[at + 1..close] {
+                if let Some((key, value)) = line
+                    .trim()
+                    .strip_prefix(':')
+                    .and_then(|rest| rest.split_once(':'))
+                {
+                    properties.push((key.to_ascii_lowercase(), value.trim().to_string()));
+                }
+            }
+            at = close + 1;
+        }
+    }
+    let property = |name: &str| {
+        properties
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.clone())
+            .filter(|value| !value.is_empty())
+    };
+    let title = property("export_title").unwrap_or_else(|| headline.title.clone());
+    out.push(format!("#+TITLE: {title}"));
+    for line in &lines[at..end] {
+        match headline_level(line) {
+            Some(depth) => out.push(format!("{}{}", "*".repeat(depth - level), &line[depth..])),
+            None => out.push(line.clone()),
+        }
+    }
+    let mut text = out.join("\n");
+    text.push('\n');
+    Some(Subtree {
+        text,
+        anchor: anchor_for(&headline.title, property("custom_id").as_deref()),
+        title,
+        file_name: property("export_file_name"),
+    })
+}
+
 // ── Writing ────────────────────────────────────────────────────────────────
 
 /// Exports `text`, the content of the Org file at `source`.
 pub fn export(text: &str, source: &Path, backend: Backend, resolve: &dyn Resolve) -> Exported {
+    export_with(text, source, backend, resolve, false)
+}
+
+/// Exports `text`; with `body_only`, without the document around the
+/// body (HTML's `<html>`, LaTeX's preamble, the title and contents).
+pub fn export_with(
+    text: &str,
+    source: &Path,
+    backend: Backend,
+    resolve: &dyn Resolve,
+    body_only: bool,
+) -> Exported {
     let mut include_warnings = Vec::new();
     let dir = source.parent().unwrap_or(Path::new(""));
     let expanded = expand_includes(text, dir, 0, &mut include_warnings);
+    if backend == Backend::Org {
+        let content = org::document(&expanded);
+        return Exported {
+            content,
+            warnings: include_warnings,
+            binary: None,
+        };
+    }
     let mut document = read(&expanded, source);
+    document.options.body_only = body_only;
     document.warnings.splice(0..0, include_warnings);
     let mut context = Context {
         source,
@@ -1611,15 +1774,30 @@ pub fn export(text: &str, source: &Path, backend: Backend, resolve: &dyn Resolve
         warnings: document.warnings.clone(),
     };
 
+    let mut binary = None;
     let content = match backend {
         Backend::Markdown => markdown::document(&document, &mut context),
         Backend::Html => html::document(&document, &mut context),
         Backend::Latex => latex::document(&document, &mut context),
+        Backend::Beamer => beamer::document(&document, &mut context),
+        Backend::Ascii => text::document(&document, &mut context, false),
+        Backend::Utf8 => text::document(&document, &mut context, true),
+        Backend::Man => man::document(&document, &mut context, source),
+        Backend::Texinfo => texinfo::document(&document, &mut context, source),
+        Backend::Odt => {
+            binary = Some(odt::document(&document, &mut context));
+            String::new()
+        }
+        Backend::Org => unreachable!("handled before reading"),
     };
 
     let mut warnings = context.warnings;
     warnings.dedup();
-    Exported { content, warnings }
+    Exported {
+        content,
+        warnings,
+        binary,
+    }
 }
 
 /// `, p. 5` for a non-empty suffix, nothing for an empty one.
@@ -1911,10 +2089,11 @@ mod markdown {
 
     pub(super) fn document(document: &Document, cx: &mut Context) -> String {
         let mut parts = Vec::new();
+        let body_only = document.options.body_only;
         // The title is the one first-level heading, so the outline moves
         // down a level under it.
-        let shift = usize::from(document.options.title.is_some());
-        if let Some(title) = &document.options.title {
+        let shift = usize::from(document.options.title.is_some() && !body_only);
+        if let (Some(title), false) = (&document.options.title, body_only) {
             parts.push(format!("# {}", escape(title)));
         }
         let options = &document.options;
@@ -1930,7 +2109,7 @@ mod markdown {
             })
             .collect();
 
-        if let Some(depth) = options.toc {
+        if let (Some(depth), false) = (options.toc, body_only) {
             let toc: Vec<String> = numbered(document)
                 .into_iter()
                 .filter(|(heading, _)| heading.level <= depth)
@@ -2224,6 +2403,36 @@ td, th { padding: .2em .6em; }
 .verse { white-space: pre-line; }
 .org-center { text-align: center; }";
 
+    /// The body and its footnotes: what a body-only export writes.
+    fn body_and_notes(
+        document: &Document,
+        body: &[Element],
+        numbers: &HashMap<String, String>,
+        cx: &mut Context,
+    ) -> Vec<String> {
+        let mut out = vec![elements(body, numbers, cx)];
+
+        if !cx.footnote_order.is_empty() {
+            out.push("<div id=\"footnotes\">".to_string());
+            out.push("<h2 class=\"footnotes\">Footnotes: </h2>".to_string());
+            let mut index = 0;
+            while index < cx.footnote_order.len() {
+                let label = cx.footnote_order[index].clone();
+                let n = index + 1;
+                let body = footnote_definition(document, &label)
+                    .map(|inline| inlines(inline, cx))
+                    .unwrap_or_default();
+                out.push(format!(
+                    "<div class=\"footdef\"><sup><a id=\"fn.{n}\" class=\"footnum\" href=\"#fnr.{n}\" role=\"doc-backlink\">{n}</a></sup> <div class=\"footpara\" role=\"doc-footnote\"><p class=\"footpara\">{body}</p></div></div>"
+                ));
+                index += 1;
+            }
+            out.push("</div>".to_string());
+        }
+
+        out
+    }
+
     pub(super) fn document(document: &Document, cx: &mut Context) -> String {
         let options = &document.options;
         let title = options.title.clone().unwrap_or_else(|| {
@@ -2256,6 +2465,12 @@ td, th { padding: .2em .6em; }
                 other => other.clone(),
             })
             .collect();
+
+        if options.body_only {
+            let mut text = body_and_notes(document, &body, &numbers, cx).join("\n");
+            text.push('\n');
+            return text;
+        }
 
         let mut out = vec![
             "<!DOCTYPE html>".to_string(),
@@ -2316,25 +2531,7 @@ td, th { padding: .2em .6em; }
             }
         }
 
-        out.push(elements(&body, &numbers, cx));
-
-        if !cx.footnote_order.is_empty() {
-            out.push("<div id=\"footnotes\">".to_string());
-            out.push("<h2 class=\"footnotes\">Footnotes: </h2>".to_string());
-            let mut index = 0;
-            while index < cx.footnote_order.len() {
-                let label = cx.footnote_order[index].clone();
-                let n = index + 1;
-                let body = footnote_definition(document, &label)
-                    .map(|inline| inlines(inline, cx))
-                    .unwrap_or_default();
-                out.push(format!(
-                    "<div class=\"footdef\"><sup><a id=\"fn.{n}\" class=\"footnum\" href=\"#fnr.{n}\" role=\"doc-backlink\">{n}</a></sup> <div class=\"footpara\" role=\"doc-footnote\"><p class=\"footpara\">{body}</p></div></div>"
-                ));
-                index += 1;
-            }
-            out.push("</div>".to_string());
-        }
+        out.extend(body_and_notes(document, &body, &numbers, cx));
 
         out.push("</div>".to_string());
         if options.author.is_some() || options.date.is_some() {
@@ -2618,6 +2815,11 @@ mod latex {
 
     pub(super) fn document(document: &Document, cx: &mut Context) -> String {
         let options = &document.options;
+        if options.body_only {
+            let mut text = elements(&document.elements, document, cx);
+            text.push('\n');
+            return text;
+        }
         let mut out = vec![
             "\\documentclass[11pt]{article}".to_string(),
             "\\usepackage[utf8]{inputenc}".to_string(),

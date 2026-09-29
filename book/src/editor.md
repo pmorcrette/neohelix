@@ -298,15 +298,44 @@ the notes by default), whether or not it has an `:ID:`. `:org-agenda-dispatch`
 
 | Key | View |
 |--|--|
-| `a`, `d` | What is due this week, or today: scheduled entries, deadlines (from 14 days ahead), and appointments, the active timestamps in an entry's text, timed ones first |
+| `a`, `d` | What is due this week, or today, under a heading per day: scheduled entries, deadlines (from 14 days ahead), appointments (the active timestamps in an entry's text), timed ones first, and diary entries |
 | `t` | Every unfinished task |
 | `m` | The entries a match finds (`:org-agenda-match`) |
 | `M` | The same, unfinished tasks only (`:org-agenda-match-todo`) |
 | `s` | The entries whose text has the words (`:org-agenda-search`) |
+| `#` | The stuck projects: see `stuck-projects` below |
 
-In every view, `Alt-t` and `Alt-T` step the selected entry's state, `Alt-s`
-and `Alt-d` schedule it and set its deadline, `Alt-+` and `Alt--` change its
-priority, and `Alt-i` clocks in.
+The views are pickers: typing searches them, `Enter` goes to the entry, and
+Alt keys do the rest, as the keys of Org's agenda buffer do (`Alt-?` lists
+them):
+
+| Keys | What they do |
+|--|--|
+| `Alt-t`, `Alt-T` | Step the entry's state forward or back |
+| `Alt-s`, `Alt-d` | Schedule it, set its deadline |
+| `Alt-+`, `Alt--` | Raise or lower its priority |
+| `Alt-i` | Clock in on it |
+| `Alt-/` | Keep the entries with the tags (`+work -home`), inherited ones included; empty for all |
+| `Alt-<` | Keep the selected entry's category, or all again |
+| `Alt-_` | Keep the entries of an effort (`<0:30`, `>1:00`, `=45`) |
+| `Alt-=` | Keep the entries matching a regexp |
+| `Alt-\|` | Remove every filter |
+| `Alt-m`, `Alt-*`, `Alt-u` | Mark the entry (and move on), mark all shown, unmark all |
+| `Alt-B` | Act on the marked entries (or the selected one): set the state, schedule, set the deadline, add or remove a tag, refile under a node |
+| `Alt-f`, `Alt-b`, `Alt-.` | By day: the next span, the previous one, today's again |
+| `Alt-l` | By day: log mode, what was closed and clocked each day |
+| `Alt-r` | By day: a clock report of the span after the entries |
+| `Alt-g` | By day: the hours of the day and the time now between the timed entries (on by default for a single day) |
+| `Alt-c` | Columns after each entry: `agenda-columns` |
+| `Alt-w` | Write the view to a file: text, HTML for `.html`, iCalendar for `.ics` (its dated entries as events, its undated tasks as to-dos) |
+
+A diary entry is a `%%(…)` line in an entry, or its headline, as Emacs's
+calendar writes them: `%%(diary-anniversary 10 1 1990) Pierre (%d years)`,
+`%%(diary-date t 15 t)`, `%%(diary-block 9 28 2026 10 2 2026)`,
+`%%(diary-cyclic 14 9 1 2026)`, `%%(diary-float 11 4 4)` (the 4th Thursday of
+November) and `%%(org-anniversary 1990 10 1)`. Dates are month, day, year, as
+Emacs's default, except in `org-anniversary`. Other expressions are Lisp, and
+are left out.
 
 A match is Org's: `work+urgent-boss` wants the tags `work` and `urgent`
 (inherited ones count) and not `boss`, `|` separates alternatives, and
@@ -335,9 +364,16 @@ blocks = [
 
 A block's `type` is `agenda` (with `days`, 7 by default, and an optional match
 the entries must satisfy), `todo` (the unfinished tasks, of the keywords given
-if any), `tags` or `tags-todo` (a match) or `search` (words). `title` replaces
-the heading made from the block. A custom view's key takes over a built-in
-one's.
+if any), `tags` or `tags-todo` (a match), `search` (words) or `stuck`. `title`
+replaces the heading made from the block. A custom view's key takes over a
+built-in one's.
+
+| Key | Description | Default |
+|--|--|---------|
+|`stuck-projects.match` | What makes an entry a project | `"+LEVEL=2/-DONE"` |
+|`stuck-projects.todo` | A project with an entry below it in one of these states is not stuck | `["TODO", "NEXT", "NEXTACTION"]` |
+|`stuck-projects.tags` | Nor is one with an entry below it carrying one of these tags | `[]` |
+|`agenda-columns` | What the column view shows: `TODO`, `PRIORITY`, `TAGS`, `CLOCKSUM` (the time clocked) or a property | `["TODO", "PRIORITY", "Effort", "CLOCKSUM", "TAGS"]` |
 
 #### Capture
 
@@ -432,6 +468,69 @@ The template's escapes:
 |`%^{Effort}p` | A property asked for, written in the entry's drawer |
 |`%\1` | The first text answer again |
 |`%%` | A `%` |
+
+#### Export and publishing
+
+`:org-export <format>` writes the buffer next to its file. The formats:
+
+| Format | Writes |
+|--|--|
+| `html` (the default), `md`, `latex` | HTML, Markdown, LaTeX |
+| `pdf` | LaTeX, then its PDF, compiled in the background |
+| `beamer`, `beamer-pdf` | Beamer slides: the headlines at the frame level (`#+OPTIONS: H:2`, 1 by default) are frames, the ones above sections, the ones below blocks; `#+BEAMER_THEME:` picks the theme |
+| `ascii`, `utf8` | Plain text, filled to 72 columns, tables drawn; `utf8` with Unicode bullets, quotes and box drawing |
+| `man` | A man page (groff): first-level headlines are `.SH` sections |
+| `texi` | Texinfo, with a node and a menu for each headline down to the fourth level |
+| `odt` | An OpenDocument text, for LibreOffice or Word |
+| `org` | Org again, as `name.export.org`: `#+INCLUDE`s resolved, `noexport` and `COMMENT` subtrees and comments left out |
+
+After the format, `subtree` exports only the subtree at the cursor: the
+headline (or its `:EXPORT_TITLE:`) is the title, the file's `#+` settings still
+apply, and it goes to its `:EXPORT_FILE_NAME:` or to `name-<anchor>`. `body`
+leaves out what is around the body (HTML's page, LaTeX's preamble, the title
+and contents), for another tool to wrap. `async` runs the export in the
+background. For example `:org-export html subtree body`.
+
+The PDF is made by `latexmk` if it is installed, else `pdflatex` run twice, or
+by `latex-compiler` (`%f` for the `.tex` file), in the file's directory.
+
+`:org-icalendar-export` writes the buffer's dated entries to `name.ics`, and
+`:org-icalendar-combine` every agenda file's to `icalendar-file`: a scheduled
+entry is an event `S: …`, a deadline one `DL: …`, any other active timestamp one
+of its own, repeaters recur, and an unfinished task is also a to-do.
+
+`:org-publish [project] [force]` publishes a project (every one without a name)
+in the background: its Org files exported into the publishing directory, which
+mirrors the base directory so links between notes keep working, and its
+attachments copied. Only what changed since it was last published is done
+again, unless `force`.
+
+```toml
+[[editor.roam.publish]]
+name = "site"
+base-directory = "site"          # relative to the notes directory
+publishing-directory = "~/public_html"
+backend = "html"
+exclude = "^drafts/"
+sitemap = true
+sitemap-title = "All pages"
+```
+
+| Key | Description | Default |
+|--|--|---------|
+|`name` | What `:org-publish` calls it | |
+|`base-directory`, `publishing-directory` | Where the Org files are, and where they go; relative to the notes directory unless absolute | `"."`, |
+|`backend` | Any `:org-export` format but `pdf` | `"html"` |
+|`recursive` | Subdirectories too | `true` |
+|`exclude` | A regular expression: files whose path under the base matches are left out | |
+|`attachments` | The extensions of the files copied as they are | `["png", "jpg", "jpeg", "gif", "svg", "webp", "css", "js", "pdf"]` |
+|`sitemap`, `sitemap-title`, `sitemap-file` | Write a sitemap (an Org file in the base, published with the rest) | `false`, `"Sitemap"`, `"sitemap.org"` |
+|`body-only` | Publish the bodies alone | `false` |
+
+| Key | Description | Default |
+|--|--|---------|
+|`latex-compiler` | The command that makes a PDF of a LaTeX export, `%f` for the file | `[]` (`latexmk`, else `pdflatex`) |
+|`icalendar-file` | Where `:org-icalendar-combine` writes, relative to the notes directory unless absolute | `"agenda.ics"` |
 
 ### `[editor.integrated-terminal]` Section
 

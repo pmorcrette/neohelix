@@ -1254,31 +1254,50 @@ clocks as they were.
       dispatcher over all the views (`<space>na`).
 - [x] A match view (tags, properties, TODO states: Org's `m`) and a search
       view (words and regexps: `s`) over the whole notes directory.
-- [ ] Stuck projects, and the time grid of the day view.
-- [ ] Log mode and the clock report inside the agenda.
-- [ ] Bulk actions: mark entries, then change their state, reschedule,
+- [x] Stuck projects, and the time grid of the day view.
+- [x] Log mode and the clock report inside the agenda.
+- [x] Bulk actions: mark entries, then change their state, reschedule,
       refile or tag them together.
-- [ ] Interactive filters: by tag, category, effort, regexp (`/`, `<`, `_`).
-- [ ] Column view inside the agenda; diary entries and anniversaries.
-- [ ] Export of an agenda view to a file (text, HTML, iCalendar).
+- [x] Interactive filters: by tag, category, effort, regexp (`/`, `<`, `_`).
+- [x] Column view inside the agenda; diary entries and anniversaries.
+- [x] Export of an agenda view to a file (text, HTML, iCalendar).
 
-*In progress.* The index keeps an entry per headline (`helix_roam::entry`)
-beside the graph's nodes; the agenda, the TODO list and the new views read
+*Done.* The index keeps an entry per headline (`helix_roam::entry`) beside
+the graph's nodes; the agenda, the TODO list and the other views read
 entries, so an id is what links need, not what the agenda needs. The match
-and search languages are `helix_roam::search`, tested on their own; a search
-reads the entries' text from the buffers and files, since the index keeps
-no bodies.
+and search languages are `helix_roam::search`, the log, clock report, stuck
+projects and diary are `helix_roam::agenda` and `helix_roam::diary`, all
+tested on their own; a search reads the entries' text from the buffers and
+files, since the index keeps no bodies. The views stay pickers, so Org's
+single keys are Alt keys there (`Alt-/` for `/`, `Alt-B` for `B`), the
+picker's own typing being its search. Diary expressions are Lisp: the
+common forms are recognised by name, and any other is left out rather than
+evaluated.
 
 ### Task 1.25: Export and Publishing, Continued
 
-- [ ] More backends: plain text (ASCII and UTF-8), ODT, Beamer, Texinfo,
+- [x] More backends: plain text (ASCII and UTF-8), ODT, Beamer, Texinfo,
       man, and Org itself (for `#+INCLUDE` resolution).
-- [ ] iCalendar export of scheduled and deadline entries, which is how an
+- [x] iCalendar export of scheduled and deadline entries, which is how an
       agenda reaches a phone's calendar.
-- [ ] Compiling the LaTeX export to PDF when a TeX distribution is present.
-- [ ] `org-publish`: projects, a sitemap, attachments copied along, and only
+- [x] Compiling the LaTeX export to PDF when a TeX distribution is present.
+- [x] `org-publish`: projects, a sitemap, attachments copied along, and only
       what changed rebuilt.
-- [ ] Export of a subtree alone, body only, and in the background.
+- [x] Export of a subtree alone, body only, and in the background.
+
+*Done.* The new backends share the one reader and live in
+`helix_roam::export::{text, man, texinfo, beamer, odt, org}`; Beamer writes its
+frames around the LaTeX backend's own output. ODT is binary, so an export
+now carries bytes as well as text; its zip is written by hand, stored, with
+the `mimetype` entry first as the format asks, which keeps the crate free of
+a compression library. The Org backend works on the text rather than the
+tree, since its point is to give the text back. `helix_roam::icalendar` and
+`helix_roam::publish` are pure and tested on their own; publishing mirrors
+the base directory, which is what keeps relative links right, and decides
+what changed from modification times, so a change in an included file alone
+is not noticed (`force` is there for that). The PDF compile and the
+background exports run off the editor's thread and report back on the
+status line.
 
 ### Task 1.26: Babel, Continued
 

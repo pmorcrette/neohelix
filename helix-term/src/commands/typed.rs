@@ -2918,15 +2918,83 @@ fn org_attach(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> a
     Ok(())
 }
 
-/// `:org-export md|html|latex`.
+/// The formats `:org-export` takes.
+const EXPORT_FORMATS: [&str; 12] = [
+    "html",
+    "md",
+    "latex",
+    "pdf",
+    "beamer",
+    "beamer-pdf",
+    "ascii",
+    "utf8",
+    "man",
+    "texi",
+    "odt",
+    "org",
+];
+
+/// The flags that may follow the format.
+const EXPORT_FLAGS: [&str; 3] = ["subtree", "body", "async"];
+
+/// `:org-export [format] [subtree] [body] [async]`.
 fn org_export(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
     }
-    let name = args.first().unwrap_or("html");
-    let backend = helix_roam::export::Backend::parse(name)
-        .ok_or_else(|| anyhow!("unknown export format {name:?}; use md, html or latex"))?;
-    crate::roam::export(cx.editor, backend);
+    let mut format = "html".to_string();
+    let (mut subtree, mut body_only, mut background) = (false, false, false);
+    for arg in args.iter() {
+        match arg.as_ref() {
+            "subtree" => subtree = true,
+            "body" => body_only = true,
+            "async" => background = true,
+            other => format = other.to_string(),
+        }
+    }
+    let (backend, pdf) = match format.as_str() {
+        "pdf" => (helix_roam::export::Backend::Latex, true),
+        "beamer-pdf" => (helix_roam::export::Backend::Beamer, true),
+        other => (
+            helix_roam::export::Backend::parse(other).ok_or_else(|| {
+                anyhow!(
+                    "unknown export format {other:?}; use {}",
+                    EXPORT_FORMATS.join(", ")
+                )
+            })?,
+            false,
+        ),
+    };
+    crate::roam::export(
+        cx.editor,
+        crate::roam::ExportRequest {
+            backend,
+            subtree,
+            body_only,
+            background,
+            pdf,
+        },
+    );
+    Ok(())
+}
+
+roam_buffer_command!(org_icalendar_export, crate::roam::icalendar_export);
+roam_buffer_command!(org_icalendar_combine, crate::roam::icalendar_combine);
+
+/// `:org-publish [project] [force]`: every project without a name.
+fn org_publish(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let mut project = None;
+    let mut force = false;
+    for arg in args.iter() {
+        match arg.as_ref() {
+            "force" => force = true,
+            name => project = Some(name.to_string()),
+        }
+    }
+    crate::roam::publish(cx.editor, project.as_deref(), force);
     Ok(())
 }
 roam_component_command!(org_goto_heading, crate::commands::org_heading_picker);
@@ -5719,17 +5787,71 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "org-export",
         aliases: &[],
-        doc: "Export the buffer next to its file: md, html (the default) or latex.",
+        doc: "Export the buffer next to its file: html (the default), md, latex, pdf, beamer, beamer-pdf, ascii, utf8, man, texi, odt or org; then `subtree` for the subtree at the cursor, `body` for the body alone, `async` in the background.",
         fun: org_export,
-        completer: CommandCompleter::positional(&[|_editor, input| {
-            ["md", "html", "latex"]
-                .iter()
-                .filter(|name| name.starts_with(input))
-                .map(|name| ((0..), (*name).into()))
-                .collect()
-        }]),
+        completer: CommandCompleter {
+            positional_args: &[|_editor, input| {
+                EXPORT_FORMATS
+                    .iter()
+                    .chain(&EXPORT_FLAGS)
+                    .filter(|name| name.starts_with(input))
+                    .map(|name| ((0..), (*name).into()))
+                    .collect()
+            }],
+            var_args: |_editor, input| {
+                EXPORT_FLAGS
+                    .iter()
+                    .filter(|name| name.starts_with(input))
+                    .map(|name| ((0..), (*name).into()))
+                    .collect()
+            },
+        },
         signature: Signature {
-            positionals: (0, Some(1)),
+            positionals: (0, Some(4)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-icalendar-export",
+        aliases: &[],
+        doc: "Write the buffer's scheduled, deadline and dated entries to an iCalendar file next to it.",
+        fun: org_icalendar_export,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-icalendar-combine",
+        aliases: &[],
+        doc: "Write every agenda file's entries to one iCalendar file, `roam.icalendar-file`.",
+        fun: org_icalendar_combine,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-publish",
+        aliases: &[],
+        doc: "Publish a project of `roam.publish` (every one without a name), only what changed unless `force`.",
+        fun: org_publish,
+        completer: CommandCompleter::all(|editor, input| {
+            editor
+                .config()
+                .roam
+                .publish
+                .iter()
+                .map(|project| project.name.clone())
+                .chain(std::iter::once("force".to_string()))
+                .filter(|name| name.starts_with(input))
+                .map(|name| ((0..), name.into()))
+                .collect()
+        }),
+        signature: Signature {
+            positionals: (0, Some(2)),
             ..Signature::DEFAULT
         },
     },
