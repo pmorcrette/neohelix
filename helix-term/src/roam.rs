@@ -5274,10 +5274,6 @@ const BABEL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 /// and the directory, as Org does by default with `org-confirm-babel-evaluate`.
 pub fn babel_execute(editor: &mut Editor) {
     let (text, line, blocks) = source_blocks(editor);
-    let Some(block) = helix_roam::source::block_at(&blocks, line).cloned() else {
-        editor.set_error("Not in a source block");
-        return;
-    };
     let doc = doc!(editor);
     let Some(org_path) = doc.path().map(Path::to_path_buf) else {
         editor.set_error("Save the buffer first: a block runs in its file's directory");
@@ -5299,8 +5295,35 @@ pub fn babel_execute(editor: &mut Editor) {
         ));
         return;
     }
+    let library = babel_library(editor);
 
-    let plan = match helix_roam::babel::plan(&text, &block, &org_path) {
+    // A `#+CALL:` runs the block it names; anything else, the block here.
+    let (planned, begin, body) = match helix_roam::babel::call_at(&text, line) {
+        Some(call) => (
+            helix_roam::babel::plan_call(&text, &call, &org_path, &library),
+            call.line,
+            String::new(),
+        ),
+        None => {
+            let Some(block) = helix_roam::source::block_at(&blocks, line).cloned() else {
+                editor.set_error("Not in a source block or on a #+CALL: line");
+                return;
+            };
+            let planned = helix_roam::babel::plan_with(&text, &block, &org_path, &library);
+            if let Ok(plan) = &planned {
+                if helix_roam::babel::cached(&text, &block, plan) {
+                    editor.set_status("Cached: the block has not changed since its results");
+                    return;
+                }
+            }
+            (
+                planned,
+                block.begin,
+                helix_roam::source::body(&text, &block),
+            )
+        }
+    };
+    let plan = match planned {
         Ok(plan) => plan,
         Err(err) => {
             editor.set_error(format!("Not run: {err}"));
@@ -5309,13 +5332,16 @@ pub fn babel_execute(editor: &mut Editor) {
     };
 
     let doc_id = doc.id();
-    let body = helix_roam::source::body(&text, &block);
-    let lines = body.lines().count();
+    let lines = plan.script.lines().count();
+    let how = match (&plan.session, &plan.build) {
+        (Some(session), _) => format!("in the {} session {session}", plan.language),
+        (None, Some(build)) => format!("built with {} and run", build[0]),
+        (None, None) => format!("with {}", plan.program[0]),
+    };
     let question = format!(
-        "Run the {} block ({lines} line{}) with {} in {}? [y/N] ",
+        "Run the {} block ({lines} line{}) {how} in {}? [y/N] ",
         plan.language,
         if lines == 1 { "" } else { "s" },
-        plan.program.join(" "),
         plan.dir.display()
     );
 
@@ -5334,12 +5360,79 @@ pub fn babel_execute(editor: &mut Editor) {
                     return;
                 }
                 if let Some((plan, body)) = pending.take() {
-                    run_block(cx.editor, doc_id, block.begin, body, plan);
+                    run_block(cx.editor, doc_id, begin, body, plan);
                 }
             },
         );
         compositor.push(Box::new(prompt));
     });
+}
+
+/// The texts of the Library of Babel's files, as configured.
+fn babel_library(editor: &Editor) -> Vec<String> {
+    let notes = notes_directory(editor);
+    editor
+        .config()
+        .roam
+        .babel_library
+        .iter()
+        .filter_map(|path| {
+            let path = helix_stdx::path::expand_tilde(path).into_owned();
+            let path = if path.is_absolute() {
+                path
+            } else {
+                notes.join(path)
+            };
+            match editor.document_by_path(&path) {
+                Some(doc) => Some(doc.text().to_string()),
+                None => std::fs::read_to_string(&path).ok(),
+            }
+        })
+        .collect()
+}
+
+/// A block's program's outcome: whether it succeeded, its exit code, what it
+/// printed and what it said on stderr; or why it could not run.
+type BlockOutcome = Result<(bool, Option<i32>, String, String), String>;
+
+/// Fills a command's placeholders: the script, what it builds, its file.
+fn fill_command(command: &[String], script: &Path, bin: &Path, file: Option<&Path>) -> Vec<String> {
+    command
+        .iter()
+        .map(|token| {
+            let mut token = token
+                .replace("{src}", &script.to_string_lossy())
+                .replace("{bin}", &bin.to_string_lossy());
+            if let Some(file) = file {
+                token = token.replace("{file}", &file.to_string_lossy());
+            }
+            token
+        })
+        .collect()
+}
+
+/// Runs `command` with the Babel timeout, collecting what it prints.
+async fn run_command(
+    command: &[String],
+    dir: &Path,
+    extra: &[std::ffi::OsString],
+) -> Result<std::process::Output, String> {
+    let mut process = tokio::process::Command::new(&command[0]);
+    process
+        .args(&command[1..])
+        .args(extra)
+        .current_dir(dir)
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    match tokio::time::timeout(BABEL_TIMEOUT, process.output()).await {
+        Err(_) => Err(format!(
+            "{} did not finish within {} s and was stopped",
+            command[0],
+            BABEL_TIMEOUT.as_secs()
+        )),
+        Ok(Err(err)) => Err(format!("could not start {}: {err}", command[0])),
+        Ok(Ok(output)) => Ok(output),
+    }
 }
 
 /// Starts the block's program in the background; the results are written
@@ -5358,6 +5451,7 @@ fn run_block(
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     let script = dir.join(format!("block.{}", plan.extension));
+    let bin = dir.join(if cfg!(windows) { "block.exe" } else { "block" });
     let value = dir.join("value");
     if let Err(err) =
         std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&script, &plan.script))
@@ -5365,42 +5459,59 @@ fn run_block(
         editor.set_error(format!("Could not write the script: {err}"));
         return;
     }
+    // A block writing a file writes it where its directory may not be yet.
+    if let Some((_, file)) = &plan.file {
+        if let Some(parent) = file.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        // So that it existing afterwards says this run wrote it.
+        let _ = std::fs::remove_file(file);
+    }
+    let _ = std::fs::create_dir_all(&plan.dir);
 
     editor.set_status(format!("Running the {} block…", plan.language));
     tokio::spawn(async move {
         let started = std::time::Instant::now();
-        let mut command = tokio::process::Command::new(&plan.program[0]);
-        command
-            .args(&plan.program[1..])
-            .arg(&script)
-            .current_dir(&plan.dir)
-            .stdin(std::process::Stdio::null())
-            .kill_on_drop(true);
-        if plan.value_file {
-            command.arg(&value);
-        }
-        command.args(&plan.args);
-
-        let outcome = match tokio::time::timeout(BABEL_TIMEOUT, command.output()).await {
-            Err(_) => Err(format!(
-                "{} did not finish within {} s and was stopped",
-                plan.program[0],
-                BABEL_TIMEOUT.as_secs()
-            )),
-            Ok(Err(err)) => Err(format!("could not start {}: {err}", plan.program[0])),
-            Ok(Ok(output)) => {
-                let stdout = if plan.value_file {
-                    std::fs::read_to_string(&value).unwrap_or_default()
-                } else {
-                    String::from_utf8_lossy(&output.stdout).to_string()
-                };
-                Ok((
-                    output.status,
-                    stdout,
-                    String::from_utf8_lossy(&output.stderr).to_string(),
-                ))
+        let file = plan.file.as_ref().map(|(_, path)| path.as_path());
+        let outcome: BlockOutcome = async {
+            if plan.session.is_some() {
+                let output = run_in_session(&plan).await?;
+                return Ok((true, Some(0), output, String::new()));
             }
-        };
+            if let Some(build) = &plan.build {
+                let build = fill_command(build, &script, &bin, file);
+                let output = run_command(&build, &dir, &[]).await?;
+                if !output.status.success() {
+                    let errors = String::from_utf8_lossy(&output.stderr).to_string();
+                    let first = errors
+                        .lines()
+                        .find(|line| line.contains("error"))
+                        .or_else(|| errors.lines().find(|line| !line.trim().is_empty()))
+                        .unwrap_or("")
+                        .to_string();
+                    return Err(format!("{} did not build it: {first}", build[0]));
+                }
+            }
+            let program = fill_command(&plan.program, &script, &bin, file);
+            let mut extra: Vec<std::ffi::OsString> = Vec::new();
+            if plan.value_file {
+                extra.push(value.clone().into());
+            }
+            extra.extend(plan.args.iter().map(Into::into));
+            let output = run_command(&program, &plan.dir, &extra).await?;
+            let stdout = if plan.value_file {
+                std::fs::read_to_string(&value).unwrap_or_default()
+            } else {
+                String::from_utf8_lossy(&output.stdout).to_string()
+            };
+            Ok((
+                output.status.success(),
+                output.status.code(),
+                stdout,
+                String::from_utf8_lossy(&output.stderr).to_string(),
+            ))
+        }
+        .await;
         let elapsed = started.elapsed();
         let _ = std::fs::remove_dir_all(&dir);
 
@@ -5411,7 +5522,179 @@ fn run_block(
     });
 }
 
-type BlockOutcome = Result<(std::process::ExitStatus, String, String), String>;
+/// A long-running interpreter a `:session` block runs in.
+struct Session {
+    child: tokio::process::Child,
+    stdin: tokio::process::ChildStdin,
+    stdout: tokio::io::BufReader<tokio::process::ChildStdout>,
+}
+
+/// The sessions, by language and name. They live until the editor exits,
+/// one of them fails, or `:org-babel-kill-sessions`.
+static SESSIONS: once_cell::sync::Lazy<
+    tokio::sync::Mutex<std::collections::HashMap<String, Session>>,
+> = once_cell::sync::Lazy::new(Default::default);
+
+/// Runs the plan's script in its session, starting the session if need be,
+/// and gives back what it printed.
+async fn run_in_session(plan: &helix_roam::babel::Plan) -> Result<String, String> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+    let name = plan.session.as_deref().unwrap_or("default");
+    let key = format!("{}:{name}", plan.language);
+    let mut sessions = SESSIONS.lock().await;
+    let alive = match sessions.get_mut(&key) {
+        Some(session) => matches!(session.child.try_wait(), Ok(None)),
+        None => false,
+    };
+    if !alive {
+        let program = helix_roam::babel::session_program(&plan.language)
+            .ok_or_else(|| format!("{} has no sessions", plan.language))?;
+        let mut child = tokio::process::Command::new(&program[0])
+            .args(&program[1..])
+            .current_dir(&plan.dir)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|err| format!("could not start the session: {err}"))?;
+        let mut stdin = child.stdin.take().ok_or("the session has no input")?;
+        let stdout = child.stdout.take().ok_or("the session has no output")?;
+        stdin
+            .write_all(helix_roam::babel::session_start(&plan.language).as_bytes())
+            .await
+            .map_err(|err| format!("the session did not start: {err}"))?;
+        sessions.insert(
+            key.clone(),
+            Session {
+                child,
+                stdin,
+                stdout: tokio::io::BufReader::new(stdout),
+            },
+        );
+    }
+    let session = sessions.get_mut(&key).expect("just made");
+    let chunk = helix_roam::babel::session_chunk(plan);
+    let exchange = async {
+        session
+            .stdin
+            .write_all(chunk.as_bytes())
+            .await
+            .map_err(|err| format!("the session stopped: {err}"))?;
+        session
+            .stdin
+            .flush()
+            .await
+            .map_err(|err| format!("the session stopped: {err}"))?;
+        let mut output = String::new();
+        loop {
+            let mut line = String::new();
+            let read = session
+                .stdout
+                .read_line(&mut line)
+                .await
+                .map_err(|err| format!("the session stopped: {err}"))?;
+            if read == 0 {
+                return Err("the session ended".to_string());
+            }
+            if line.trim_end() == helix_roam::babel::SESSION_DONE {
+                return Ok(output);
+            }
+            output.push_str(&line);
+        }
+    };
+    match tokio::time::timeout(BABEL_TIMEOUT, exchange).await {
+        Ok(Ok(output)) => Ok(output),
+        // A session that failed or hung is not to be trusted with the next
+        // block: it goes, and the next run starts a new one.
+        Ok(Err(err)) => {
+            sessions.remove(&key);
+            Err(err)
+        }
+        Err(_) => {
+            sessions.remove(&key);
+            Err(format!(
+                "the {name} session did not answer within {} s and was stopped",
+                BABEL_TIMEOUT.as_secs()
+            ))
+        }
+    }
+}
+
+/// Stops every Babel session.
+pub fn babel_kill_sessions(editor: &mut Editor) {
+    let count = SESSIONS.try_lock().map(|mut sessions| {
+        let count = sessions.len();
+        sessions.clear();
+        count
+    });
+    match count {
+        Ok(count) => editor.set_status(format!("Stopped {count} session(s)")),
+        Err(_) => editor.set_error("A session is running a block; try again once it is done"),
+    }
+}
+
+/// Writes the edits made in the tangled file of this buffer back into the
+/// Org blocks it came from, by the links `:comments link` left in it.
+pub fn babel_detangle(editor: &mut Editor) {
+    let doc = doc!(editor);
+    let Some(path) = doc.path().map(Path::to_path_buf) else {
+        editor.set_error("The buffer has no file to detangle");
+        return;
+    };
+    let text = doc.text().to_string();
+    let chunks = helix_roam::babel::detangle::chunks(&text, &path);
+    if chunks.is_empty() {
+        editor.set_error("No links back to Org here: tangle with :comments link");
+        return;
+    }
+    let mut files: Vec<PathBuf> = chunks.iter().map(|chunk| chunk.org.clone()).collect();
+    files.sort();
+    files.dedup();
+    use helix_roam::babel::detangle::Unapplied;
+    let (mut written, mut missing, mut expanded) = (0, Vec::new(), Vec::new());
+    for org in files {
+        let result = edit_file(editor, &org, |_, org_text| {
+            let mut out = org_text.to_string();
+            for chunk in chunks.iter().filter(|chunk| chunk.org == org) {
+                match helix_roam::babel::detangle::apply(&out, chunk) {
+                    Ok(after) => {
+                        if after != out {
+                            written += 1;
+                        }
+                        out = after;
+                    }
+                    Err(Unapplied::NoBlock) => missing.push(chunk.label.clone()),
+                    Err(Unapplied::Noweb) => expanded.push(chunk.label.clone()),
+                }
+            }
+            Ok(out)
+        });
+        if let Err(err) = result {
+            editor.set_error(err);
+            return;
+        }
+    }
+    let mut problems = Vec::new();
+    if !missing.is_empty() {
+        problems.push(format!("no block for {}", missing.join(", ")));
+    }
+    if !expanded.is_empty() {
+        problems.push(format!(
+            "{} kept: their noweb references were expanded",
+            expanded.join(", ")
+        ));
+    }
+    if problems.is_empty() {
+        editor.set_status(format!("Detangled: {written} block(s) changed"));
+    } else {
+        editor.set_error(format!(
+            "Detangled {written} block(s); {}",
+            problems.join("; ")
+        ));
+    }
+}
 
 /// Writes a finished block's results, and says how it went.
 fn finish_block(
@@ -5423,34 +5706,76 @@ fn finish_block(
     outcome: BlockOutcome,
     elapsed: std::time::Duration,
 ) {
-    let (status, stdout, stderr) = match outcome {
+    let (succeeded, code, stdout, stderr) = match outcome {
         Ok(done) => done,
         Err(err) => {
             editor.set_error(err);
             return;
         }
     };
-    let failed = !status.success();
+    let failed = !succeeded;
+    // A block that did not write its file itself gives what it printed to
+    // it, as Org does: graphics programs write, the others print.
+    if let Some((_, path)) = &plan.file {
+        if succeeded && !path.exists() && !stdout.trim().is_empty() {
+            if let Err(err) = std::fs::write(path, &stdout) {
+                editor.set_error(format!("Could not write {}: {err}", path.display()));
+                return;
+            }
+        }
+    }
+    let wrote_file = plan.file.as_ref().is_some_and(|(_, path)| path.exists());
 
     // Results are written for a failed run only if it printed something:
-    // replacing good results with nothing would lose them for no gain.
-    if !(failed && stdout.trim().is_empty()) {
+    // replacing good results with nothing would lose them for no gain. A
+    // file's results are written once there is a file to link to.
+    let has_results = if plan.file.is_some() {
+        wrote_file && !failed
+    } else {
+        !(failed && stdout.trim().is_empty())
+    };
+    if has_results {
         let Some(doc) = editor.documents.get(&doc_id) else {
             editor.set_error("The buffer was closed while the block ran");
             return;
         };
         let text = doc.text().to_string();
-        let blocks = helix_roam::source::blocks(&text);
-        let Some(block) = blocks
-            .iter()
-            .filter(|block| helix_roam::source::body(&text, block) == body)
-            .min_by_key(|block| block.begin.abs_diff(begin))
-        else {
-            editor.set_error("The block changed while it ran; its results were not written");
-            return;
+        let mut results = helix_roam::babel::results_lines(&stdout, plan);
+        // A failed run's results are not ones to reuse as cached.
+        if let (true, Some(hash), Some(first)) = (failed, &plan.cache, results.first_mut()) {
+            *first = first.replacen(&format!("[{hash}]"), "", 1);
+        }
+        let after = match &plan.call {
+            // The `#+CALL:` line nearest to where it was.
+            Some(call) => {
+                let Some(line) = text
+                    .lines()
+                    .enumerate()
+                    .filter(|(_, line)| line == call)
+                    .map(|(at, _)| at)
+                    .min_by_key(|at| at.abs_diff(begin))
+                else {
+                    editor.set_error(
+                        "The #+CALL: line changed while it ran; its results were not written",
+                    );
+                    return;
+                };
+                helix_roam::babel::write_call_results(&text, line, &results)
+            }
+            None => {
+                let blocks = helix_roam::source::blocks(&text);
+                let Some(block) = blocks
+                    .iter()
+                    .filter(|block| helix_roam::source::body(&text, block) == body)
+                    .min_by_key(|block| block.begin.abs_diff(begin))
+                else {
+                    editor
+                        .set_error("The block changed while it ran; its results were not written");
+                    return;
+                };
+                helix_roam::babel::write_results(&text, block, &results)
+            }
         };
-        let results = helix_roam::babel::results_lines(&stdout, plan);
-        let after = helix_roam::babel::write_results(&text, block, &results);
         if let Err(err) = apply_to_document(editor, doc_id, &after) {
             editor.set_error(err);
             return;
@@ -5459,7 +5784,7 @@ fn finish_block(
 
     let took = format!("{:.2} s", elapsed.as_secs_f64());
     if failed {
-        let how = match status.code() {
+        let how = match code {
             Some(code) => format!("exited with code {code}"),
             None => "was killed by a signal".to_string(),
         };
@@ -5471,6 +5796,14 @@ fn finish_block(
             .map(|line| format!(": {line}"))
             .unwrap_or_default();
         editor.set_error(format!("{} {how} after {took}{why}", plan.program[0]));
+    } else if plan.file.is_some() && !wrote_file {
+        editor.set_error(format!(
+            "Ran in {took}, but {} was not written",
+            plan.file
+                .as_ref()
+                .map(|(link, _)| link.as_str())
+                .unwrap_or("")
+        ));
     } else if helix_roam::babel::value_is_output(plan) {
         editor.set_status(format!(
             "Ran in {took}; {} blocks give their output, not a value (:results output)",

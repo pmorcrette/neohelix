@@ -824,6 +824,12 @@ pub struct RoamConfig {
     /// What makes a project, and what keeps it from being stuck.
     #[serde(default)]
     pub stuck_projects: StuckProjects,
+    /// Org files whose named blocks, tables and lists every file can use:
+    /// Org's Library of Babel, for `#+CALL:` and `:var`. Relative to the
+    /// notes directory unless absolute.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub babel_library: Vec<PathBuf>,
     /// The command that makes a PDF of a LaTeX export, `%f` standing for
     /// the `.tex` file, run in its directory. Empty: `latexmk` if it is
     /// installed, else `pdflatex` twice.
@@ -1122,6 +1128,7 @@ impl Default for RoamConfig {
             stuck_projects: StuckProjects::default(),
             agenda_columns: default_agenda_columns(),
             latex_compiler: Vec::new(),
+            babel_library: Vec::new(),
             icalendar_file: default_icalendar_file(),
             publish: Vec::new(),
             todo_dependencies: false,

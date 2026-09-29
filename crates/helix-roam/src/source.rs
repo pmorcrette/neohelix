@@ -332,7 +332,7 @@ fn parse_parameters(params: &str) -> (Option<String>, Vec<(String, String)>) {
 }
 
 /// `:tangle "my file.rs" :mkdirp yes` as key/value pairs, quotes removed.
-fn parse_header_args(args: &str) -> Vec<(String, String)> {
+pub(crate) fn parse_header_args(args: &str) -> Vec<(String, String)> {
     let mut pairs: Vec<(String, String)> = Vec::new();
     let mut value: Vec<String> = Vec::new();
     let mut key: Option<String> = None;
@@ -590,14 +590,25 @@ pub fn tangle(text: &str, org_path: &Path) -> Result<Vec<Tangled>, TangleError> 
             Some(path) => dir.join(path),
         };
 
-        let expand = matches!(
-            header_value(header, "noweb"),
-            Some("yes" | "tangle" | "no-export" | "strip-export" | "strip-tangle")
-        );
-        let code = if expand {
+        let code = if noweb_on_tangle(header) {
             expand_noweb(&bodies[index], &bodies, &by_name, &mut Vec::new())?
         } else {
             bodies[index].clone()
+        };
+
+        // `:comments link`: the code between two comments naming where it
+        // came from, which is what detangling reads its way back by.
+        let code = match header_value(header, "comments") {
+            Some("link" | "yes" | "both" | "noweb") => {
+                let prefix = comment_prefix(block.language.as_deref().unwrap_or(""));
+                let target_dir = target.parent().unwrap_or(Path::new(""));
+                let file = crate::export::relative(target_dir, org_path);
+                let (search, label) = link_target(text, &all, index);
+                format!(
+                    "{prefix} [[file:{file}::{search}][{label}]]\n{code}{prefix} {label} ends here\n"
+                )
+            }
+            _ => code,
         };
 
         let padline = header_value(header, "padline") != Some("no");
@@ -634,6 +645,78 @@ pub fn tangle(text: &str, org_path: &Path) -> Result<Vec<Tangled>, TangleError> 
     Ok(files)
 }
 
+/// Whether `:noweb` expands references when tangling.
+fn noweb_on_tangle(header: &[(String, String)]) -> bool {
+    matches!(
+        header_value(header, "noweb"),
+        Some("yes" | "tangle" | "no-export" | "strip-export" | "strip-tangle")
+    )
+}
+
+/// Whether tangling `block` of `text` puts other blocks' code in place of
+/// references in it: then its tangled code is not its body.
+pub fn tangles_expanded(text: &str, block: &SourceBlock) -> bool {
+    noweb_on_tangle(&effective_header(text, block))
+        && body(text, block)
+            .lines()
+            .any(|line| noweb_reference(line).is_some())
+}
+
+/// The `<<name>>` on `line`: where it starts, the name, and where it ends.
+fn noweb_reference(line: &str) -> Option<(usize, &str, usize)> {
+    let open = line.find("<<")?;
+    let close = line[open + 2..].find(">>")? + open + 2;
+    let name = &line[open + 2..close];
+    (!name.is_empty() && !name.contains(char::is_whitespace)).then_some((open, name, close + 2))
+}
+
+/// How a line comment starts in `language`, for the tangled file's links.
+pub fn comment_prefix(language: &str) -> &'static str {
+    match language {
+        "emacs-lisp" | "elisp" | "scheme" | "clojure" | "lisp" => ";;",
+        "C" | "c" | "C++" | "cpp" | "rust" | "go" | "js" | "javascript" | "typescript" | "ts"
+        | "java" | "kotlin" | "swift" | "scala" | "zig" | "dart" => "//",
+        "lua" | "haskell" | "sql" | "ada" | "elm" => "--",
+        "latex" | "tex" | "matlab" | "octave" => "%",
+        _ => "#",
+    }
+}
+
+/// Where the tangled block `index` of `all` points back to: its name, or
+/// the headline above it and its place among that headline's blocks, as
+/// `(search, label)`: `(name, name)` or `(*Heading, Heading:2)`. Blocks
+/// sharing a name are told apart by their place among them: `name:2`.
+pub fn link_target(text: &str, all: &[SourceBlock], index: usize) -> (String, String) {
+    let block = &all[index];
+    if let Some(name) = &block.name {
+        let same = |other: &SourceBlock| other.name.as_ref() == Some(name);
+        if all.iter().filter(|other| same(other)).count() > 1 {
+            let number = all[..=index].iter().filter(|other| same(other)).count();
+            return (name.clone(), format!("{name}:{number}"));
+        }
+        return (name.clone(), name.clone());
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let settings = FileSettings::scan(text);
+    let headline = (0..block.begin)
+        .rev()
+        .find(|&at| crate::restructure::headline_level(lines[at]).is_some());
+    let title = headline
+        .and_then(|at| crate::parser::parse_headline_title(lines[at], &settings))
+        .unwrap_or_else(|| "top".to_string());
+    let from = headline.map_or(0, |at| at + 1);
+    let number = all
+        .iter()
+        .filter(|other| other.begin >= from && other.begin <= block.begin)
+        .count();
+    let search = if headline.is_some() {
+        format!("*{title}")
+    } else {
+        String::new()
+    };
+    (search, format!("{title}:{number}"))
+}
+
 /// Replaces each `<<name>>` on a line with the named blocks' code, repeating
 /// what came before the reference on every inserted line — which is how a
 /// reference indented inside a function stays indented.
@@ -646,16 +729,7 @@ fn expand_noweb(
     let mut out = String::new();
 
     for line in code.lines() {
-        let reference = line.find("<<").and_then(|open| {
-            let close = line[open + 2..].find(">>")? + open + 2;
-            let name = &line[open + 2..close];
-            (!name.is_empty() && !name.contains(char::is_whitespace)).then_some((
-                open,
-                name,
-                close + 2,
-            ))
-        });
-        let Some((open, name, after)) = reference else {
+        let Some((open, name, after)) = noweb_reference(line) else {
             out.push_str(line);
             out.push('\n');
             continue;

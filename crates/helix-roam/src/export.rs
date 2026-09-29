@@ -1453,7 +1453,7 @@ fn shift_headlines(text: &str, level: usize) -> String {
 // ── Links ──────────────────────────────────────────────────────────────────
 
 /// `to` relative to the directory `from_dir`, with `/` separators.
-fn relative(from_dir: &Path, to: &Path) -> String {
+pub(crate) fn relative(from_dir: &Path, to: &Path) -> String {
     let from: Vec<Component> = from_dir.components().collect();
     let to_parts: Vec<Component> = to.components().collect();
     let common = from
