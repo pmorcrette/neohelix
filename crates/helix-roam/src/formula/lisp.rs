@@ -158,33 +158,33 @@ fn int(value: &Lisp) -> Result<i64, String> {
     }
 }
 
-/// Integer arithmetic while every argument is an integer, as in Lisp.
+/// Integer arithmetic while every argument is an integer, as in Lisp; past
+/// what an integer holds, the float arithmetic (where Emacs would go to a
+/// bignum).
 fn arithmetic(name: &str, args: &[Lisp]) -> Result<Lisp, String> {
     if args.iter().all(|arg| matches!(arg, Int(_))) {
         let ints: Vec<i64> = args.iter().map(int).collect::<Result<_, _>>()?;
         let result = match name {
-            "+" => ints.iter().sum(),
-            "*" => ints.iter().product(),
+            "+" => ints.iter().try_fold(0i64, |acc, &n| acc.checked_add(n)),
+            "*" => ints.iter().try_fold(1i64, |acc, &n| acc.checked_mul(n)),
             "-" => match ints.as_slice() {
-                [] => 0,
-                [only] => -only,
-                [first, rest @ ..] => first - rest.iter().sum::<i64>(),
+                [] => Some(0),
+                [only] => only.checked_neg(),
+                [first, rest @ ..] => rest.iter().try_fold(*first, |acc, &n| acc.checked_sub(n)),
             },
             _ => {
                 let [first, rest @ ..] = ints.as_slice() else {
                     return Err("`/` needs an argument".to_string());
                 };
-                let mut out = *first;
-                for n in rest {
-                    if *n == 0 {
-                        return Err("division by zero".to_string());
-                    }
-                    out /= n;
+                if rest.contains(&0) {
+                    return Err("division by zero".to_string());
                 }
-                out
+                rest.iter().try_fold(*first, |acc, &n| acc.checked_div(n))
             }
         };
-        return Ok(Int(result));
+        if let Some(result) = result {
+            return Ok(Int(result));
+        }
     }
     let floats: Vec<f64> = args.iter().map(number).collect::<Result<_, _>>()?;
     let result = match name {
@@ -392,7 +392,7 @@ fn call(name: &str, args: &[Lisp]) -> Result<Lisp, String> {
             })
         }
         "abs" => Ok(match arg(0)? {
-            Int(n) => Int(n.abs()),
+            Int(n) => n.checked_abs().map_or(Float((*n as f64).abs()), Int),
             other => Float(number(other)?.abs()),
         }),
         "float" => Ok(Float(number(arg(0)?)?)),
@@ -418,7 +418,10 @@ fn call(name: &str, args: &[Lisp]) -> Result<Lisp, String> {
             }))
         }
         "expt" => match (arg(0)?, arg(1)?) {
-            (Int(a), Int(b)) if *b >= 0 => Ok(Int(a.pow(*b as u32))),
+            (Int(a), Int(b)) if *b >= 0 => Ok(u32::try_from(*b)
+                .ok()
+                .and_then(|b| a.checked_pow(b))
+                .map_or_else(|| Float((*a as f64).powf(*b as f64)), Int)),
             (a, b) => Ok(Float(number(a)?.powf(number(b)?))),
         },
         "sqrt" => Ok(Float(number(arg(0)?)?.sqrt())),
@@ -508,11 +511,13 @@ fn call(name: &str, args: &[Lisp]) -> Result<Lisp, String> {
             let Sym(function) = arg(0)? else {
                 return Err("apply: the first argument must be a quoted function".to_string());
             };
-            let mut spread: Vec<Lisp> = args[1..args.len() - 1].to_vec();
-            match args.last() {
-                Some(List(items)) => spread.extend(items.iter().cloned()),
-                Some(other) => spread.push(other.clone()),
-                None => {}
+            let Some((last, middle)) = args[1..].split_last() else {
+                return Err("apply: needs a list of arguments".to_string());
+            };
+            let mut spread: Vec<Lisp> = middle.to_vec();
+            match last {
+                List(items) => spread.extend(items.iter().cloned()),
+                other => spread.push(other.clone()),
             }
             call(function, &spread)
         }
@@ -533,6 +538,16 @@ fn print(value: &Lisp) -> String {
     match value {
         Int(n) => n.to_string(),
         Float(n) if n.fract() == 0.0 && n.abs() < 1e16 => format!("{n:.1}"),
+        // Large ones as Emacs writes them: `1.8446744073709552e+19`.
+        Float(n) if n.is_finite() && n.abs() >= 1e16 => {
+            let text = format!("{n:e}");
+            match text.split_once('e') {
+                Some((mantissa, exponent)) if !exponent.starts_with('-') => {
+                    format!("{mantissa}e+{exponent}")
+                }
+                _ => text,
+            }
+        }
         Float(n) => n.to_string(),
         Str(text) => format!("{text:?}"),
         Sym(name) => name.clone(),
@@ -589,6 +604,11 @@ mod tests {
         assert_eq!(run("(round 2.5)"), "2");
         assert_eq!(run("(* 1.5 2)"), "3.0");
         assert!(evaluate("(shell-command \"ls\")").is_err());
+        // Past an integer, floats rather than a wrong number or a panic.
+        assert_eq!(run("(expt 2 64)"), "1.8446744073709552e+19");
+        assert_eq!(run("(* 9223372036854775807 2)"), "1.8446744073709552e+19");
+        assert!(evaluate("(/ -9223372036854775808 -1)").is_ok());
+        assert!(evaluate("(apply '+)").is_err());
         assert!(evaluate("(concat \"a\"").is_err());
     }
 }

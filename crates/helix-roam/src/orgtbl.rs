@@ -534,6 +534,10 @@ pub fn send(text: &str, line: usize) -> Result<Sent, String> {
             let Some(end) = end else {
                 return Err(format!("BEGIN RECEIVE ORGTBL {name} has no END"));
             };
+            // What is received is replaced: never the table sent.
+            if at < table.end && end >= table.start {
+                return Err(format!("RECEIVE ORGTBL {name} encloses its own table"));
+            }
             out.extend(translated.iter().map(|line| line.to_string()));
             out.push(lines[end].to_string());
             receivers += 1;
@@ -670,5 +674,7 @@ old
             "# BEGIN RECEIVE ORGTBL t\nx,y\n1,2\n# END RECEIVE ORGTBL t\n# #+ORGTBL: SEND t orgtbl-to-csv\n# | x | y |\n# | 1 | 2 |\n"
         );
         assert!(send("| a |\n", 0).is_err());
+        let enclosing = "# BEGIN RECEIVE ORGTBL t\n# #+ORGTBL: SEND t orgtbl-to-csv\n# | x |\n# END RECEIVE ORGTBL t\n";
+        assert!(send(enclosing, 2).unwrap_err().contains("encloses"));
     }
 }

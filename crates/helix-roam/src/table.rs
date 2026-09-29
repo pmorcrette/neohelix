@@ -434,7 +434,7 @@ pub fn parse_delimited(text: &str, separator: Option<char>) -> Vec<Vec<String>> 
 
 /// A field as a table cell can hold it: on one line, its `|` written as
 /// Org's `\vert{}`.
-fn cell_text(field: &str) -> String {
+pub(crate) fn cell_text(field: &str) -> String {
     field
         .split_whitespace()
         .collect::<Vec<_>>()

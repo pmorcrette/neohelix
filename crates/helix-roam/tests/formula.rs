@@ -360,4 +360,12 @@ fn emacs_lisp_formulas_on_strings_and_numbers() {
     assert!(literal.contains("| 6 |"), "{literal}");
     let bad = recalculate("| a |   |\n#+TBLFM: $2='(shell-command $1)\n", 0).unwrap();
     assert_eq!(bad.errors, 1);
+    // A result stays one field, whatever the formula makes of it.
+    let lines = recalc("| a |   |\n#+TBLFM: $2='(concat $1 \"\\n| b\")\n");
+    assert!(
+        lines.starts_with("| a | a \\vert{} b |\n#+TBLFM"),
+        "{lines}"
+    );
+    let far = recalculate("| <2026-01-01> |   |\n#+TBLFM: $2=$1+1e300\n", 0).unwrap();
+    assert_eq!(far.errors, 1);
 }

@@ -28,7 +28,7 @@ pub mod poly;
 pub mod units;
 
 use crate::date::Date;
-use crate::table::{is_table_line, parse_table, rewrite, strip_leader, Row, Table};
+use crate::table::{cell_text, is_table_line, parse_table, rewrite, strip_leader, Row, Table};
 use poly::Poly;
 use units::Units;
 
@@ -1203,7 +1203,7 @@ fn binary(op: Op, a: Value, b: Value) -> Result<Value, String> {
             let days = days_of(other)?;
             let days = if op == Op::Sub { -days } else { days };
             let mut moved = *stamp;
-            moved.days += days;
+            moved.days = within_calendar(moved.days + days)?;
             // A move by part of a day gives the date a time.
             moved.time |= days.fract() != 0.0;
             return Ok(Value::Date(moved));
@@ -1288,6 +1288,16 @@ fn truthy(value: &Value) -> Result<bool, String> {
         .plain()
         .map(|n| n != 0.0)
         .ok_or_else(|| format!("{} is neither true nor false", value.describe()))
+}
+
+/// A day count a date can have: some thousands of years either way, where
+/// the calendar arithmetic holds.
+fn within_calendar(days: f64) -> Result<f64, String> {
+    if days.is_finite() && days.abs() <= 3_000_000.0 {
+        Ok(days)
+    } else {
+        Err("a date out of the calendar's range".to_string())
+    }
 }
 
 /// How far a number or a time moves a date, in days.
@@ -1613,7 +1623,7 @@ impl Eval<'_> {
                     other => match other.plain() {
                         // Calc's day numbers count from the year 1.
                         Some(n) => Ok(Value::Date(Stamp {
-                            days: n - 719_163.0,
+                            days: within_calendar(n - 719_163.0)?,
                             time: n.fract() != 0.0,
                             active: true,
                         })),
@@ -1621,14 +1631,19 @@ impl Eval<'_> {
                     },
                 },
                 [year, month, day] => {
+                    let year = self.plain(year, name)?;
+                    if !(-9999.0..=9999.0).contains(&year) {
+                        return Err("a date out of the calendar's range".to_string());
+                    }
                     let date = Date {
-                        year: self.plain(year, name)? as i32,
+                        year: year as i32,
                         month: self.plain(month, name)? as u32,
                         day: 1,
                     };
                     // The day counts on from the first, so `date(2026, 1, 32)`
                     // is the first of February.
-                    let days = date.to_days() as f64 + self.plain(day, name)? - 1.0;
+                    let days =
+                        within_calendar(date.to_days() as f64 + self.plain(day, name)? - 1.0)?;
                     Ok(Value::Date(Stamp {
                         days,
                         time: false,
@@ -1652,7 +1667,11 @@ impl Eval<'_> {
             "second" => Ok(number((self.date(&args[0], name)?.seconds() % 60) as f64)),
             "incmonth" | "incyear" => {
                 let stamp = self.date(&args[0], name)?;
-                let by = self.plain(&args[1], name)? as i64;
+                let by = self.plain(&args[1], name)?;
+                if by.abs() > 100_000.0 {
+                    return Err("a date out of the calendar's range".to_string());
+                }
+                let by = by as i64;
                 let months = if name == "incyear" { by * 12 } else { by };
                 let date = stamp.date();
                 let total = i64::from(date.year) * 12 + i64::from(date.month) - 1 + months;
@@ -1866,7 +1885,8 @@ impl Formula {
             }),
             Body::Lisp(form) => self.lisp(form, grid, at),
         };
-        let text = text.unwrap_or_else(|_| "#ERROR".to_string());
+        // A result holds no line break or `|`: it must stay one field.
+        let text = text.map_or_else(|_| "#ERROR".to_string(), |text| cell_text(&text));
         let failed = text == "#ERROR";
         grid.set(at.0, at.1, text);
         failed
