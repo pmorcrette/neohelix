@@ -1301,14 +1301,33 @@ status line.
 
 ### Task 1.26: Babel, Continued
 
-- [ ] `:var` taking another block's result, a named table or a list, which
+- [x] `:var` taking another block's result, a named table or a list, which
       is what makes blocks compose.
-- [ ] Sessions (`:session`): a long-running interpreter per session name.
-- [ ] Compiled languages (C, C++, Rust, Go), built in a scratch directory.
-- [ ] Detangling (writing edits of tangled files back into the blocks) and a
+- [x] Sessions (`:session`): a long-running interpreter per session name.
+- [x] Compiled languages (C, C++, Rust, Go), built in a scratch directory.
+- [x] Detangling (writing edits of tangled files back into the blocks) and a
       library of reusable blocks (Org's Library of Babel).
-- [ ] `:cache`, and `:results` for graphics (`file`) now that attachments
+- [x] `:cache`, and `:results` for graphics (`file`) now that attachments
       exist.
+
+*Done.* `helix_roam::babel` stays pure: `plan` turns a block (or a `#+CALL:`
+line, through `call_at` and `plan_call`) into the commands to run, with the
+variables written as each language's literals by `babel::values`, and the
+editor only runs them. A `:var` names a table, a list, an example or a
+block's results in the file or else in the files of `babel-library`, which is
+all the Library of Babel is here; a block that has not run yet is an error
+rather than being run, since running is always confirmed. Sessions are for
+Python and the shells: the interpreter is kept in the editor, fed each block
+followed by a sentinel line, and dropped when a block fails or times out, so
+a stuck one is never reused. Python's session goes through a small driver
+that runs the chunk and prints its last expression's value. The compiled
+languages build in the run's scratch directory, their `main` written around
+the code unless it has one. `:cache yes` hashes (FNV-1a) the body, the
+language and the variables' values. `:comments link` tangles each block
+between a link to it (`[[file:x.org::*Heading][Heading:2]]`) and an end
+line, and `babel::detangle` reads those back: a block is found again by its
+name, or by its heading and its place under it, so moving blocks between
+headings breaks the link as it does in Org.
 
 ### Task 1.27: Tables, Continued
 

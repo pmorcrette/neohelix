@@ -531,6 +531,32 @@ sitemap-title = "All pages"
 |--|--|---------|
 |`latex-compiler` | The command that makes a PDF of a LaTeX export, `%f` for the file | `[]` (`latexmk`, else `pdflatex`) |
 |`icalendar-file` | Where `:org-icalendar-combine` writes, relative to the notes directory unless absolute | `"agenda.ics"` |
+|`babel-library` | Org files whose named blocks, tables and results any file can use (Org's Library of Babel), relative to the notes directory unless absolute | `[]` |
+
+#### Babel
+
+`:org-babel-execute` runs the source block at the cursor, or the block a
+`#+CALL:` line names, and writes what it gives under `#+RESULTS:`. Running
+code needs the workspace to be trusted (`:workspace-trust`), and each run is
+confirmed first. The languages: `sh`, `bash`, `zsh`, `fish`, `python`, `ruby`,
+`perl`, `lua`, `js`, `awk`, `R`, `julia`, `dot`, and the compiled `C`, `C++`,
+`rust` and `go`, each needing its program on the `PATH`.
+
+| Header | Effect |
+|--|--|
+|`:results value` / `output` | What the block returns (its body is a function's, as in Org; in a session, its last expression) or what it printed; `raw` and `silent` too |
+|`:var n=6 rows=fruits data=block()` | Variables: a literal, or the table, list, example or results named so, in the file or else in the library. A table's first row, when a rule follows it, is its column names and is left out unless `:colnames no` |
+|`:session name` | Runs in an interpreter kept alive between blocks (`python` and the shells), so variables carry over; `:org-babel-kill-sessions` stops them |
+|`:dir path` / `:dir attach` | Where it runs: a directory, or the entry's attachment directory |
+|`:file out.svg`, `:file-ext svg`, `:output-dir` | The results are a file, linked from `#+RESULTS:`: the one the program wrote (`dot` always writes one), or else what it printed. With `:file-ext` it is named after the block's `#+NAME:` |
+|`:cache yes` | Keeps a hash of the block and its variables on `#+RESULTS[…]:`, and does not run it again while they have not changed |
+|`:flags`, `:libs`, `:includes`, `:main no`, `:imports` | For the compiled languages: compiler flags and libraries, C and C++ headers (standard ones by default), no `main` written around the code, Go imports (guessed by default) |
+|`:tangle file :comments link` | `:org-tangle` wraps each block's code in comments linking back to it |
+
+`#+CALL: name(word="hi") :results output` runs the block named `name` with
+those variables, from the file or the library, and writes the results under
+the call. `:org-babel-detangle`, in a file tangled with `:comments link`,
+writes its edited code back into the blocks it came from.
 
 ### `[editor.integrated-terminal]` Section
 

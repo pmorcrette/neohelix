@@ -161,6 +161,8 @@
 | `:org-icalendar-export` | Write the buffer's scheduled, deadline and dated entries to an iCalendar file next to it. |
 | `:org-icalendar-combine` | Write every agenda file's entries to one iCalendar file, `roam.icalendar-file`. |
 | `:org-publish` | Publish a project of `roam.publish` (every one without a name), only what changed unless `force`. |
+| `:org-babel-detangle` | Write the edits made in this tangled file back into the Org blocks it came from (tangle with :comments link). |
+| `:org-babel-kill-sessions` | Stop every Babel session (:session): the next session block starts a new one. |
 | `:org-babel-execute` | Run the source block at the cursor and write its results (needs workspace trust). |
 | `:org-toggle-pretty` | Draw the buffer's entities (\alpha) and links as written, or as what they stand for. |
 | `:org-columns` | Show or hide the column view of the buffer, from its #+COLUMNS:. |

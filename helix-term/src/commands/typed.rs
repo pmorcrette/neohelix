@@ -2626,6 +2626,8 @@ roam_buffer_command!(org_clock_cancel, crate::roam::clock_cancel);
 roam_buffer_command!(org_clock_goto, crate::roam::clock_goto);
 roam_buffer_command!(org_clock_report, crate::roam::clock_report);
 roam_buffer_command!(org_babel_execute, crate::roam::babel_execute);
+roam_buffer_command!(org_babel_detangle, crate::roam::babel_detangle);
+roam_buffer_command!(org_babel_kill_sessions, crate::roam::babel_kill_sessions);
 roam_buffer_command!(org_columns, crate::roam::toggle_columns);
 roam_buffer_command!(org_toggle_pretty, crate::roam::toggle_pretty);
 roam_component_command!(roam_dailies_directory, crate::roam::dailies_picker);
@@ -5852,6 +5854,28 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         }),
         signature: Signature {
             positionals: (0, Some(2)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-babel-detangle",
+        aliases: &[],
+        doc: "Write the edits made in this tangled file back into the Org blocks it came from (tangle with :comments link).",
+        fun: org_babel_detangle,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-babel-kill-sessions",
+        aliases: &[],
+        doc: "Stop every Babel session (:session): the next session block starts a new one.",
+        fun: org_babel_kill_sessions,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
             ..Signature::DEFAULT
         },
     },

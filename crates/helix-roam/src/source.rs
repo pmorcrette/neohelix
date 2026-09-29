@@ -332,7 +332,7 @@ fn parse_parameters(params: &str) -> (Option<String>, Vec<(String, String)>) {
 }
 
 /// `:tangle "my file.rs" :mkdirp yes` as key/value pairs, quotes removed.
-fn parse_header_args(args: &str) -> Vec<(String, String)> {
+pub(crate) fn parse_header_args(args: &str) -> Vec<(String, String)> {
     let mut pairs: Vec<(String, String)> = Vec::new();
     let mut value: Vec<String> = Vec::new();
     let mut key: Option<String> = None;
@@ -600,6 +600,21 @@ pub fn tangle(text: &str, org_path: &Path) -> Result<Vec<Tangled>, TangleError> 
             bodies[index].clone()
         };
 
+        // `:comments link`: the code between two comments naming where it
+        // came from, which is what detangling reads its way back by.
+        let code = match header_value(header, "comments") {
+            Some("link" | "yes" | "both" | "noweb") => {
+                let prefix = comment_prefix(block.language.as_deref().unwrap_or(""));
+                let target_dir = target.parent().unwrap_or(Path::new(""));
+                let file = crate::export::relative(target_dir, org_path);
+                let (search, label) = link_target(text, &all, index);
+                format!(
+                    "{prefix} [[file:{file}::{search}][{label}]]\n{code}{prefix} {label} ends here\n"
+                )
+            }
+            _ => code,
+        };
+
         let padline = header_value(header, "padline") != Some("no");
         let mkdirp = header_value(header, "mkdirp") == Some("yes");
         let shebang = header_value(header, "shebang").filter(|s| !s.is_empty());
@@ -632,6 +647,47 @@ pub fn tangle(text: &str, org_path: &Path) -> Result<Vec<Tangled>, TangleError> 
     }
 
     Ok(files)
+}
+
+/// How a line comment starts in `language`, for the tangled file's links.
+pub fn comment_prefix(language: &str) -> &'static str {
+    match language {
+        "emacs-lisp" | "elisp" | "scheme" | "clojure" | "lisp" => ";;",
+        "C" | "c" | "C++" | "cpp" | "rust" | "go" | "js" | "javascript" | "typescript" | "ts"
+        | "java" | "kotlin" | "swift" | "scala" | "zig" | "dart" => "//",
+        "lua" | "haskell" | "sql" | "ada" | "elm" => "--",
+        "latex" | "tex" | "matlab" | "octave" => "%",
+        _ => "#",
+    }
+}
+
+/// Where the tangled block `index` of `all` points back to: its name, or
+/// the headline above it and its place among that headline's blocks, as
+/// `(search, label)`: `(name, name)` or `(*Heading, Heading:2)`.
+pub fn link_target(text: &str, all: &[SourceBlock], index: usize) -> (String, String) {
+    let block = &all[index];
+    if let Some(name) = &block.name {
+        return (name.clone(), name.clone());
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let settings = FileSettings::scan(text);
+    let headline = (0..block.begin)
+        .rev()
+        .find(|&at| crate::restructure::headline_level(lines[at]).is_some());
+    let title = headline
+        .and_then(|at| crate::parser::parse_headline_title(lines[at], &settings))
+        .unwrap_or_else(|| "top".to_string());
+    let from = headline.map_or(0, |at| at + 1);
+    let number = all
+        .iter()
+        .filter(|other| other.begin >= from && other.begin <= block.begin)
+        .count();
+    let search = if headline.is_some() {
+        format!("*{title}")
+    } else {
+        String::new()
+    };
+    (search, format!("{title}:{number}"))
 }
 
 /// Replaces each `<<name>>` on a line with the named blocks' code, repeating
