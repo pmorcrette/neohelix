@@ -400,7 +400,7 @@ pub fn clocktable(text: &str, block: &DynamicBlock, today: Date, now: Moment) ->
             rows,
             start: 0,
             end: 0,
-            indent: 0,
+            prefix: String::new(),
         }
         .render(),
     );

@@ -1,18 +1,36 @@
 //! Org table formulas: the `#+TBLFM:` line under a table.
 //!
 //! Org hands its formulas to Emacs Calc, a computer algebra system; this is
-//! the part of that language a table of figures actually uses. Column
-//! formulas (`$4=$2*$3`) and field formulas (`@>$4=vsum(@I..@II)`), Org's
-//! references (absolute, relative, first and last, hlines, ranges), the four
-//! operations with `^` and `%`, the vector functions (`vsum`, `vmean`, …),
-//! a few scalar ones, and the `;%.2f`, `;f2` and `;N` modes.
+//! the part of that language a table actually uses. Column formulas
+//! (`$4=$2*$3`) and field formulas (`@>$4=vsum(@I..@II)`), Org's references
+//! (absolute, relative, first and last, hlines, ranges, `@#` and `$#`), the
+//! four operations with `^` and `%`, comparisons and `if`, the vector
+//! functions (`vsum`, `vmean`, …), scalar and trigonometric ones, and:
 //!
-//! Not here: Emacs Lisp formulas (`'(…)`), Calc's symbolic algebra, `if`,
-//! dates and durations, named columns and fields, `#+CONSTANTS`, and the
-//! marking column Org reads from a first column of `!`, `^`, `#` and the
-//! like. A formula that needs one is reported rather than half evaluated.
+//! - dates: a timestamp in a field or a formula is a date; dates subtract
+//!   to days and move by days, with `date`, `now`, `year`, `month`, `day`,
+//!   `weekday`, `hour`, `minute`, `second`, `incmonth` and `incyear`;
+//! - durations: with `;T`, `;t` or `;U`, `12:30` and `12:30:45` are times,
+//!   and the result is written back as one (`02:30:00`, `2.50`, `02:30`);
+//! - units: `3 m`, `12 km / hr`, kept through arithmetic, converted by
+//!   `uconvert`, `ubase`, `uremove`, `uextract` ([`units`]);
+//! - symbolic arithmetic: other names are variables, collected and expanded
+//!   as polynomials, with `deriv`, `integ`, `subst` and `expand` ([`poly`]);
+//! - Emacs Lisp formulas, `'(concat $1 $2)`, for what strings need ([`lisp`]).
+//!
+//! Not here: named columns and fields, `#+CONSTANTS`, the marking column
+//! Org reads from a first column of `!`, `^`, `#` and the like, fractions,
+//! and Calc's algebra beyond polynomials. A formula that needs one is
+//! reported rather than half evaluated.
 
-use crate::table::{parse_table, rewrite, Row, Table};
+mod lisp;
+pub mod poly;
+pub mod units;
+
+use crate::date::Date;
+use crate::table::{is_table_line, parse_table, rewrite, strip_leader, Row, Table};
+use poly::Poly;
+use units::Units;
 
 /// What recalculating a table did.
 #[derive(Debug, Clone, PartialEq)]
@@ -84,6 +102,14 @@ enum Op {
     Div,
     Mod,
     Pow,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    And,
+    Or,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -91,9 +117,82 @@ enum Expr {
     Number(f64),
     Field(Reference),
     Range(Reference, Reference),
+    /// A unit, a constant (`pi`, `e`) or a variable.
+    Name(String),
+    Date(Stamp),
+    /// `@#`: the current row's number.
+    RowNumber,
+    /// `$#`: the current column's number.
+    ColumnNumber,
     Neg(Box<Expr>),
+    Not(Box<Expr>),
     Binary(Op, Box<Expr>, Box<Expr>),
     Call(String, Vec<Expr>),
+}
+
+/// A date, as Calc keeps one: a count of days, and how it was written.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Stamp {
+    /// Days since 1970-01-01, the time of day as the fraction.
+    days: f64,
+    /// Whether it has a time of day.
+    time: bool,
+    /// `<…>` rather than `[…]`.
+    active: bool,
+}
+
+impl Stamp {
+    /// `<2026-09-29 Tue>`, `[2026-09-29 Tue 10:30]`, `<2026-09-29>`.
+    fn parse(text: &str) -> Option<Stamp> {
+        let text = text.trim();
+        let (active, inner) = if let Some(inner) = text.strip_prefix('<') {
+            (true, inner.strip_suffix('>')?)
+        } else {
+            (false, text.strip_prefix('[')?.strip_suffix(']')?)
+        };
+        let mut words = inner.split_whitespace();
+        let date = Date::parse_iso(words.next()?)?;
+        let mut days = date.to_days() as f64;
+        let mut time = false;
+        for word in words {
+            if let Some((hour, minute)) = word.split_once(':') {
+                let (hour, minute): (u32, u32) = (hour.parse().ok()?, minute.parse().ok()?);
+                if hour > 23 || minute > 59 {
+                    return None;
+                }
+                days += f64::from(hour * 60 + minute) / 1440.0;
+                time = true;
+            } else if word.starts_with(['+', '-', '.']) {
+                // A repeater or a warning period says nothing of the date.
+            } else if !word.chars().all(char::is_alphabetic) {
+                return None;
+            }
+        }
+        Some(Stamp { days, time, active })
+    }
+
+    fn date(&self) -> Date {
+        Date::from_days(self.days.floor() as i64)
+    }
+
+    /// Seconds into the day.
+    fn seconds(&self) -> i64 {
+        ((self.days - self.days.floor()) * 86_400.0).round() as i64
+    }
+
+    fn text(&self) -> String {
+        let date = self.date();
+        let mut inner = format!("{} {}", date.to_iso(), date.weekday());
+        if self.time {
+            let minutes = self.seconds() / 60;
+            inner.push_str(&format!(" {:02}:{:02}", minutes / 60, minutes % 60));
+        }
+        if self.active {
+            format!("<{inner}>")
+        } else {
+            format!("[{inner}]")
+        }
+    }
 }
 
 /// How a result is written into its field.
@@ -119,14 +218,44 @@ enum Target {
     Fields(Reference, Option<Reference>),
 }
 
+/// How a duration is written back: `;T`, `;U` or `;t`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Duration {
+    /// `02:30:00`.
+    Clock,
+    /// `02:30`.
+    Minutes,
+    /// `2.50`, in hours.
+    Hours,
+}
+
+/// What follows `;`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Modes {
+    format: Format,
+    /// `;N`: fields as numbers, text counting as zero.
+    numbers: bool,
+    /// `;L`: fields go into a Lisp formula as they are written.
+    literal: bool,
+    /// `;T`, `;t`, `;U`: `HH:MM[:SS]` fields are times.
+    duration: Option<Duration>,
+    /// `;R`: angles in radians rather than Calc's degrees.
+    radians: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Body {
+    Calc(Expr),
+    /// The Lisp form, its references not yet filled in.
+    Lisp(String),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct Formula {
     source: String,
     target: Target,
-    expr: Expr,
-    format: Format,
-    /// `;N`: text counts as zero instead of being an error.
-    numbers: bool,
+    body: Body,
+    modes: Modes,
 }
 
 // ── Parsing ───────────────────────────────────────────────────────────────
@@ -305,6 +434,61 @@ impl Parser {
     }
 
     fn expr(&mut self) -> Result<Expr, String> {
+        let mut left = self.conjunction()?;
+        loop {
+            self.skip_space();
+            if self.peek() == Some('|') && self.peek_at(1) == Some('|') {
+                self.pos += 2;
+                let right = self.conjunction()?;
+                left = Expr::Binary(Op::Or, Box::new(left), Box::new(right));
+            } else {
+                return Ok(left);
+            }
+        }
+    }
+
+    fn conjunction(&mut self) -> Result<Expr, String> {
+        let mut left = self.negation()?;
+        loop {
+            self.skip_space();
+            if self.peek() == Some('&') && self.peek_at(1) == Some('&') {
+                self.pos += 2;
+                let right = self.negation()?;
+                left = Expr::Binary(Op::And, Box::new(left), Box::new(right));
+            } else {
+                return Ok(left);
+            }
+        }
+    }
+
+    fn negation(&mut self) -> Result<Expr, String> {
+        self.skip_space();
+        if self.peek() == Some('!') && self.peek_at(1) != Some('=') {
+            self.pos += 1;
+            return Ok(Expr::Not(Box::new(self.negation()?)));
+        }
+        self.comparison()
+    }
+
+    fn comparison(&mut self) -> Result<Expr, String> {
+        let left = self.sum()?;
+        self.skip_space();
+        let two = (self.peek(), self.peek_at(1));
+        let (op, width) = match two {
+            (Some('='), Some('=')) => (Op::Eq, 2),
+            (Some('!'), Some('=')) => (Op::Ne, 2),
+            (Some('<'), Some('=')) => (Op::Le, 2),
+            (Some('>'), Some('=')) => (Op::Ge, 2),
+            (Some('<'), _) => (Op::Lt, 1),
+            (Some('>'), _) => (Op::Gt, 1),
+            _ => return Ok(left),
+        };
+        self.pos += width;
+        let right = self.sum()?;
+        Ok(Expr::Binary(op, Box::new(left), Box::new(right)))
+    }
+
+    fn sum(&mut self) -> Result<Expr, String> {
         let mut left = self.term()?;
         loop {
             self.skip_space();
@@ -321,7 +505,7 @@ impl Parser {
     }
 
     fn term(&mut self) -> Result<Expr, String> {
-        let mut left = self.unary()?;
+        let mut left = self.juxtaposed()?;
         loop {
             self.skip_space();
             let op = if self.eat('*') {
@@ -333,8 +517,27 @@ impl Parser {
             } else {
                 return Ok(left);
             };
-            let right = self.unary()?;
+            let right = self.juxtaposed()?;
             left = Expr::Binary(op, Box::new(left), Box::new(right));
+        }
+    }
+
+    /// Calc's implicit product, which binds tighter than `*` and `/`: so
+    /// `12 km / 2 hr` is `(12 km) / (2 hr)`.
+    fn juxtaposed(&mut self) -> Result<Expr, String> {
+        let mut left = self.unary()?;
+        loop {
+            self.skip_space();
+            let starts_atom = match self.peek() {
+                Some(c) if c.is_alphabetic() || c.is_ascii_digit() => true,
+                Some('(' | '@' | '$') => true,
+                _ => false,
+            };
+            if !starts_atom {
+                return Ok(left);
+            }
+            let right = self.unary()?;
+            left = Expr::Binary(Op::Mul, Box::new(left), Box::new(right));
         }
     }
 
@@ -363,6 +566,31 @@ impl Parser {
 
     fn atom(&mut self) -> Result<Expr, String> {
         self.skip_space();
+        match (self.peek(), self.peek_at(1)) {
+            (Some('@'), Some('#')) => {
+                self.pos += 2;
+                return Ok(Expr::RowNumber);
+            }
+            (Some('$'), Some('#')) => {
+                self.pos += 2;
+                return Ok(Expr::ColumnNumber);
+            }
+            (Some('<' | '['), Some(c)) if c.is_ascii_digit() => {
+                let close = if self.peek() == Some('<') { '>' } else { ']' };
+                let start = self.pos;
+                while self.peek().is_some_and(|c| c != close) {
+                    self.pos += 1;
+                }
+                if !self.eat(close) {
+                    return Err("an unclosed date".to_string());
+                }
+                let text: String = self.chars[start..self.pos].iter().collect();
+                return Stamp::parse(&text)
+                    .map(Expr::Date)
+                    .ok_or_else(|| format!("`{text}` is not a date"));
+            }
+            _ => {}
+        }
         if let Some((from, to)) = self.reference_or_range()? {
             return Ok(match to {
                 Some(to) => Expr::Range(from, to),
@@ -372,9 +600,9 @@ impl Parser {
 
         match self.peek() {
             Some(c) if c.is_ascii_digit() || c == '.' => self.number(),
-            Some(c) if c.is_ascii_alphabetic() => {
+            Some(c) if c.is_alphabetic() => {
                 let start = self.pos;
-                while self.peek().is_some_and(|c| c.is_ascii_alphanumeric()) {
+                while self.peek().is_some_and(|c| c.is_alphanumeric() || c == '_') {
                     self.pos += 1;
                 }
                 let name: String = self.chars[start..self.pos].iter().collect();
@@ -396,10 +624,8 @@ impl Parser {
                     }
                     check_function(&name, args.len())?;
                     Ok(Expr::Call(name, args))
-                } else if name == "pi" {
-                    Ok(Expr::Number(std::f64::consts::PI))
                 } else {
-                    Err(format!("unknown name `{name}`"))
+                    Ok(Expr::Name(name))
                 }
             }
             Some('(') => {
@@ -412,8 +638,8 @@ impl Parser {
                     Err("missing `)`".to_string())
                 }
             }
-            Some('\'') => Err("Emacs Lisp formulas are not supported".to_string()),
-            Some('"') => Err("strings are not supported".to_string()),
+            Some('\'') => Err("an Emacs Lisp formula must be the whole formula".to_string()),
+            Some('"') => Err("strings are not supported; use an Emacs Lisp formula".to_string()),
             Some(c) => Err(format!("unexpected `{c}`")),
             None => Err("the formula ends too early".to_string()),
         }
@@ -447,8 +673,19 @@ fn check_function(name: &str, args: usize) -> Result<(), String> {
     let (min, max) = match name {
         "vsum" | "vmean" | "vmedian" | "vmin" | "vmax" | "vcount" | "vprod" | "vsdev" | "min"
         | "max" => (1, usize::MAX),
-        "abs" | "sqrt" | "exp" | "ln" | "log10" | "floor" | "ceil" => (1, 1),
+        "abs" | "sqrt" | "exp" | "ln" | "log10" | "floor" | "ceil" | "sin" | "cos" | "tan"
+        | "arcsin" | "arccos" | "arctan" | "asin" | "acos" | "atan" => (1, 1),
         "round" => (1, 2),
+        "if" => (3, 3),
+        "now" => (0, 0),
+        "date" => (1, 3),
+        "year" | "month" | "day" | "weekday" | "hour" | "minute" | "second" => (1, 1),
+        "incmonth" | "incyear" => (2, 2),
+        "uconvert" => (2, 2),
+        "ubase" | "usimplify" | "uremove" | "uextract" => (1, 1),
+        "deriv" | "integ" => (2, 2),
+        "subst" => (3, 3),
+        "expand" | "simplify" => (1, 1),
         _ => return Err(format!("unknown function `{name}`")),
     };
     if args < min || args > max {
@@ -457,11 +694,15 @@ fn check_function(name: &str, args: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// The modes after `;`: `%.2f`, `%d`, `%.3e`, `f2`, `N`.
-fn parse_modes(modes: &str) -> Result<(Format, bool), String> {
+/// The modes after `;`: `%.2f`, `%d`, `%.3e`, `f2`, `s3`, `N`, `L`, `T`,
+/// `t`, `U`, `R`, `D`, and Calc's precision `p20`, which is let be.
+fn parse_modes(modes: &str) -> Result<Modes, String> {
     let chars: Vec<char> = modes.trim().chars().collect();
     let mut format = Format::Natural;
     let mut numbers = false;
+    let mut literal = false;
+    let mut duration = None;
+    let mut radians = false;
     let mut i = 0;
 
     let digits_from = |i: &mut usize| -> Option<usize> {
@@ -502,25 +743,57 @@ fn parse_modes(modes: &str) -> Result<(Format, bool), String> {
                 i += 1;
                 format = Format::Fixed(digits_from(&mut i).unwrap_or(0));
             }
+            's' | 'e' if chars.get(i + 1).is_some_and(|c| c.is_ascii_digit()) => {
+                i += 1;
+                let digits = digits_from(&mut i).unwrap_or(1);
+                format = Format::Scientific(digits.saturating_sub(1));
+            }
+            'p' if chars.get(i + 1).is_some_and(|c| c.is_ascii_digit()) => {
+                i += 1;
+                digits_from(&mut i);
+            }
             'N' => {
                 numbers = true;
+                i += 1;
+            }
+            'L' => {
+                literal = true;
+                i += 1;
+            }
+            'T' | 't' | 'U' => {
+                duration = Some(match chars[i] {
+                    'T' => Duration::Clock,
+                    't' => Duration::Hours,
+                    _ => Duration::Minutes,
+                });
+                i += 1;
+            }
+            'R' | 'D' => {
+                radians = chars[i] == 'R';
                 i += 1;
             }
             c if c.is_whitespace() => i += 1,
             c => return Err(format!("unsupported mode `{c}`")),
         }
     }
-    Ok((format, numbers))
+    Ok(Modes {
+        format,
+        numbers,
+        literal,
+        duration,
+        radians,
+    })
 }
 
 /// Reads one `lhs=rhs;modes` formula.
 fn parse_formula(source: &str) -> Result<Formula, String> {
-    let (assignment, modes) = match source.split_once(';') {
-        Some((assignment, modes)) => (assignment, modes),
-        None => (source, ""),
+    // The modes follow the last `;`, which a Lisp string may also hold.
+    let (assignment, modes) = match source.rsplit_once(';') {
+        Some((assignment, modes)) if !modes.contains(['"', ')', '(']) => (assignment, modes),
+        _ => (source, ""),
     };
     let (lhs, rhs) = assignment.split_once('=').ok_or("a formula needs `=`")?;
-    let (format, numbers) = parse_modes(modes)?;
+    let modes = parse_modes(modes)?;
 
     let mut left = Parser::new(lhs.trim());
     let Some((from, to)) = left.reference_or_range()? else {
@@ -566,19 +839,24 @@ fn parse_formula(source: &str) -> Result<Formula, String> {
         }
     };
 
-    let mut right = Parser::new(rhs);
-    let expr = right.expr()?;
-    if !right.at_end() {
-        let rest: String = right.chars[right.pos..].iter().collect();
-        return Err(format!("unexpected `{}`", rest.trim()));
-    }
+    let body = match rhs.trim().strip_prefix('\'') {
+        Some(form) => Body::Lisp(form.to_string()),
+        None => {
+            let mut right = Parser::new(rhs);
+            let expr = right.expr()?;
+            if !right.at_end() {
+                let rest: String = right.chars[right.pos..].iter().collect();
+                return Err(format!("unexpected `{}`", rest.trim()));
+            }
+            Body::Calc(expr)
+        }
+    };
 
     Ok(Formula {
         source: source.trim().to_string(),
         target,
-        expr,
-        format,
-        numbers,
+        body,
+        modes,
     })
 }
 
@@ -594,7 +872,7 @@ fn parse_tblfm(line: &str) -> Result<Vec<Formula>, String> {
 
 /// The text after `#+TBLFM:`, when the line is one.
 fn tblfm_body(line: &str) -> Option<&str> {
-    let trimmed = line.trim_start();
+    let trimmed = strip_leader(line);
     let keyword = trimmed.get(..8)?;
     keyword
         .eq_ignore_ascii_case("#+TBLFM:")
@@ -804,37 +1082,324 @@ fn read_number(text: &str) -> Option<f64> {
     plausible.then(|| text.parse().ok()).flatten()
 }
 
+/// What a formula computes.
+#[derive(Debug, Clone, PartialEq)]
 enum Value {
-    Number(f64),
-    List(Vec<f64>),
+    /// A number, with units or without.
+    Quantity(f64, Units),
+    Date(Stamp),
+    Symbolic(Poly),
+    List(Vec<Value>),
+}
+
+fn number(n: f64) -> Value {
+    Value::Quantity(n, Units::default())
+}
+
+fn truth(holds: bool) -> Value {
+    number(if holds { 1.0 } else { 0.0 })
+}
+
+/// A polynomial without variables is a number again.
+fn settle(poly: Poly) -> Value {
+    match poly.as_constant() {
+        Some(n) => number(n),
+        None => Value::Symbolic(poly),
+    }
+}
+
+impl Value {
+    /// The number, when this is a plain one.
+    fn plain(&self) -> Option<f64> {
+        match self {
+            Value::Quantity(n, units) if units.is_empty() => Some(*n),
+            _ => None,
+        }
+    }
+
+    fn describe(&self) -> &'static str {
+        match self {
+            Value::Quantity(_, units) if units.is_empty() => "a number",
+            Value::Quantity(..) => "a quantity with units",
+            Value::Date(_) => "a date",
+            Value::Symbolic(_) => "a symbolic expression",
+            Value::List(_) => "a range",
+        }
+    }
+
+    fn poly(&self) -> Result<Poly, String> {
+        match self {
+            Value::Symbolic(poly) => Ok(poly.clone()),
+            other => match other.plain() {
+                Some(n) => Ok(Poly::constant(n)),
+                None => Err(format!(
+                    "{} cannot go into symbolic arithmetic",
+                    other.describe()
+                )),
+            },
+        }
+    }
+
+    /// A number to compare by: a quantity in SI, a date in days.
+    fn rank(&self) -> Result<(f64, units::Dims, bool), String> {
+        match self {
+            Value::Quantity(n, units) => {
+                let (factor, dims) = units.si();
+                Ok((n * factor, dims, false))
+            }
+            Value::Date(stamp) => Ok((stamp.days, [0; 7], true)),
+            other => Err(format!("{} cannot be compared", other.describe())),
+        }
+    }
+}
+
+fn compare(a: &Value, b: &Value) -> Result<std::cmp::Ordering, String> {
+    let (a, a_dims, a_date) = a.rank()?;
+    let (b, b_dims, b_date) = b.rank()?;
+    if a_dims != b_dims || a_date != b_date {
+        return Err("comparing things that are not alike".to_string());
+    }
+    Ok(a.total_cmp(&b))
+}
+
+/// Two values under an operator.
+fn binary(op: Op, a: Value, b: Value) -> Result<Value, String> {
+    if matches!(a, Value::List(_)) || matches!(b, Value::List(_)) {
+        return Err("a range can only be used inside a function".to_string());
+    }
+    match op {
+        Op::Eq | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge => {
+            if let (Value::Symbolic(x), Value::Symbolic(y)) = (&a, &b) {
+                return match op {
+                    Op::Eq => Ok(truth(x == y)),
+                    Op::Ne => Ok(truth(x != y)),
+                    _ => Err("symbolic expressions cannot be ordered".to_string()),
+                };
+            }
+            let order = compare(&a, &b)?;
+            use std::cmp::Ordering::*;
+            return Ok(truth(match op {
+                Op::Eq => order == Equal,
+                Op::Ne => order != Equal,
+                Op::Lt => order == Less,
+                Op::Le => order != Greater,
+                Op::Gt => order == Greater,
+                _ => order != Less,
+            }));
+        }
+        Op::And | Op::Or => {
+            let (x, y) = (truthy(&a)?, truthy(&b)?);
+            return Ok(truth(if op == Op::And { x && y } else { x || y }));
+        }
+        _ => {}
+    }
+
+    // Dates: a difference is days, and days move a date.
+    match (&a, &b) {
+        (Value::Date(x), Value::Date(y)) if op == Op::Sub => return Ok(number(x.days - y.days)),
+        (Value::Date(stamp), other) | (other, Value::Date(stamp))
+            if op == Op::Add || (op == Op::Sub && matches!(a, Value::Date(_))) =>
+        {
+            let days = days_of(other)?;
+            let days = if op == Op::Sub { -days } else { days };
+            let mut moved = *stamp;
+            moved.days += days;
+            // A move by part of a day gives the date a time.
+            moved.time |= days.fract() != 0.0;
+            return Ok(Value::Date(moved));
+        }
+        (Value::Date(_), _) | (_, Value::Date(_)) => {
+            return Err("dates only subtract, and move by days".to_string())
+        }
+        _ => {}
+    }
+
+    if matches!(a, Value::Symbolic(_)) || matches!(b, Value::Symbolic(_)) {
+        let (x, y) = (a.poly()?, b.poly()?);
+        return match op {
+            Op::Add => Ok(settle(x.add(&y))),
+            Op::Sub => Ok(settle(x.add(&y.scale(-1.0)))),
+            Op::Mul => Ok(settle(x.mul(&y))),
+            Op::Div => match y.as_constant() {
+                Some(0.0) => Err("division by zero".to_string()),
+                Some(n) => Ok(settle(x.scale(1.0 / n))),
+                None => Err("division by a symbolic expression is not supported".to_string()),
+            },
+            Op::Pow => match y.as_constant() {
+                Some(n) if n >= 0.0 && n.fract() == 0.0 && n <= 64.0 => Ok(settle(x.pow(n as u32))),
+                _ => Err("a symbolic power must be a whole number".to_string()),
+            },
+            _ => Err("`%` of a symbolic expression".to_string()),
+        };
+    }
+
+    let (Value::Quantity(x, xu), Value::Quantity(y, yu)) = (a, b) else {
+        unreachable!("dates, lists and symbols are handled above");
+    };
+    match op {
+        Op::Add | Op::Sub | Op::Mod => {
+            // A plain zero (an empty field) joins any units.
+            let (x, y, units) = if xu == yu || (yu.is_empty() && y == 0.0) {
+                (x, y, xu)
+            } else if xu.is_empty() && x == 0.0 {
+                (x, y, yu)
+            } else {
+                let factor = units::conversion(&yu, &xu)?;
+                (x, y * factor, xu)
+            };
+            let value = match op {
+                Op::Add => x + y,
+                Op::Sub => x - y,
+                _ if y == 0.0 => return Err("division by zero".to_string()),
+                // Calc's `%` takes the sign of the divisor.
+                _ => x - y * (x / y).floor(),
+            };
+            Ok(Value::Quantity(value, units))
+        }
+        Op::Mul => {
+            let (units, scale) = xu.times(&yu);
+            Ok(Value::Quantity(x * y * scale, units))
+        }
+        Op::Div => {
+            if y == 0.0 {
+                return Err("division by zero".to_string());
+            }
+            let (units, scale) = xu.times(&yu.powi(-1));
+            Ok(Value::Quantity(x / y * scale, units))
+        }
+        Op::Pow => {
+            if !yu.is_empty() {
+                return Err("a power cannot have units".to_string());
+            }
+            if xu.is_empty() {
+                return Ok(number(x.powf(y)));
+            }
+            if y.fract() != 0.0 {
+                return Err("units to a power that is not whole".to_string());
+            }
+            Ok(Value::Quantity(x.powf(y), xu.powi(y as i32)))
+        }
+        _ => unreachable!("comparisons are handled above"),
+    }
+}
+
+fn truthy(value: &Value) -> Result<bool, String> {
+    value
+        .plain()
+        .map(|n| n != 0.0)
+        .ok_or_else(|| format!("{} is neither true nor false", value.describe()))
+}
+
+/// How far a number or a time moves a date, in days.
+fn days_of(value: &Value) -> Result<f64, String> {
+    match value {
+        Value::Quantity(n, units) if units.is_empty() => Ok(*n),
+        Value::Quantity(n, units) => Ok(n * units::conversion(units, &Units::one("day"))?),
+        other => Err(format!("a date cannot move by {}", other.describe())),
+    }
+}
+
+/// `12:30` or `12:30:45` in seconds, for the duration modes.
+fn read_duration(text: &str) -> Option<f64> {
+    let text = text.trim();
+    let (negative, text) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text),
+    };
+    let parts: Vec<&str> = text.split(':').collect();
+    if !(2..=3).contains(&parts.len()) || parts.iter().any(|p| p.is_empty()) {
+        return None;
+    }
+    let numbers: Vec<u64> = parts
+        .iter()
+        .map(|p| p.parse().ok())
+        .collect::<Option<_>>()?;
+    let seconds = numbers[0] * 3600 + numbers[1] * 60 + numbers.get(2).copied().unwrap_or(0);
+    Some(if negative {
+        -(seconds as f64)
+    } else {
+        seconds as f64
+    })
+}
+
+/// The number at the start of `text`, or zero: what `;N` makes of a field.
+fn leading_number(text: &str) -> f64 {
+    let text = text.trim();
+    let end = text
+        .char_indices()
+        .take_while(|(at, c)| {
+            c.is_ascii_digit()
+                || matches!(c, '.' | 'e' | 'E')
+                || (*at == 0 && matches!(c, '-' | '+'))
+        })
+        .map(|(at, c)| at + c.len_utf8())
+        .last()
+        .unwrap_or(0);
+    (0..=end)
+        .rev()
+        .find_map(|end| text[..end].parse::<f64>().ok())
+        .unwrap_or(0.0)
 }
 
 struct Eval<'a> {
     grid: &'a Grid,
     at: (usize, usize),
-    numbers: bool,
+    modes: Modes,
 }
 
 impl Eval<'_> {
-    fn value_of(&self, text: &str) -> Result<f64, String> {
-        match read_number(text) {
-            Some(n) => Ok(n),
-            None if self.numbers => Ok(0.0),
-            None => Err(format!("`{}` is not a number", text.trim())),
+    /// A field's text as a value: a date, a time in the duration modes, a
+    /// number, or else what Calc would read it as (`3 m`, `x + 1`).
+    fn value_of(&self, text: &str) -> Result<Value, String> {
+        let trimmed = text.trim();
+        if self.modes.numbers {
+            return Ok(number(leading_number(trimmed)));
         }
+        if let Some(seconds) = self.modes.duration.and_then(|_| read_duration(trimmed)) {
+            return Ok(number(seconds));
+        }
+        if let Some(stamp) = Stamp::parse(trimmed) {
+            return Ok(Value::Date(stamp));
+        }
+        if let Some(n) = read_number(trimmed) {
+            return Ok(number(n));
+        }
+        let not_a_number = || format!("`{trimmed}` is not a number");
+        // A field holds no references; one that seems to is text.
+        if trimmed.contains(['@', '$', '\'', '"']) {
+            return Err(not_a_number());
+        }
+        let mut parser = Parser::new(trimmed);
+        let expr = parser.expr().map_err(|_| not_a_number())?;
+        if !parser.at_end() {
+            return Err(not_a_number());
+        }
+        self.eval(&expr).map_err(|_| not_a_number())
     }
 
     fn eval(&self, expr: &Expr) -> Result<Value, String> {
         match expr {
-            Expr::Number(n) => Ok(Value::Number(*n)),
+            Expr::Number(n) => Ok(number(*n)),
+            Expr::Date(stamp) => Ok(Value::Date(*stamp)),
+            Expr::RowNumber => {
+                let row = self.grid.data.iter().position(|&r| r == self.at.0);
+                Ok(number(row.map_or(0, |at| at + 1) as f64))
+            }
+            Expr::ColumnNumber => Ok(number((self.at.1 + 1) as f64)),
+            Expr::Name(name) => Ok(match name.as_str() {
+                "pi" => number(std::f64::consts::PI),
+                "e" => number(std::f64::consts::E),
+                name if units::lookup(name).is_some() => Value::Quantity(1.0, Units::one(name)),
+                name => Value::Symbolic(Poly::variable(name)),
+            }),
             Expr::Field(reference) => {
                 let (row, col) = self.grid.field(*reference, self.at)?;
                 let text = self.grid.cell(row, col);
                 // A lone empty field is zero, as Org has it.
                 if text.trim().is_empty() {
-                    Ok(Value::Number(0.0))
+                    Ok(number(0.0))
                 } else {
-                    Ok(Value::Number(self.value_of(text)?))
+                    self.value_of(text)
                 }
             }
             Expr::Range(from, to) => {
@@ -849,72 +1414,114 @@ impl Eval<'_> {
                 }
                 Ok(Value::List(values))
             }
-            Expr::Neg(inner) => Ok(Value::Number(-self.scalar(inner)?)),
-            Expr::Binary(op, left, right) => {
-                let (a, b) = (self.scalar(left)?, self.scalar(right)?);
-                let result = match op {
-                    Op::Add => a + b,
-                    Op::Sub => a - b,
-                    Op::Mul => a * b,
-                    Op::Div if b == 0.0 => return Err("division by zero".to_string()),
-                    Op::Div => a / b,
-                    Op::Mod if b == 0.0 => return Err("division by zero".to_string()),
-                    // Calc's `%` takes the sign of the divisor.
-                    Op::Mod => a - b * (a / b).floor(),
-                    Op::Pow => a.powf(b),
-                };
-                Ok(Value::Number(result))
-            }
-            Expr::Call(name, args) => self.call(name, args).map(Value::Number),
-        }
-    }
-
-    fn scalar(&self, expr: &Expr) -> Result<f64, String> {
-        match self.eval(expr)? {
-            Value::Number(n) => Ok(n),
-            Value::List(_) => Err("a range can only be used inside a function".to_string()),
+            Expr::Neg(inner) => binary(Op::Mul, number(-1.0), self.eval(inner)?),
+            Expr::Not(inner) => Ok(truth(!truthy(&self.eval(inner)?)?)),
+            Expr::Binary(op, left, right) => binary(*op, self.eval(left)?, self.eval(right)?),
+            Expr::Call(name, args) => self.call(name, args),
         }
     }
 
     /// Every argument, ranges spread out.
-    fn spread(&self, args: &[Expr]) -> Result<Vec<f64>, String> {
+    fn spread(&self, args: &[Expr]) -> Result<Vec<Value>, String> {
         let mut values = Vec::new();
         for arg in args {
             match self.eval(arg)? {
-                Value::Number(n) => values.push(n),
                 Value::List(list) => values.extend(list),
+                value => values.push(value),
             }
         }
         Ok(values)
     }
 
-    fn call(&self, name: &str, args: &[Expr]) -> Result<f64, String> {
-        let one = |f: fn(f64) -> f64| -> Result<f64, String> { Ok(f(self.scalar(&args[0])?)) };
-        let nonempty = |values: Vec<f64>| -> Result<Vec<f64>, String> {
+    fn plain(&self, expr: &Expr, name: &str) -> Result<f64, String> {
+        let value = self.eval(expr)?;
+        value
+            .plain()
+            .ok_or_else(|| format!("`{name}` of {}", value.describe()))
+    }
+
+    fn date(&self, expr: &Expr, name: &str) -> Result<Stamp, String> {
+        match self.eval(expr)? {
+            Value::Date(stamp) => Ok(stamp),
+            other => Err(format!("`{name}` of {}", other.describe())),
+        }
+    }
+
+    fn call(&self, name: &str, args: &[Expr]) -> Result<Value, String> {
+        let nonempty = |values: Vec<Value>| -> Result<Vec<Value>, String> {
             if values.is_empty() {
                 Err(format!("`{name}` of nothing"))
             } else {
                 Ok(values)
             }
         };
+        let angle = |n: f64| {
+            if self.modes.radians {
+                n
+            } else {
+                n.to_radians()
+            }
+        };
+        let from_angle = |n: f64| {
+            if self.modes.radians {
+                n
+            } else {
+                n.to_degrees()
+            }
+        };
+        // Calc's functions keep a number's units where that makes sense.
+        let keep_units = |f: fn(f64) -> f64| -> Result<Value, String> {
+            match self.eval(&args[0])? {
+                Value::Quantity(n, units) => Ok(Value::Quantity(f(n), units)),
+                other => Err(format!("`{name}` of {}", other.describe())),
+            }
+        };
 
         match name {
-            "vsum" => Ok(self.spread(args)?.iter().sum()),
-            "vprod" => Ok(self.spread(args)?.iter().product()),
-            "vcount" => Ok(self.spread(args)?.len() as f64),
+            "if" => {
+                let test = self.eval(&args[0])?;
+                if truthy(&test)? {
+                    self.eval(&args[1])
+                } else {
+                    self.eval(&args[2])
+                }
+            }
+            "vsum" => self
+                .spread(args)?
+                .into_iter()
+                .try_fold(number(0.0), |acc, v| binary(Op::Add, acc, v)),
+            "vprod" => self
+                .spread(args)?
+                .into_iter()
+                .try_fold(number(1.0), |acc, v| binary(Op::Mul, acc, v)),
+            "vcount" => Ok(number(self.spread(args)?.len() as f64)),
             "vmean" => {
                 let values = nonempty(self.spread(args)?)?;
-                Ok(values.iter().sum::<f64>() / values.len() as f64)
+                let count = values.len() as f64;
+                let sum = values
+                    .into_iter()
+                    .try_fold(number(0.0), |acc, v| binary(Op::Add, acc, v))?;
+                binary(Op::Div, sum, number(count))
             }
             "vmedian" => {
                 let mut values = nonempty(self.spread(args)?)?;
-                values.sort_by(f64::total_cmp);
+                let mut failed = None;
+                values.sort_by(|a, b| {
+                    compare(a, b).unwrap_or_else(|error| {
+                        failed = Some(error);
+                        std::cmp::Ordering::Equal
+                    })
+                });
+                if let Some(error) = failed {
+                    return Err(error);
+                }
                 let mid = values.len() / 2;
-                Ok(if values.len() % 2 == 0 {
-                    (values[mid - 1] + values[mid]) / 2.0
+                if values.len() % 2 == 0 {
+                    let sum = binary(Op::Add, values[mid - 1].clone(), values[mid].clone())?;
+                    binary(Op::Div, sum, number(2.0))
                 } else {
-                    values[mid]
-                })
+                    Ok(values[mid].clone())
+                }
             }
             "vsdev" => {
                 // The sample standard deviation, which is Calc's.
@@ -922,45 +1529,227 @@ impl Eval<'_> {
                 if values.len() < 2 {
                     return Err("`vsdev` needs two values".to_string());
                 }
-                let mean = values.iter().sum::<f64>() / values.len() as f64;
-                let squares: f64 = values.iter().map(|v| (v - mean).powi(2)).sum();
-                Ok((squares / (values.len() - 1) as f64).sqrt())
-            }
-            "vmin" | "min" => Ok(nonempty(self.spread(args)?)?
-                .into_iter()
-                .fold(f64::INFINITY, f64::min)),
-            "vmax" | "max" => Ok(nonempty(self.spread(args)?)?
-                .into_iter()
-                .fold(f64::NEG_INFINITY, f64::max)),
-            "abs" => one(f64::abs),
-            "floor" => one(f64::floor),
-            "ceil" => one(f64::ceil),
-            "exp" => one(f64::exp),
-            "sqrt" => {
-                let n = self.scalar(&args[0])?;
-                if n < 0.0 {
-                    return Err("square root of a negative number".to_string());
+                let count = values.len() as f64;
+                let mean = binary(
+                    Op::Div,
+                    values
+                        .iter()
+                        .cloned()
+                        .try_fold(number(0.0), |acc, v| binary(Op::Add, acc, v))?,
+                    number(count),
+                )?;
+                let mut squares = number(0.0);
+                for value in values {
+                    let deviation = binary(Op::Sub, value, mean.clone())?;
+                    squares = binary(Op::Add, squares, binary(Op::Pow, deviation, number(2.0))?)?;
                 }
-                Ok(n.sqrt())
+                let variance = binary(Op::Div, squares, number(count - 1.0))?;
+                sqrt(variance)
             }
-            "ln" | "log10" => {
-                let n = self.scalar(&args[0])?;
-                if n <= 0.0 {
-                    return Err("logarithm of a number that is not positive".to_string());
+            "vmin" | "min" | "vmax" | "max" => {
+                let values = nonempty(self.spread(args)?)?;
+                let want = if name.ends_with("min") {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Greater
+                };
+                let mut best = values[0].clone();
+                for value in values.into_iter().skip(1) {
+                    if compare(&value, &best)? == want {
+                        best = value;
+                    }
                 }
-                Ok(if name == "ln" { n.ln() } else { n.log10() })
+                Ok(best)
             }
+            "abs" => keep_units(f64::abs),
+            "floor" => keep_units(f64::floor),
+            "ceil" => keep_units(f64::ceil),
             "round" => {
-                let n = self.scalar(&args[0])?;
                 let places = match args.get(1) {
-                    Some(places) => self.scalar(places)?,
+                    Some(places) => self.plain(places, name)?,
                     None => 0.0,
                 };
                 let scale = 10f64.powi(places as i32);
-                Ok((n * scale).round() / scale)
+                match self.eval(&args[0])? {
+                    Value::Quantity(n, units) => {
+                        Ok(Value::Quantity((n * scale).round() / scale, units))
+                    }
+                    other => Err(format!("`round` of {}", other.describe())),
+                }
+            }
+            "sqrt" => sqrt(self.eval(&args[0])?),
+            "exp" => Ok(number(self.plain(&args[0], name)?.exp())),
+            "ln" | "log10" => {
+                let n = self.plain(&args[0], name)?;
+                if n <= 0.0 {
+                    return Err("logarithm of a number that is not positive".to_string());
+                }
+                Ok(number(if name == "ln" { n.ln() } else { n.log10() }))
+            }
+            "sin" => Ok(number(angle(self.plain(&args[0], name)?).sin())),
+            "cos" => Ok(number(angle(self.plain(&args[0], name)?).cos())),
+            "tan" => Ok(number(angle(self.plain(&args[0], name)?).tan())),
+            "arcsin" | "asin" => Ok(number(from_angle(self.plain(&args[0], name)?.asin()))),
+            "arccos" | "acos" => Ok(number(from_angle(self.plain(&args[0], name)?.acos()))),
+            "arctan" | "atan" => Ok(number(from_angle(self.plain(&args[0], name)?.atan()))),
+
+            // Dates.
+            "now" => {
+                let seconds = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|since| since.as_secs())
+                    .unwrap_or(0);
+                // To the minute, as a timestamp shows it.
+                let minutes = seconds / 60;
+                Ok(Value::Date(Stamp {
+                    days: minutes as f64 / 1440.0,
+                    time: true,
+                    active: true,
+                }))
+            }
+            "date" => match args {
+                [only] => match self.eval(only)? {
+                    Value::Date(stamp) => Ok(Value::Date(stamp)),
+                    other => match other.plain() {
+                        // Calc's day numbers count from the year 1.
+                        Some(n) => Ok(Value::Date(Stamp {
+                            days: n - 719_163.0,
+                            time: n.fract() != 0.0,
+                            active: true,
+                        })),
+                        None => Err(format!("`date` of {}", other.describe())),
+                    },
+                },
+                [year, month, day] => {
+                    let date = Date {
+                        year: self.plain(year, name)? as i32,
+                        month: self.plain(month, name)? as u32,
+                        day: 1,
+                    };
+                    // The day counts on from the first, so `date(2026, 1, 32)`
+                    // is the first of February.
+                    let days = date.to_days() as f64 + self.plain(day, name)? - 1.0;
+                    Ok(Value::Date(Stamp {
+                        days,
+                        time: false,
+                        active: true,
+                    }))
+                }
+                _ => Err("`date` takes a date, a day number or a year, month and day".to_string()),
+            },
+            "year" => Ok(number(f64::from(self.date(&args[0], name)?.date().year))),
+            "month" => Ok(number(f64::from(self.date(&args[0], name)?.date().month))),
+            "day" => Ok(number(f64::from(self.date(&args[0], name)?.date().day))),
+            "weekday" => {
+                // Calc counts from Sunday, 0.
+                let days = self.date(&args[0], name)?.days.floor() as i64;
+                Ok(number((days + 4).rem_euclid(7) as f64))
+            }
+            "hour" => Ok(number((self.date(&args[0], name)?.seconds() / 3600) as f64)),
+            "minute" => Ok(number(
+                (self.date(&args[0], name)?.seconds() / 60 % 60) as f64,
+            )),
+            "second" => Ok(number((self.date(&args[0], name)?.seconds() % 60) as f64)),
+            "incmonth" | "incyear" => {
+                let stamp = self.date(&args[0], name)?;
+                let by = self.plain(&args[1], name)? as i64;
+                let months = if name == "incyear" { by * 12 } else { by };
+                let date = stamp.date();
+                let total = i64::from(date.year) * 12 + i64::from(date.month) - 1 + months;
+                let (year, month) = (total.div_euclid(12) as i32, total.rem_euclid(12) as u32 + 1);
+                // The same day, or the month's last when it has no such day.
+                let last = (28..=31)
+                    .rev()
+                    .find(|&day| {
+                        Date::parse_iso(&format!("{year:04}-{month:02}-{day:02}")).is_some()
+                    })
+                    .unwrap_or(28);
+                let moved = Date {
+                    year,
+                    month,
+                    day: date.day.min(last),
+                };
+                let mut stamp = stamp;
+                stamp.days = moved.to_days() as f64 + (stamp.days - stamp.days.floor());
+                Ok(Value::Date(stamp))
+            }
+
+            // Units.
+            "uconvert" => {
+                let Value::Quantity(n, from) = self.eval(&args[0])? else {
+                    return Err("`uconvert` of something that is not a quantity".to_string());
+                };
+                let Value::Quantity(_, to) = self.eval(&args[1])? else {
+                    return Err("`uconvert` needs units to convert to".to_string());
+                };
+                Ok(Value::Quantity(n * units::conversion(&from, &to)?, to))
+            }
+            "ubase" => match self.eval(&args[0])? {
+                Value::Quantity(n, units) => {
+                    let (factor, dims) = units.si();
+                    Ok(Value::Quantity(n * factor, units::base_units(dims)))
+                }
+                other => Err(format!("`ubase` of {}", other.describe())),
+            },
+            "usimplify" => self.eval(&args[0]),
+            "uremove" => match self.eval(&args[0])? {
+                Value::Quantity(n, _) => Ok(number(n)),
+                other => Err(format!("`uremove` of {}", other.describe())),
+            },
+            "uextract" => match self.eval(&args[0])? {
+                Value::Quantity(_, units) => Ok(Value::Quantity(1.0, units)),
+                other => Err(format!("`uextract` of {}", other.describe())),
+            },
+
+            // Symbolic.
+            "expand" | "simplify" => self.eval(&args[0]),
+            "deriv" | "integ" => {
+                let poly = self.eval(&args[0])?.poly()?;
+                let variable = self.variable(&args[1], name)?;
+                Ok(settle(if name == "deriv" {
+                    poly.derivative(&variable)
+                } else {
+                    poly.integral(&variable)
+                }))
+            }
+            "subst" => {
+                let poly = self.eval(&args[0])?.poly()?;
+                let variable = self.variable(&args[1], name)?;
+                let by = self.eval(&args[2])?.poly()?;
+                Ok(settle(poly.substitute(&variable, &by)))
             }
             _ => Err(format!("unknown function `{name}`")),
         }
+    }
+
+    /// The variable an argument names, for `deriv` and the like.
+    fn variable(&self, expr: &Expr, name: &str) -> Result<String, String> {
+        match expr {
+            Expr::Name(variable) => Ok(variable.clone()),
+            _ => Err(format!("`{name}` needs a variable")),
+        }
+    }
+}
+
+fn sqrt(value: Value) -> Result<Value, String> {
+    match value {
+        Value::Quantity(n, _) if n < 0.0 => Err("square root of a negative number".to_string()),
+        Value::Quantity(n, units) => {
+            if units.0.iter().any(|(_, power)| power % 2 != 0) {
+                return Err("square root of units to an odd power".to_string());
+            }
+            Ok(Value::Quantity(
+                n.sqrt(),
+                Units(
+                    units
+                        .0
+                        .into_iter()
+                        .map(|(name, power)| (name, power / 2))
+                        .collect(),
+                ),
+            ))
+        }
+        other => Err(format!("square root of {}", other.describe())),
     }
 }
 
@@ -1013,22 +1802,167 @@ fn render(value: f64, format: Format) -> String {
     }
 }
 
+/// A time in seconds, as the duration modes write it.
+fn render_duration(seconds: f64, duration: Duration, format: Format) -> String {
+    let sign = if seconds < 0.0 { "-" } else { "" };
+    let total = seconds.abs().round() as u64;
+    match duration {
+        Duration::Clock => format!(
+            "{sign}{:02}:{:02}:{:02}",
+            total / 3600,
+            total / 60 % 60,
+            total % 60
+        ),
+        Duration::Minutes => format!("{sign}{:02}:{:02}", total / 3600, total / 60 % 60),
+        Duration::Hours => match format {
+            Format::Natural => format!("{:.2}", seconds / 3600.0),
+            format => render(seconds / 3600.0, format),
+        },
+    }
+}
+
+/// A value as it goes into its field.
+fn render_value(value: &Value, modes: Modes) -> String {
+    match value {
+        Value::Quantity(n, units) if units.is_empty() => match modes.duration {
+            Some(duration) if n.is_finite() => render_duration(*n, duration, modes.format),
+            _ => render(*n, modes.format),
+        },
+        Value::Quantity(n, units) => {
+            let n = render(*n, modes.format);
+            if n == "#ERROR" {
+                n
+            } else {
+                format!("{n} {}", units.display())
+            }
+        }
+        Value::Date(stamp) => stamp.text(),
+        Value::Symbolic(poly) => poly.display(|n| render(n, modes.format)),
+        Value::List(values) => format!(
+            "[{}]",
+            values
+                .iter()
+                .map(|value| render_value(value, modes))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
 impl Formula {
     /// Computes this formula for the field `at` and writes the result there,
     /// returning whether it failed.
     fn fill(&self, grid: &mut Grid, at: (usize, usize)) -> bool {
-        let result = Eval {
-            grid,
-            at,
-            numbers: self.numbers,
-        }
-        .scalar(&self.expr);
-        let text = result
-            .map(|value| render(value, self.format))
-            .unwrap_or_else(|_| "#ERROR".to_string());
+        let text = match &self.body {
+            Body::Calc(expr) => Eval {
+                grid,
+                at,
+                modes: self.modes,
+            }
+            .eval(expr)
+            .and_then(|value| match value {
+                Value::List(_) => Err("a range can only be used inside a function".to_string()),
+                value => Ok(render_value(&value, self.modes)),
+            }),
+            Body::Lisp(form) => self.lisp(form, grid, at),
+        };
+        let text = text.unwrap_or_else(|_| "#ERROR".to_string());
         let failed = text == "#ERROR";
         grid.set(at.0, at.1, text);
         failed
+    }
+
+    /// Evaluates a Lisp formula: its references are replaced by the fields,
+    /// as strings, or as numbers with `;N`, or as written with `;L`.
+    fn lisp(&self, form: &str, grid: &Grid, at: (usize, usize)) -> Result<String, String> {
+        let modes = self.modes;
+        let as_lisp = |text: &str| -> String {
+            if modes.literal {
+                text.to_string()
+            } else if modes.numbers {
+                let n = leading_number(text);
+                if n.fract() == 0.0 && n.abs() < 1e15 {
+                    format!("{}", n as i64)
+                } else {
+                    format!("{n}")
+                }
+            } else {
+                lisp::quote_string(text.trim())
+            }
+        };
+
+        let chars: Vec<char> = form.chars().collect();
+        let mut source = String::new();
+        let mut i = 0;
+        let mut in_string = false;
+        while i < chars.len() {
+            let c = chars[i];
+            if in_string {
+                source.push(c);
+                if c == '\\' && i + 1 < chars.len() {
+                    source.push(chars[i + 1]);
+                    i += 1;
+                } else if c == '"' {
+                    in_string = false;
+                }
+                i += 1;
+                continue;
+            }
+            match (c, chars.get(i + 1)) {
+                ('"', _) => {
+                    in_string = true;
+                    source.push(c);
+                    i += 1;
+                }
+                ('@', Some('#')) => {
+                    let row = grid
+                        .data
+                        .iter()
+                        .position(|&r| r == at.0)
+                        .map_or(0, |r| r + 1);
+                    source.push_str(&row.to_string());
+                    i += 2;
+                }
+                ('$', Some('#')) => {
+                    source.push_str(&(at.1 + 1).to_string());
+                    i += 2;
+                }
+                ('@' | '$', _) => {
+                    let mut parser = Parser {
+                        chars: chars.clone(),
+                        pos: i,
+                    };
+                    let (from, to) = parser
+                        .reference_or_range()?
+                        .ok_or("a reference that is not one")?;
+                    let fields = match to {
+                        None => vec![grid.field(from, at)?],
+                        Some(to) => grid.range(from, to, at)?,
+                    };
+                    let range = to.is_some();
+                    let parts: Vec<String> = fields
+                        .into_iter()
+                        .map(|(row, col)| grid.cell(row, col))
+                        // Empty fields drop out of a range, as in Calc.
+                        .filter(|text| !range || !text.trim().is_empty())
+                        .map(as_lisp)
+                        .collect();
+                    source.push_str(&parts.join(" "));
+                    i = parser.pos;
+                }
+                _ => {
+                    source.push(c);
+                    i += 1;
+                }
+            }
+        }
+
+        let value = lisp::evaluate(&source)?;
+        Ok(match value {
+            lisp::Lisp::Int(n) if modes.format != Format::Natural => render(n as f64, modes.format),
+            lisp::Lisp::Float(n) if modes.format != Format::Natural => render(n, modes.format),
+            other => lisp::display(&other),
+        })
     }
 }
 
@@ -1044,7 +1978,7 @@ fn locate(lines: &[&str], line: usize) -> Option<(usize, usize)> {
     }
     let first_tblfm = {
         let mut end = table_line;
-        while end < lines.len() && lines[end].trim_start().starts_with('|') {
+        while end < lines.len() && is_table_line(lines[end]) {
             end += 1;
         }
         end
@@ -1143,9 +2077,7 @@ pub fn recalculate_all(text: &str) -> Result<(String, usize, usize), String> {
     let starts: Vec<usize> = {
         let lines: Vec<&str> = text.lines().collect();
         (1..lines.len())
-            .filter(|&i| {
-                tblfm_body(lines[i]).is_some() && lines[i - 1].trim_start().starts_with('|')
-            })
+            .filter(|&i| tblfm_body(lines[i]).is_some() && is_table_line(lines[i - 1]))
             .collect()
     };
     for line in starts {

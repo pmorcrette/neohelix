@@ -196,6 +196,14 @@
 | `:org-table-recalculate`, `:org-table-recalc` | Recalculate the Org table at the cursor from its #+TBLFM: line. |
 | `:org-table-iterate` | Recalculate the Org table at the cursor until it stops changing. |
 | `:org-table-recalculate-buffer-tables`, `:org-table-recalc-all` | Recalculate every Org table in the buffer that has a #+TBLFM: line. |
+| `:orgtbl-send-table`, `:orgtbl-send` | Send the table at the cursor, under its #+ORGTBL: SEND line, to the lines between its BEGIN and END RECEIVE ORGTBL markers. |
+| `:orgtbl-insert-radio-table` | Insert a radio table named NAME for the buffer's language: the receiving markers and a table to send. |
+| `:org-table-import` | Insert a CSV or TSV file as a table at the cursor; the separator (csv, tsv, space or a character) is guessed unless given. |
+| `:org-table-export` | Write the table at the cursor to FILE (else the entry's TABLE_EXPORT_FILE) as FORMAT: csv, tsv, latex, html, texinfo, orgtbl, generic, or a full orgtbl-to-… spec (else TABLE_EXPORT_FORMAT, else the extension's). |
+| `:org-table-convert-region`, `:org-table-create-or-convert-from-region` | Turn the selected lines into a table, split on SEPARATOR (csv, tsv, space or a character), guessed unless given. |
+| `:org-table-create` | Insert an empty table of COLUMNSxROWS, 5x2 by default. |
+| `:org-table-edit-field` | Edit the table field at the cursor in a buffer of its own; writing it puts the field back. |
+| `:org-plot`, `:org-plot-gnuplot` | Plot the table at the cursor through gnuplot, as its #+PLOT: lines say: into their file:, or drawn in text in a scratch buffer. |
 | `:org-archive-subtree`, `:org-archive` | Move the subtree at the cursor to the file's archive. |
 | `:org-set-priority` | Set the priority on the headline at the cursor. |
 | `:org-schedule` | Set SCHEDULED: on the entry at the cursor. |

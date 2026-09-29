@@ -169,3 +169,53 @@ fn a_wide_character_counts_as_the_width_it_takes() {
         .collect();
     assert_eq!(widths[0], widths[1], "{out}");
 }
+
+#[test]
+fn tables_behind_comments_keep_their_comment() {
+    use helix_roam::table::align;
+    let text = "fn main() {}\n// |a|bb|\n//  |---|\n// | ccc | 1 |\n# | other |\n";
+    let aligned = align(text, 1).unwrap();
+    assert_eq!(
+        aligned,
+        "fn main() {}\n// | a   | bb |\n// |-----+----|\n// | ccc |  1 |\n# | other |\n"
+    );
+    // Formulas behind the same comment.
+    let text = "# | 1 | 2 |   |\n# #+TBLFM: $3=$1+$2\n";
+    let done = helix_roam::formula::recalculate(text, 0).unwrap();
+    assert_eq!(done.text, "# | 1 | 2 | 3 |\n# #+TBLFM: $3=$1+$2\n");
+}
+
+#[test]
+fn csv_and_tsv_become_tables() {
+    use helix_roam::table::{create, parse_delimited, table_text};
+    let csv = "name,note\nann,\"likes, commas\"\r\nbob,\"says \"\"hi\"\"\nand more\"\n";
+    let rows = parse_delimited(csv, None);
+    assert_eq!(rows[1], ["ann", "likes, commas"]);
+    assert_eq!(rows[2], ["bob", "says \"hi\"\nand more"]);
+    assert_eq!(
+        table_text(&rows, ""),
+        "| name | note               |\n| ann  | likes, commas      |\n| bob  | says \"hi\" and more |\n"
+    );
+    assert_eq!(parse_delimited("a\tb|c\n1\t2\n", None)[0], ["a", "b|c"]);
+    assert!(table_text(&parse_delimited("a\tb|c\n", None), "").contains("b\\vert{}c"));
+    assert_eq!(parse_delimited("x  y\n1 2\n", None)[1], ["1", "2"]);
+    assert_eq!(parse_delimited("a;b\n", Some(';'))[0], ["a", "b"]);
+    assert_eq!(create(2, 2, ""), "|  |  |\n|--+--|\n|  |  |\n");
+}
+
+#[test]
+fn a_field_edited_elsewhere_goes_back_to_its_row() {
+    use helix_roam::table::{field_at, find_field, set_field};
+    let text = "| a | note |\n|---+------|\n| 1 | one  |\n| 2 | old  |\n";
+    assert_eq!(field_at(text, 3, 1).as_deref(), Some("old"));
+    assert_eq!(field_at(text, 1, 1), None);
+    // A line added above the table: the field is found one row down.
+    let moved = format!("intro\n{text}");
+    assert_eq!(find_field(&moved, 3, 1, "old"), Some(4));
+    let set = set_field(text, 3, 1, "a longer\nnote | with a pipe\n").unwrap();
+    assert_eq!(
+        set,
+        "| a | note                              |\n|---+-----------------------------------|\n\
+         | 1 | one                               |\n| 2 | a longer note \\vert{} with a pipe |\n"
+    );
+}

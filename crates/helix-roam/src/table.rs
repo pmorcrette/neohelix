@@ -23,18 +23,66 @@ pub struct Table {
     pub start: usize,
     /// Line after its last row.
     pub end: usize,
-    /// Columns of indentation the table sits at.
-    pub indent: usize,
+    /// What each row starts with before its first `|`: the indentation, or
+    /// in another language's file the comment the table lives in (`# `,
+    /// `// `), which is Org's `orgtbl-mode`.
+    pub prefix: String,
+}
+
+/// The comment starts a table may sit behind in another language's file.
+const LEADERS: &[&str] = &["//", "#", "--", ";;", ";", "%", "*", "!", "'"];
+
+/// What comes before a table line's first `|`, when the line is one: only
+/// indentation, or a comment's start between indentation and spaces.
+pub(crate) fn table_prefix(line: &str) -> Option<&str> {
+    let pipe = line.find('|')?;
+    let before = &line[..pipe];
+    let leader = before.trim();
+    if leader.is_empty() {
+        return Some(before);
+    }
+    // The comment's start stands alone: `# |` is a table, `#+x |` is not.
+    let lead_at = before.len() - before.trim_start().len();
+    let after = &before[lead_at + leader.len()..];
+    (LEADERS.contains(&leader) && !after.is_empty() && after.trim().is_empty()).then_some(before)
+}
+
+/// A line with its table prefix taken off, or as it is.
+pub(crate) fn without_prefix(line: &str) -> &str {
+    match table_prefix(line) {
+        Some(prefix) => &line[prefix.len()..],
+        None => line.trim_start(),
+    }
+}
+
+/// A line without its indentation and the comment it may sit behind:
+/// `# #+TBLFM: …` reads as `#+TBLFM: …`.
+pub(crate) fn strip_leader(line: &str) -> &str {
+    let trimmed = line.trim_start();
+    for leader in LEADERS {
+        if let Some(rest) = trimmed.strip_prefix(leader) {
+            if rest.starts_with(char::is_whitespace) {
+                return rest.trim_start();
+            }
+        }
+    }
+    trimmed
+}
+
+/// The comment a line is behind (`#`, `//`), or nothing for a plain line;
+/// rows of one table share it.
+fn leader(line: &str) -> Option<&str> {
+    table_prefix(line).map(str::trim)
 }
 
 /// Whether a line belongs to a table.
-fn is_table_line(line: &str) -> bool {
-    line.trim_start().starts_with('|')
+pub(crate) fn is_table_line(line: &str) -> bool {
+    table_prefix(line).is_some()
 }
 
 /// Whether a table line is a separator rather than cells.
 fn is_separator(line: &str) -> bool {
-    let trimmed = line.trim_start();
+    let trimmed = without_prefix(line);
     trimmed.starts_with("|-")
         || (trimmed.starts_with('|')
             && trimmed
@@ -46,7 +94,7 @@ fn is_separator(line: &str) -> bool {
 
 /// Splits `| a | b |` into its cells.
 fn split_cells(line: &str) -> Vec<String> {
-    let trimmed = line.trim();
+    let trimmed = without_prefix(line).trim();
     let inner = trimmed
         .strip_prefix('|')
         .and_then(|rest| rest.strip_suffix('|'))
@@ -66,16 +114,19 @@ pub fn parse_table(text: &str, line: usize) -> Option<Table> {
         return None;
     }
 
+    // Rows of one table sit behind the same comment, or behind none.
+    let kind = leader(lines[at]);
+    let same = |line: &str| is_table_line(line) && leader(line) == kind;
     let mut start = at;
-    while start > 0 && is_table_line(lines[start - 1]) {
+    while start > 0 && same(lines[start - 1]) {
         start -= 1;
     }
     let mut end = at + 1;
-    while end < lines.len() && is_table_line(lines[end]) {
+    while end < lines.len() && same(lines[end]) {
         end += 1;
     }
 
-    let indent = lines[start].len() - lines[start].trim_start().len();
+    let prefix = table_prefix(lines[start]).unwrap_or_default().to_string();
     let rows = lines[start..end]
         .iter()
         .map(|line| {
@@ -91,7 +142,7 @@ pub fn parse_table(text: &str, line: usize) -> Option<Table> {
         rows,
         start,
         end,
-        indent,
+        prefix,
     })
 }
 
@@ -162,7 +213,7 @@ impl Table {
     pub fn render(&self) -> Vec<String> {
         let widths = self.widths();
         let numeric: Vec<bool> = (0..widths.len()).map(|c| self.is_numeric(c)).collect();
-        let pad = " ".repeat(self.indent);
+        let pad = &self.prefix;
 
         self.rows
             .iter()
@@ -204,7 +255,7 @@ pub(crate) fn rewrite(text: &str, table: &Table, rows: Vec<Row>) -> String {
         rows,
         start: table.start,
         end: table.end,
-        indent: table.indent,
+        prefix: table.prefix.clone(),
     };
 
     lines.splice(table.start..table.end, rebuilt.render());
@@ -326,4 +377,143 @@ pub fn column_at(line: &str, byte: usize) -> usize {
         .filter(|c| *c == '|')
         .count()
         .saturating_sub(1)
+}
+
+/// Rows of CSV or TSV text. Without a `separator`, Org's guess: a tab when
+/// the first line has one, else a comma when it has one, else runs of
+/// spaces. Commas and tabs follow CSV's quoting: `"a, b"` is one field and
+/// `""` inside quotes is a quote.
+pub fn parse_delimited(text: &str, separator: Option<char>) -> Vec<Vec<String>> {
+    let first = text.lines().next().unwrap_or("");
+    let separator = separator.or(if first.contains('\t') {
+        Some('\t')
+    } else if first.contains(',') {
+        Some(',')
+    } else {
+        None
+    });
+    let Some(separator) = separator else {
+        return text
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| line.split_whitespace().map(str::to_string).collect())
+            .collect();
+    };
+
+    let mut rows = Vec::new();
+    let mut row = Vec::new();
+    let mut field = String::new();
+    let mut quoted = false;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                field.push('"');
+                chars.next();
+            }
+            '"' if quoted => quoted = false,
+            '"' if field.is_empty() => quoted = true,
+            c if c == separator && !quoted => row.push(std::mem::take(&mut field)),
+            '\r' if !quoted => {}
+            '\n' if !quoted => {
+                row.push(std::mem::take(&mut field));
+                if !(row.len() == 1 && row[0].is_empty()) {
+                    rows.push(std::mem::take(&mut row));
+                }
+                row.clear();
+            }
+            c => field.push(c),
+        }
+    }
+    if !field.is_empty() || !row.is_empty() {
+        row.push(field);
+        rows.push(row);
+    }
+    rows
+}
+
+/// A field as a table cell can hold it: on one line, its `|` written as
+/// Org's `\vert{}`.
+fn cell_text(field: &str) -> String {
+    field
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace('|', "\\vert{}")
+}
+
+/// An aligned table of `rows`, each line starting with `prefix`.
+pub fn table_text(rows: &[Vec<String>], prefix: &str) -> String {
+    let table = Table {
+        rows: rows
+            .iter()
+            .map(|row| Row::Cells(row.iter().map(|field| cell_text(field)).collect()))
+            .collect(),
+        start: 0,
+        end: 0,
+        prefix: prefix.to_string(),
+    };
+    let mut text = table.render().join("\n");
+    text.push('\n');
+    text
+}
+
+/// An empty table of `columns` by `rows`, a separator under the first row,
+/// as Org's `org-table-create` makes one.
+pub fn create(columns: usize, rows: usize, prefix: &str) -> String {
+    let columns = columns.max(1);
+    let mut table = Table {
+        rows: vec![Row::Cells(vec![String::new(); columns]); rows.max(1)],
+        start: 0,
+        end: 0,
+        prefix: prefix.to_string(),
+    };
+    if rows > 1 {
+        table.rows.insert(1, Row::Separator);
+    }
+    let mut text = table.render().join("\n");
+    text.push('\n');
+    text
+}
+
+/// The text of the field in column `column` (from zero) of the row at
+/// `line`, or `None` when that is no field.
+pub fn field_at(text: &str, line: usize, column: usize) -> Option<String> {
+    let table = parse_table(text, line)?;
+    match table.rows.get(line.checked_sub(table.start)?)? {
+        Row::Cells(cells) => Some(cells.get(column).cloned().unwrap_or_default()),
+        Row::Separator => None,
+    }
+}
+
+/// The row nearest `line`, in the table there, whose field `column` still
+/// reads `value`: where an edited field goes back to, rows above it having
+/// perhaps moved it.
+pub fn find_field(text: &str, line: usize, column: usize, value: &str) -> Option<usize> {
+    let lines: Vec<&str> = text.lines().collect();
+    let near = line.min(lines.len().checked_sub(1)?);
+    // The table may have moved too: look outwards from where it was.
+    let table = (0..lines.len())
+        .flat_map(|d| [near.checked_sub(d), Some(near + d)])
+        .flatten()
+        .filter(|&at| at < lines.len())
+        .find_map(|at| parse_table(text, at))?;
+    (table.start..table.end)
+        .filter(|&row| field_at(text, row, column).as_deref() == Some(value))
+        .min_by_key(|row| row.abs_diff(line))
+}
+
+/// `text` with the field in column `column` of the row at `line` set to
+/// `value`, made one line as a field must be, and the table realigned.
+pub fn set_field(text: &str, line: usize, column: usize, value: &str) -> Option<String> {
+    let table = parse_table(text, line)?;
+    let at = line.checked_sub(table.start)?;
+    let columns = table.columns();
+    let mut rows = table.rows.clone();
+    let Row::Cells(cells) = rows.get_mut(at)? else {
+        return None;
+    };
+    cells.resize(columns.max(column + 1), String::new());
+    cells[column] = cell_text(value);
+    Some(rewrite(text, &table, rows))
 }

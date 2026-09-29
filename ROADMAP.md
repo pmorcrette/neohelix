@@ -1333,13 +1333,42 @@ back, since its tangled code is not its body.
 
 ### Task 1.27: Tables, Continued
 
-- [ ] Tables in other languages' comments (`orgtbl-mode`) and radio tables
+- [x] Tables in other languages' comments (`orgtbl-mode`) and radio tables
       that send a table's contents into a block of another syntax.
-- [ ] Import from and export to CSV and TSV.
-- [ ] Editing a long field in a buffer of its own (Org's `C-c \``).
-- [ ] Plots of a table through gnuplot (Org's `org-plot`).
-- [ ] What Org gets from Calc and elisp in formulas and the fork's evaluator
+- [x] Import from and export to CSV and TSV.
+- [x] Editing a long field in a buffer of its own (Org's `C-c \``).
+- [x] Plots of a table through gnuplot (Org's `org-plot`).
+- [x] What Org gets from Calc and elisp in formulas and the fork's evaluator
       does not: units, symbolic arithmetic, the date functions.
+
+*Done.* A table is found behind a line comment as well as at the margin
+(`helix_roam::table`), each row keeping what it starts with, so every table
+command works in any file; rows of one table share the comment, so a `#`
+table next to a `//` one stays apart. `helix_roam::orgtbl` holds the
+translators, used both to send a radio table (between `BEGIN` and `END
+RECEIVE ORGTBL name` lines, whatever comment they are in) and to export a
+table to a file; they escape cells for their target rather than exporting
+Org markup in them. CSV is read with its quoting and line breaks inside
+quotes, a field's line breaks and `|` made fit for a cell. A field edited
+in a buffer of its own goes through the same mechanism as a source block,
+found again by its text nearest its row. `helix_roam::plot` builds the data
+and the gnuplot script; the editor runs gnuplot, only in a trusted
+workspace since `set:` lines are gnuplot's, and without a `file:` shows the
+plot drawn in text where Org would open a window.
+
+The formula evaluator now computes values rather than numbers: a number
+with units, a date, a polynomial, or a range. Fields are read as Calc
+reads them, so a word is a variable (`2 two`) where it used to be an error.
+Units are a table of factors over SI dimensions, with prefixes; a sum takes
+the left side's units, which is Calc's `usimplify` done at once. Symbolic
+arithmetic is polynomial: collected and expanded, with floating
+coefficients where Calc keeps fractions, and no division by a polynomial.
+Dates are day counts, in UTC as the rest of the fork's dates, written back
+in the brackets of the first date in the formula. Emacs Lisp formulas are a
+small evaluator of the string and number functions, not Emacs: anything else
+is `#ERROR`. Still left out from Task 1.6's list: named columns and
+`#+CONSTANTS`, the marking column, and rewriting references when a row or a
+column moves.
 
 ### Task 1.28: Everyday Conveniences
 
