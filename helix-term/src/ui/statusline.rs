@@ -158,6 +158,7 @@ where
         helix_view::editor::StatusLineElement::Register => render_register,
         helix_view::editor::StatusLineElement::CurrentWorkingDirectory => render_cwd,
         helix_view::editor::StatusLineElement::CodeActionHint => render_code_action_hint,
+        helix_view::editor::StatusLineElement::OrgTimer => render_org_timer,
     }
 }
 
@@ -591,5 +592,15 @@ where
 {
     if context.focused && context.doc.code_action_hints(context.view.id) {
         write(context, " ⋮ ".into())
+    }
+}
+
+fn render_org_timer<'a, F>(context: &mut RenderContext<'a>, write: F)
+where
+    F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
+{
+    if let Some(timer) = &context.editor.org_timer {
+        let text = format!(" ⏱ {} ", timer.display(std::time::Instant::now()));
+        write(context, text.into())
     }
 }

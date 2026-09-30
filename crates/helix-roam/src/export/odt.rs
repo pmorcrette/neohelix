@@ -108,6 +108,11 @@ fn one(inline: &Inline, document: &Document, cx: &mut Context) -> String {
             )
         }
         Inline::LineBreak => "<text:line-break/>".to_string(),
+        Inline::Target { anchor, text } => format!(
+            "<text:bookmark text:name=\"{}\"/>{}",
+            escape(anchor),
+            text.as_deref().map(escape).unwrap_or_default()
+        ),
         Inline::Citation {
             style,
             cites,

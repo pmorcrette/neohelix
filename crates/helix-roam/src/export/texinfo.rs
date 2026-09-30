@@ -107,6 +107,7 @@ fn one(inline: &Inline, nodes: &Nodes, document: &Document, cx: &mut Context) ->
             format!("@footnote{{{body}}}")
         }
         Inline::LineBreak => "@*\n".to_string(),
+        Inline::Target { text, .. } => text.as_deref().map(escape).unwrap_or_default(),
         Inline::Citation {
             style,
             cites,

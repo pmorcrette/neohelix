@@ -78,6 +78,9 @@ pub struct FileSettings {
     pub bibliography: Vec<String>,
     /// Tags offered by `#+TAGS:`, for completion rather than for parsing.
     pub declared_tags: Vec<String>,
+    /// The `#+TAGS:` lines as written: their keys and groups, which
+    /// [`crate::tags::TagSetup`] reads.
+    pub tag_lines: Vec<String>,
     /// Drawer names declared through `#+DRAWERS:`.
     pub drawers: Vec<String>,
     /// `#+STARTUP:` options, in the order given.
@@ -110,6 +113,7 @@ impl Default for FileSettings {
             archive: None,
             bibliography: Vec::new(),
             declared_tags: Vec::new(),
+            tag_lines: Vec::new(),
             drawers: Vec::new(),
             startup: Vec::new(),
             setup_files: Vec::new(),
@@ -217,7 +221,10 @@ impl FileSettings {
                 "archive" => settings.archive = Some(value.to_string()),
                 // Org allows several, one keyword each.
                 "bibliography" => settings.bibliography.push(value.to_string()),
-                "tags" => settings.declared_tags.extend(parse_tag_declaration(value)),
+                "tags" => {
+                    settings.declared_tags.extend(parse_tag_declaration(value));
+                    settings.tag_lines.push(value.to_string());
+                }
                 "drawers" => settings
                     .drawers
                     .extend(value.split_whitespace().map(str::to_string)),

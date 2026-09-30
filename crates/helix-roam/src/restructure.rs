@@ -148,9 +148,12 @@ fn split_tags(text: &str) -> (&str, Vec<String>) {
 
     let inner = run.trim_matches(':');
     if inner.is_empty()
-        || !inner
-            .split(':')
-            .all(|tag| !tag.is_empty() && tag.chars().all(|c| c.is_alphanumeric() || c == '_'))
+        || !inner.split(':').all(|tag| {
+            !tag.is_empty()
+                && tag
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || matches!(c, '_' | '@' | '#' | '%'))
+        })
     {
         return (trimmed, Vec::new());
     }
@@ -1102,33 +1105,7 @@ pub fn retitle_links(text: &str, id: Uuid, old_title: &str, new_title: &str) -> 
 /// handled here so the caller does not have to know which kind of entry it is
 /// looking at.
 pub fn edit_tag(text: &str, line: usize, tag: &str, add: bool) -> Result<Option<String>, Error> {
-    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    let at = line.min(lines.len().saturating_sub(1));
-    let headline = entry_start(&lines, at);
-
-    let (mut tags, target) = match headline {
-        Some(at) => {
-            let (_, tags) = split_tags(headline_text(&lines[at]));
-            (tags, Some(at))
-        }
-        None => {
-            let at = lines
-                .iter()
-                .position(|l| keyword_value(l, "filetags").is_some());
-            let tags = at
-                .map(|at| {
-                    keyword_value(&lines[at], "filetags")
-                        .unwrap_or_default()
-                        .split(':')
-                        .filter(|tag| !tag.is_empty())
-                        .map(str::to_string)
-                        .collect()
-                })
-                .unwrap_or_default();
-            (tags, at)
-        }
-    };
-
+    let mut tags = tags_at(text, line);
     let present = tags.iter().any(|t| t == tag);
     if add == present {
         return Ok(None);
@@ -1138,8 +1115,35 @@ pub fn edit_tag(text: &str, line: usize, tag: &str, add: bool) -> Result<Option<
     } else {
         tags.retain(|t| t != tag);
     }
+    Ok(Some(set_tags(text, line, &tags)))
+}
 
-    match headline {
+/// The tags of the entry at `line`: its headline's, or above the first
+/// headline the file's `#+FILETAGS:`.
+pub fn tags_at(text: &str, line: usize) -> Vec<String> {
+    let lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let at = line.min(lines.len().saturating_sub(1));
+    match entry_start(&lines, at) {
+        Some(at) => split_tags(headline_text(&lines[at])).1,
+        None => lines
+            .iter()
+            .find_map(|l| keyword_value(l, "filetags"))
+            .unwrap_or_default()
+            .split(':')
+            .filter(|tag| !tag.is_empty())
+            .map(str::to_string)
+            .collect(),
+    }
+}
+
+/// `text` with the entry at `line` carrying exactly `tags`, in that order.
+pub fn set_tags(text: &str, line: usize, tags: &[String]) -> String {
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    let at = line.min(lines.len() - 1);
+    match entry_start(&lines, at) {
         Some(at) => {
             let stars = "*".repeat(headline_level(&lines[at]).unwrap_or(1));
             let (title, _) = split_tags(headline_text(&lines[at]));
@@ -1150,14 +1154,18 @@ pub fn edit_tag(text: &str, line: usize, tag: &str, add: bool) -> Result<Option<
             };
         }
         None => {
+            let target = lines
+                .iter()
+                .position(|l| keyword_value(l, "filetags").is_some());
             let rendered = format!("#+filetags: :{}:", tags.join(":"));
             match (target, tags.is_empty()) {
                 (Some(at), true) => {
                     lines.remove(at);
                 }
                 (Some(at), false) => lines[at] = rendered,
+                (None, true) => {}
                 // No keyword yet: it goes after `#+title:` when there is one.
-                (None, _) => {
+                (None, false) => {
                     let after = lines
                         .iter()
                         .position(|l| keyword_value(l, "title").is_some())
@@ -1167,8 +1175,7 @@ pub fn edit_tag(text: &str, line: usize, tag: &str, add: bool) -> Result<Option<
             }
         }
     }
-
-    Ok(Some(rejoin(&lines, text)))
+    rejoin(&lines, text)
 }
 
 /// Adds or removes a value in a multi-valued property of the entry at `line`.

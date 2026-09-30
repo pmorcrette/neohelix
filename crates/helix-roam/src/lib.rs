@@ -46,6 +46,8 @@ pub mod sort;
 pub mod source;
 pub mod startup;
 pub mod table;
+pub mod tags;
+pub mod timer;
 pub mod unlinked;
 pub mod visual;
 

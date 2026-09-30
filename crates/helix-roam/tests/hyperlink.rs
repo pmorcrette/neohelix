@@ -209,3 +209,26 @@ fn an_unterminated_link_does_not_swallow_the_rest() {
     assert_eq!(links.len(), 1);
     assert_eq!(links[0].label(), "fine");
 }
+
+#[test]
+fn radio_targets_are_declared_once_and_mentioned_as_words() {
+    use helix_roam::hyperlink::{radio_at, radio_mentions, radio_targets};
+
+    let text = "<<<Org Mode>>> and <<<Org>>> and <<<org>>>.\n\
+                Using org mode, not organic; Org is nice.\n";
+    let targets = radio_targets(text);
+    assert_eq!(targets, ["Org Mode", "Org"]);
+
+    let mentions: Vec<&str> = radio_mentions(text, &targets)
+        .iter()
+        .map(|(range, _)| &text[range.clone()])
+        .collect();
+    // The longer target wins, `organic` is not a word match, and the
+    // declarations themselves are not mentions.
+    assert_eq!(mentions, ["org mode", "Org"]);
+
+    let at = text.find("org mode").unwrap() + 5;
+    assert_eq!(radio_at(text, at).as_deref(), Some("Org Mode"));
+    assert_eq!(radio_at(text, text.find("organic").unwrap()), None);
+    assert_eq!(radio_at("no targets here", 3), None);
+}

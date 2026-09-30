@@ -170,6 +170,94 @@ fn expand_abbreviation(raw: &str, abbreviations: &[(String, String)]) -> String 
     }
 }
 
+/// The radio targets `text` declares, `<<<target>>>`, as written, each once.
+pub fn radio_targets(text: &str) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    let mut rest = text;
+    while let Some(open) = rest.find("<<<") {
+        let after = &rest[open + 3..];
+        let Some(close) = after.find(">>>") else {
+            break;
+        };
+        let name = &after[..close];
+        // A target is on one line, and neither starts nor ends with space.
+        if !name.is_empty()
+            && !name.contains(['\n', '<', '>'])
+            && name.trim() == name
+            && !found.iter().any(|seen| seen.eq_ignore_ascii_case(name))
+        {
+            found.push(name.to_string());
+        }
+        rest = &after[close + 3..];
+    }
+    found
+}
+
+/// Where `targets` are mentioned in `text`: each byte range and the target
+/// it mentions. A mention matches in any case, as a whole word, and not
+/// inside the `<<<target>>>` itself; a longer target wins over a shorter one
+/// it contains.
+pub fn radio_mentions(text: &str, targets: &[String]) -> Vec<(std::ops::Range<usize>, String)> {
+    let lower = text.to_lowercase();
+    // Lowercasing can change byte lengths; only look where it does not.
+    if lower.len() != text.len() {
+        return Vec::new();
+    }
+    let mut sorted: Vec<&String> = targets.iter().collect();
+    sorted.sort_by_key(|target| std::cmp::Reverse(target.len()));
+    let declared: Vec<std::ops::Range<usize>> = {
+        let mut ranges = Vec::new();
+        let mut from = 0;
+        while let Some(open) = text[from..].find("<<<") {
+            let open = from + open;
+            match text[open..].find(">>>") {
+                Some(close) => {
+                    ranges.push(open..open + close + 3);
+                    from = open + close + 3;
+                }
+                None => break,
+            }
+        }
+        ranges
+    };
+    let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    let mut mentions: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+    for target in sorted {
+        let needle = target.to_lowercase();
+        let mut from = 0;
+        while let Some(at) = lower[from..].find(&needle) {
+            let start = from + at;
+            let end = start + needle.len();
+            from = end;
+            let before = text[..start].chars().next_back();
+            let after = text[end..].chars().next();
+            let overlaps = |range: &std::ops::Range<usize>| range.start < end && start < range.end;
+            if word(before)
+                || word(after)
+                || declared.iter().any(overlaps)
+                || mentions.iter().any(|(range, _)| overlaps(range))
+            {
+                continue;
+            }
+            mentions.push((start..end, target.clone()));
+        }
+    }
+    mentions.sort_by_key(|(range, _)| range.start);
+    mentions
+}
+
+/// The radio target mentioned at byte `offset`, if any.
+pub fn radio_at(text: &str, offset: usize) -> Option<String> {
+    let targets = radio_targets(text);
+    if targets.is_empty() {
+        return None;
+    }
+    radio_mentions(text, &targets)
+        .into_iter()
+        .find(|(range, _)| range.contains(&offset))
+        .map(|(_, target)| target)
+}
+
 /// Every link in `text`, with its byte range.
 pub fn find_links(text: &str, abbreviations: &[(String, String)]) -> Vec<OrgLink> {
     let mut links = Vec::new();

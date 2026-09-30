@@ -65,11 +65,11 @@ fn escape(text: &str) -> String {
     text.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// The graph, or the part of it within `depth` links of a node, as DOT.
-///
-/// Output is sorted, so the same graph always gives the same text — which
-/// is what lets a DOT file be diffed or kept under version control.
-pub fn dot(graph: &RoamGraph, center: Option<(Uuid, usize)>) -> String {
+/// The nodes to draw, sorted by title, and the edges between them, each
+/// `true` when every link behind it came through `:ROAM_REFS:`.
+type Selection<'a> = (Vec<&'a crate::Node>, BTreeMap<(Uuid, Uuid), bool>);
+
+fn select(graph: &RoamGraph, center: Option<(Uuid, usize)>) -> Selection<'_> {
     let chosen: Option<HashSet<Uuid>> = center.map(|(id, depth)| neighbourhood(graph, id, depth));
     let keep = |id: &Uuid| chosen.as_ref().is_none_or(|chosen| chosen.contains(id));
 
@@ -87,6 +87,15 @@ pub fn dot(graph: &RoamGraph, center: Option<(Uuid, usize)>) -> String {
             }
         }
     }
+    (nodes, edges)
+}
+
+/// The graph, or the part of it within `depth` links of a node, as DOT.
+///
+/// Output is sorted, so the same graph always gives the same text — which
+/// is what lets a DOT file be diffed or kept under version control.
+pub fn dot(graph: &RoamGraph, center: Option<(Uuid, usize)>) -> String {
+    let (nodes, edges) = select(graph, center);
 
     let mut out = vec![
         "digraph \"org-roam\" {".to_string(),
@@ -119,6 +128,78 @@ pub fn dot(graph: &RoamGraph, center: Option<(Uuid, usize)>) -> String {
     text
 }
 
+/// A JSON string literal, safe inside a `<script>`: `<` is escaped so no
+/// title can close the script.
+fn json_string(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for c in text.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '<' => out.push_str("\\u003c"),
+            '>' => out.push_str("\\u003e"),
+            '&' => out.push_str("\\u0026"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// The graph as JSON: `{"center": …, "nodes": [{id, title, file, tags,
+/// todo, level, aliases}], "links": [{source, target, ref}]}`.
+pub fn json(graph: &RoamGraph, center: Option<(Uuid, usize)>) -> String {
+    let (nodes, edges) = select(graph, center);
+    let list = |items: &[String]| {
+        let items: Vec<String> = items.iter().map(|item| json_string(item)).collect();
+        format!("[{}]", items.join(","))
+    };
+    let nodes: Vec<String> = nodes
+        .iter()
+        .map(|node| {
+            format!(
+                "{{\"id\":\"{}\",\"title\":{},\"file\":{},\"tags\":{},\"aliases\":{},\"todo\":{},\"level\":{}}}",
+                node.id,
+                json_string(&node.title),
+                json_string(&node.file_path.to_string_lossy()),
+                list(&node.tags),
+                list(&node.aliases),
+                node.todo
+                    .as_ref()
+                    .map_or("null".to_string(), |todo| json_string(&todo.keyword)),
+                node.level,
+            )
+        })
+        .collect();
+    let links: Vec<String> = edges
+        .iter()
+        .map(|((from, to), only_refs)| {
+            format!("{{\"source\":\"{from}\",\"target\":\"{to}\",\"ref\":{only_refs}}}")
+        })
+        .collect();
+    let center = center.map_or("null".to_string(), |(id, _)| format!("\"{id}\""));
+    format!(
+        "{{\"center\":{center},\"nodes\":[{}],\"links\":[{}]}}",
+        nodes.join(","),
+        links.join(",")
+    )
+}
+
+/// A page that draws the graph and lets it be explored in a browser, as
+/// Org-Roam UI does: dragged, zoomed, searched, filtered by tag, and
+/// narrowed to a node's neighbourhood. It holds everything it needs, the
+/// graph included, so it opens from a file with no server and no network.
+pub fn html(graph: &RoamGraph, center: Option<(Uuid, usize)>) -> String {
+    include_str!("graph_ui.html").replace("/*GRAPH*/null", &json(graph, center))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,6 +220,25 @@ mod tests {
         }
         graph.add_link(id(4), id(5), Link::Ref);
         graph
+    }
+
+    #[test]
+    fn the_browser_page_carries_the_graph_as_json() {
+        let json = json(&chain(), Some((id(2), 1)));
+        assert!(
+            json.starts_with(&format!("{{\"center\":\"{}\",", id(2))),
+            "{json}"
+        );
+        assert!(json.contains("\"title\":\"C \\\"quoted\\\"\""), "{json}");
+        assert!(!json.contains("\"title\":\"D\""), "{json}");
+        assert_eq!(json.matches("\"source\"").count(), 2, "{json}");
+
+        // No title can end the script it sits in.
+        assert_eq!(json_string("</script>"), "\"\\u003c/script\\u003e\"");
+
+        let page = html(&chain(), None);
+        assert!(page.contains("const DATA = {\"center\":null,"));
+        assert!(!page.contains("/*GRAPH*/"));
     }
 
     #[test]

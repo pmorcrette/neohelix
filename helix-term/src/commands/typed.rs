@@ -2433,6 +2433,45 @@ macro_rules! roam_component_command {
     };
 }
 
+roam_component_command!(org_set_tags_command, crate::roam::tag_select);
+roam_buffer_command!(org_clock_in_last, crate::roam::clock_in_last);
+roam_component_command!(org_clock_history, crate::commands::org_clock_history_picker);
+roam_buffer_command!(org_timer, crate::roam::timer_insert);
+roam_buffer_command!(org_timer_item, crate::roam::timer_item);
+roam_buffer_command!(
+    org_timer_pause_or_continue,
+    crate::roam::timer_pause_or_continue
+);
+roam_buffer_command!(org_timer_stop, crate::roam::timer_stop);
+roam_buffer_command!(org_pomodoro, crate::roam::pomodoro);
+
+fn org_timer_start(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let offset = match args.first() {
+        Some(offset) => helix_roam::timer::parse_duration(offset)
+            .ok_or_else(|| anyhow!("`{offset}` is not a length, e.g. `10` or `0:10:00`"))?,
+        None => std::time::Duration::ZERO,
+    };
+    crate::roam::timer_start(cx.editor, offset);
+    Ok(())
+}
+
+fn org_timer_set_timer(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        crate::roam::timer_set(cx.editor, &args.join(" "));
+    }
+    Ok(())
+}
 roam_component_command!(roam_node_insert, |editor| Some(
     crate::commands::roam_node_insert_prompt(editor)
 ));
@@ -2973,6 +3012,22 @@ fn roam_graph(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> a
         None => None,
     };
     crate::roam::graph(cx.editor, depth);
+    Ok(())
+}
+
+fn roam_ui(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let depth = match args.first() {
+        Some(depth) => Some(
+            depth
+                .parse::<usize>()
+                .map_err(|_| anyhow!("{depth:?} is not a number of links"))?,
+        ),
+        None => None,
+    };
+    crate::roam::graph_ui(cx.editor, depth);
     Ok(())
 }
 roam_component_command!(org_attach_open, crate::roam::attachment_picker);
@@ -5845,6 +5900,105 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         },
     },
     TypableCommand {
+        name: "org-timer-start",
+        aliases: &[],
+        doc: "Start a relative timer, reading an offset (`10`, `0:10:00`) if one is given.",
+        fun: org_timer_start,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-timer",
+        aliases: &[],
+        doc: "Insert the relative timer's reading at the cursor, starting it if needed.",
+        fun: org_timer,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-timer-item",
+        aliases: &[],
+        doc: "Start a list item stamped with the relative timer's reading.",
+        fun: org_timer_item,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-timer-pause-or-continue",
+        aliases: &[],
+        doc: "Pause the running timer, or continue a paused one.",
+        fun: org_timer_pause_or_continue,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-timer-stop",
+        aliases: &[],
+        doc: "Stop the running timer.",
+        fun: org_timer_stop,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-timer-set-timer",
+        aliases: &[],
+        doc: "Start a countdown (`25`, `1:30`, `1h30m`), of the entry's effort if no length is given.",
+        fun: org_timer_set_timer,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, None),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-pomodoro",
+        aliases: &[],
+        doc: "Start a pomodoro of work and breaks, or stop the running one.",
+        fun: org_pomodoro,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-clock-in-last",
+        aliases: &[],
+        doc: "Clock in to the entry clocked most recently.",
+        fun: org_clock_in_last,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-clock-history",
+        aliases: &[],
+        doc: "Pick from the entries clocked before, the latest first, and clock in to it.",
+        fun: org_clock_history,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
         name: "org-clock-report",
         aliases: &[],
         doc: "Insert or refresh a clock report table.",
@@ -6063,6 +6217,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Draw the Org-Roam graph with Graphviz; with a depth, only the nodes that many links from the one at the cursor.",
         fun: roam_graph,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "roam-ui",
+        aliases: &[],
+        doc: "Explore the Org-Roam graph in a browser; with a depth, around the node at the cursor.",
+        fun: roam_ui,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(1)),
@@ -6619,6 +6784,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Open the previous daily note that exists.",
         fun: roam_dailies_previous,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-set-tags-command",
+        aliases: &["org-set-tags"],
+        doc: "Choose the tags of the entry at the cursor in one popup, a key per tag of #+TAGS:, exclusive groups respected.",
+        fun: org_set_tags_command,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

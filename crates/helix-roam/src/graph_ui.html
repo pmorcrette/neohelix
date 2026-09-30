@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Roam graph</title>
+<style>
+:root {
+  --bg: #fbfbfa; --panel: #ffffff; --text: #1f2328; --muted: #6a737d;
+  --border: #d8dce0; --node: #6b8fb5; --ref: #b58b6b; --edge: rgba(90,100,110,.28);
+  --dim: rgba(150,155,160,.18); --hi: #d9822b; --sel: #c0392b; --todo: #8e5bb5;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181b; --panel: #1f2226; --text: #e6e6e6; --muted: #9aa3ad;
+    --border: #33383e; --node: #7fa7d1; --ref: #d1a37f; --edge: rgba(180,190,200,.22);
+    --dim: rgba(120,125,130,.15); --hi: #f0a04b; --sel: #ff6b5b; --todo: #b38ad6;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; overflow: hidden; }
+#bar { position: fixed; top: 0; left: 0; right: 0; display: flex; flex-wrap: wrap; gap: 8px;
+  align-items: center; padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--border); z-index: 2; }
+#bar input, #bar select, #bar button { font: inherit; color: var(--text); background: var(--bg);
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; }
+#bar button { cursor: pointer; }
+#bar button[aria-pressed="true"] { border-color: var(--hi); }
+#search { flex: 1 1 160px; min-width: 120px; }
+#count { color: var(--muted); font-size: 12px; margin-left: auto; }
+canvas { position: fixed; inset: 0; display: block; touch-action: none; }
+#panel { position: fixed; right: 16px; bottom: 16px; width: min(340px, calc(100% - 32px));
+  max-height: 55%; overflow: auto; background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; padding: 12px 14px; display: none; z-index: 2; }
+#panel h2 { margin: 0 0 4px; font-size: 16px; }
+#panel .meta { color: var(--muted); font-size: 12px; word-break: break-all; }
+#panel .tag { display: inline-block; font-size: 12px; padding: 0 6px; margin: 2px 4px 2px 0;
+  border: 1px solid var(--border); border-radius: 10px; }
+#panel .todo { color: var(--todo); font-weight: 600; margin-right: 6px; }
+#panel h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 10px 0 4px; }
+#panel ul { margin: 0; padding-left: 18px; }
+#panel li a { color: inherit; cursor: pointer; text-decoration: underline dotted; }
+#panel .actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+#panel .actions a, #panel .actions button { font: inherit; font-size: 13px; color: var(--text);
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 3px 8px;
+  text-decoration: none; cursor: pointer; }
+#help { position: fixed; left: 16px; bottom: 12px; color: var(--muted); font-size: 12px; z-index: 1; }
+@media (max-width: 600px) { #help { display: none; } }
+</style>
+</head>
+<body>
+<div id="bar">
+  <input id="search" type="search" placeholder="Search titles, aliases, tags  ( / )" aria-label="Search">
+  <select id="tag" aria-label="Tag"><option value="">All tags</option></select>
+  <button id="local" aria-pressed="false" title="Only the selected node's neighbourhood">Local</button>
+  <select id="depth" aria-label="Depth">
+    <option value="1">1 link</option><option value="2" selected>2 links</option><option value="3">3 links</option>
+  </select>
+  <button id="labels" aria-pressed="false" title="Label every node">Labels</button>
+  <button id="fit" title="Fit the graph to the window">Fit</button>
+  <span id="count"></span>
+</div>
+<canvas id="graph"></canvas>
+<div id="panel" role="dialog" aria-label="Node"></div>
+<div id="help">Drag to move · wheel to zoom · click a node for its links · Esc to clear</div>
+<script>
+"use strict";
+const DATA = /*GRAPH*/null;
+
+const canvas = document.getElementById("graph");
+const ctx = canvas.getContext("2d");
+const panel = document.getElementById("panel");
+const search = document.getElementById("search");
+const tagSelect = document.getElementById("tag");
+const localButton = document.getElementById("local");
+const depthSelect = document.getElementById("depth");
+const labelsButton = document.getElementById("labels");
+
+const byId = new Map();
+const nodes = DATA.nodes.map((n, i) => {
+  const angle = i * 2.399963;
+  const radius = 12 * Math.sqrt(i + 1);
+  const node = Object.assign({}, n, {
+    x: Math.cos(angle) * radius, y: Math.sin(angle) * radius, vx: 0, vy: 0,
+    out: [], in: [], degree: 0, fixed: false,
+  });
+  byId.set(n.id, node);
+  return node;
+});
+const links = DATA.links
+  .filter(l => byId.has(l.source) && byId.has(l.target))
+  .map(l => {
+    const link = { source: byId.get(l.source), target: byId.get(l.target), ref: l.ref };
+    link.source.out.push(link.target);
+    link.target.in.push(link.source);
+    link.source.degree++; link.target.degree++;
+    return link;
+  });
+
+const tags = [...new Set(nodes.flatMap(n => n.tags))].sort();
+for (const tag of tags) {
+  const option = document.createElement("option");
+  option.value = option.textContent = tag;
+  tagSelect.appendChild(option);
+}
+
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+let colors = {};
+function readColors() {
+  for (const name of ["bg", "text", "muted", "node", "ref", "edge", "dim", "hi", "sel", "todo"]) {
+    colors[name] = css("--" + name);
+  }
+}
+readColors();
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readColors(); draw(); });
+
+// ── View state ────────────────────────────────────────────────────────────
+let scale = 1, panX = 0, panY = 0;
+let selected = DATA.center ? byId.get(DATA.center) || null : null;
+let hovered = null;
+let visible = new Set(nodes);
+let matches = null;
+let showLabels = false;
+let alpha = 1;
+
+function radius(n) { return 3 + Math.sqrt(n.degree) * 1.8; }
+
+function neighbourhood(center, depth) {
+  const seen = new Set([center]);
+  let frontier = [center];
+  for (let d = 0; d < depth; d++) {
+    const next = [];
+    for (const n of frontier) {
+      for (const m of n.out.concat(n.in)) {
+        if (!seen.has(m)) { seen.add(m); next.push(m); }
+      }
+    }
+    frontier = next;
+  }
+  return seen;
+}
+
+function refilter() {
+  const tag = tagSelect.value;
+  let keep = nodes.filter(n => !tag || n.tags.includes(tag));
+  if (localButton.getAttribute("aria-pressed") === "true" && selected) {
+    const near = neighbourhood(selected, Number(depthSelect.value));
+    keep = keep.filter(n => near.has(n));
+    if (!keep.includes(selected)) keep.push(selected);
+  }
+  visible = new Set(keep);
+  const query = search.value.trim().toLowerCase();
+  matches = query
+    ? new Set(keep.filter(n => [n.title, ...n.aliases, ...n.tags].some(t => t.toLowerCase().includes(query))))
+    : null;
+  const shownLinks = links.filter(l => visible.has(l.source) && visible.has(l.target)).length;
+  document.getElementById("count").textContent =
+    `${visible.size} of ${nodes.length} nodes · ${shownLinks} links` + (matches ? ` · ${matches.size} found` : "");
+  reheat(0.5);
+}
+
+// ── Layout: forces, with a quadtree for the repulsion ─────────────────────
+function quadtree(list) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const n of list) { x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y); x1 = Math.max(x1, n.x); y1 = Math.max(y1, n.y); }
+  const size = Math.max(x1 - x0, y1 - y0, 1);
+  const root = { x: x0, y: y0, size, mass: 0, cx: 0, cy: 0, node: null, kids: null };
+  for (const n of list) insert(root, n, 0);
+  return root;
+}
+function insert(cell, n, depth) {
+  cell.cx = (cell.cx * cell.mass + n.x) / (cell.mass + 1);
+  cell.cy = (cell.cy * cell.mass + n.y) / (cell.mass + 1);
+  cell.mass++;
+  if (!cell.kids) {
+    if (!cell.node) { cell.node = n; return; }
+    if (depth > 24) return;
+    const old = cell.node; cell.node = null;
+    const half = cell.size / 2;
+    cell.kids = [0, 1, 2, 3].map(i => ({
+      x: cell.x + (i & 1) * half, y: cell.y + (i >> 1) * half, size: half,
+      mass: 0, cx: 0, cy: 0, node: null, kids: null,
+    }));
+    place(cell, old, depth);
+  }
+  place(cell, n, depth);
+}
+function place(cell, n, depth) {
+  const half = cell.size / 2;
+  const i = (n.x >= cell.x + half ? 1 : 0) + (n.y >= cell.y + half ? 2 : 0);
+  insert(cell.kids[i], n, depth + 1);
+}
+function repel(cell, n, strength) {
+  if (!cell || cell.mass === 0 || cell.node === n) return;
+  const dx = cell.cx - n.x, dy = cell.cy - n.y;
+  const d2 = dx * dx + dy * dy + 0.01;
+  if (!cell.kids || cell.size * cell.size / d2 < 0.81) {
+    const f = strength * cell.mass / d2;
+    n.vx -= dx * f; n.vy -= dy * f;
+    return;
+  }
+  for (const kid of cell.kids) repel(kid, n, strength);
+}
+
+function tick() {
+  const list = nodes.filter(n => visible.has(n));
+  if (!list.length) return;
+  const tree = quadtree(list);
+  for (const n of list) repel(tree, n, 60 * alpha);
+  for (const l of links) {
+    if (!visible.has(l.source) || !visible.has(l.target)) continue;
+    const dx = l.target.x - l.source.x, dy = l.target.y - l.source.y;
+    const d = Math.sqrt(dx * dx + dy * dy) || 1;
+    const f = (d - 40) / d * 0.06 * alpha;
+    l.source.vx += dx * f; l.source.vy += dy * f;
+    l.target.vx -= dx * f; l.target.vy -= dy * f;
+  }
+  for (const n of list) {
+    n.vx -= n.x * 0.004 * alpha; n.vy -= n.y * 0.004 * alpha;
+    if (n.fixed) { n.vx = n.vy = 0; continue; }
+    n.vx *= 0.6; n.vy *= 0.6;
+    n.x += n.vx; n.y += n.vy;
+  }
+  alpha *= 0.985;
+}
+
+function reheat(to) { alpha = Math.max(alpha, to); if (!running) loop(); }
+let running = false;
+function loop() {
+  running = true;
+  for (let i = 0; i < 2; i++) tick();
+  draw();
+  if (alpha > 0.02) requestAnimationFrame(loop); else running = false;
+}
+
+// ── Drawing ───────────────────────────────────────────────────────────────
+function resize() {
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = innerWidth * ratio; canvas.height = innerHeight * ratio;
+  canvas.style.width = innerWidth + "px"; canvas.style.height = innerHeight + "px";
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  draw();
+}
+function toScreen(n) { return [innerWidth / 2 + (n.x + panX) * scale, innerHeight / 2 + (n.y + panY) * scale]; }
+function toWorld(x, y) { return [(x - innerWidth / 2) / scale - panX, (y - innerHeight / 2) / scale - panY]; }
+
+function draw() {
+  ctx.fillStyle = colors.bg;
+  ctx.fillRect(0, 0, innerWidth, innerHeight);
+  const focus = hovered || selected;
+  const near = focus ? new Set([focus, ...focus.out, ...focus.in]) : null;
+  const lit = n => near ? near.has(n) : !matches || matches.has(n);
+
+  ctx.lineWidth = 1;
+  for (const l of links) {
+    if (!visible.has(l.source) || !visible.has(l.target)) continue;
+    const on = near ? (l.source === focus || l.target === focus) : !matches;
+    ctx.strokeStyle = on && near ? colors.hi : on ? colors.edge : colors.dim;
+    ctx.setLineDash(l.ref ? [4, 3] : []);
+    const [x1, y1] = toScreen(l.source), [x2, y2] = toScreen(l.target);
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    if (on && near) {
+      const angle = Math.atan2(y2 - y1, x2 - x1), r = radius(l.target) * Math.sqrt(scale) + 2;
+      const ax = x2 - Math.cos(angle) * r, ay = y2 - Math.sin(angle) * r;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(ax - Math.cos(angle - 0.4) * 7, ay - Math.sin(angle - 0.4) * 7);
+      ctx.lineTo(ax - Math.cos(angle + 0.4) * 7, ay - Math.sin(angle + 0.4) * 7);
+      ctx.closePath(); ctx.fillStyle = colors.hi; ctx.fill();
+    }
+  }
+  ctx.setLineDash([]);
+
+  const labelled = [];
+  for (const n of nodes) {
+    if (!visible.has(n)) continue;
+    const [x, y] = toScreen(n);
+    if (x < -50 || y < -50 || x > innerWidth + 50 || y > innerHeight + 50) continue;
+    const r = radius(n) * Math.sqrt(scale);
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fillStyle = !lit(n) ? colors.dim
+      : n === selected ? colors.sel
+      : n === hovered || (matches && matches.has(n)) ? colors.hi
+      : n.todo ? colors.todo : colors.node;
+    ctx.fill();
+    if (lit(n) && (showLabels || n === focus || (near && near.has(n)) || (matches && matches.has(n))
+        || scale > 1.6 || n.degree >= 8)) {
+      labelled.push([n, x, y + r + 11]);
+    }
+  }
+  ctx.font = "12px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  for (const [n, x, y] of labelled) {
+    const text = n.title.length > 40 ? n.title.slice(0, 39) + "…" : n.title;
+    ctx.lineWidth = 3; ctx.strokeStyle = colors.bg; ctx.strokeText(text, x, y);
+    ctx.fillStyle = n === focus ? colors.text : colors.muted; ctx.fillText(text, x, y);
+  }
+}
+
+// ── The selected node's panel ─────────────────────────────────────────────
+function escapeHtml(text) {
+  return text.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+function listOf(title, items) {
+  if (!items.length) return "";
+  const unique = [...new Set(items)].sort((a, b) => a.title.localeCompare(b.title));
+  return `<h3>${title} (${unique.length})</h3><ul>` +
+    unique.map(n => `<li><a data-id="${n.id}">${escapeHtml(n.title)}</a></li>`).join("") + "</ul>";
+}
+function showPanel() {
+  if (!selected) { panel.style.display = "none"; return; }
+  const n = selected;
+  panel.innerHTML =
+    `<h2>${n.todo ? `<span class="todo">${escapeHtml(n.todo)}</span>` : ""}${escapeHtml(n.title)}</h2>` +
+    `<div class="meta">${escapeHtml(n.file)}</div>` +
+    (n.tags.length ? `<div>${n.tags.map(t => `<span class="tag">${escapeHtml(t)}</span>`).join("")}</div>` : "") +
+    (n.aliases.length ? `<div class="meta">Also: ${n.aliases.map(escapeHtml).join(", ")}</div>` : "") +
+    listOf("Links to", n.out) + listOf("Linked from", n.in) +
+    `<div class="actions"><button data-act="local">Local graph</button>` +
+    `<a href="org-protocol://roam-node?node=${encodeURIComponent(n.id)}" title="Needs the org-protocol handler">Open in the editor</a>` +
+    `<button data-act="close">Close</button></div>`;
+  panel.style.display = "block";
+}
+panel.addEventListener("click", event => {
+  const target = event.target.closest("[data-id], [data-act]");
+  if (!target) return;
+  if (target.dataset.id) { select(byId.get(target.dataset.id), true); return; }
+  if (target.dataset.act === "local") { localButton.setAttribute("aria-pressed", "true"); refilter(); setTimeout(fit, 600); }
+  if (target.dataset.act === "close") select(null);
+});
+function select(n, center) {
+  selected = n || null;
+  if (localButton.getAttribute("aria-pressed") === "true") refilter();
+  if (selected && center) { panX = -selected.x; panY = -selected.y; }
+  showPanel(); draw();
+}
+
+// ── Input ─────────────────────────────────────────────────────────────────
+function nodeAt(x, y) {
+  let best = null, bestD = Infinity;
+  for (const n of nodes) {
+    if (!visible.has(n)) continue;
+    const [sx, sy] = toScreen(n);
+    const d = Math.hypot(sx - x, sy - y);
+    if (d < Math.max(radius(n) * Math.sqrt(scale), 6) + 3 && d < bestD) { best = n; bestD = d; }
+  }
+  return best;
+}
+let drag = null;
+canvas.addEventListener("pointerdown", event => {
+  canvas.setPointerCapture(event.pointerId);
+  const n = nodeAt(event.clientX, event.clientY);
+  drag = { node: n, x: event.clientX, y: event.clientY, moved: false };
+  if (n) { n.fixed = true; }
+});
+canvas.addEventListener("pointermove", event => {
+  if (!drag) {
+    const n = nodeAt(event.clientX, event.clientY);
+    if (n !== hovered) { hovered = n; canvas.style.cursor = n ? "pointer" : "default"; draw(); }
+    return;
+  }
+  const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
+  if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+  if (drag.node) {
+    const [wx, wy] = toWorld(event.clientX, event.clientY);
+    drag.node.x = wx; drag.node.y = wy;
+    reheat(0.3);
+  } else {
+    panX += dx / scale; panY += dy / scale;
+    drag.x = event.clientX; drag.y = event.clientY;
+    draw();
+  }
+});
+canvas.addEventListener("pointerup", event => {
+  if (!drag) return;
+  if (drag.node) drag.node.fixed = false;
+  if (!drag.moved) select(nodeAt(event.clientX, event.clientY));
+  drag = null;
+});
+canvas.addEventListener("wheel", event => {
+  event.preventDefault();
+  const [wx, wy] = toWorld(event.clientX, event.clientY);
+  scale = Math.min(8, Math.max(0.05, scale * Math.exp(-event.deltaY * 0.0015)));
+  const [nx, ny] = toWorld(event.clientX, event.clientY);
+  panX += nx - wx; panY += ny - wy;
+  draw();
+}, { passive: false });
+
+function fit() {
+  const list = nodes.filter(n => visible.has(n));
+  if (!list.length) return;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const n of list) { x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y); x1 = Math.max(x1, n.x); y1 = Math.max(y1, n.y); }
+  scale = Math.min(4, Math.max(0.05, Math.min(innerWidth / (x1 - x0 + 80), (innerHeight - 60) / (y1 - y0 + 80))));
+  panX = -(x0 + x1) / 2; panY = -(y0 + y1) / 2;
+  draw();
+}
+
+search.addEventListener("input", refilter);
+tagSelect.addEventListener("change", refilter);
+depthSelect.addEventListener("change", refilter);
+localButton.addEventListener("click", () => {
+  const on = localButton.getAttribute("aria-pressed") !== "true";
+  localButton.setAttribute("aria-pressed", String(on));
+  refilter(); setTimeout(fit, 600);
+});
+labelsButton.addEventListener("click", () => {
+  showLabels = labelsButton.getAttribute("aria-pressed") !== "true";
+  labelsButton.setAttribute("aria-pressed", String(showLabels));
+  draw();
+});
+document.getElementById("fit").addEventListener("click", fit);
+search.addEventListener("keydown", event => {
+  if (event.key === "Enter" && matches && matches.size) select([...matches][0], true);
+});
+document.addEventListener("keydown", event => {
+  if (event.key === "/" && document.activeElement !== search) { event.preventDefault(); search.focus(); }
+  if (event.key === "Escape") { search.value = ""; search.blur(); select(null); refilter(); }
+});
+addEventListener("resize", resize);
+
+resize();
+if (selected) localButton.setAttribute("aria-pressed", "true");
+refilter();
+showPanel();
+for (let i = 0; i < 300 && alpha > 0.05; i++) tick();
+fit();
+reheat(0.3);
+</script>
+</body>
+</html>

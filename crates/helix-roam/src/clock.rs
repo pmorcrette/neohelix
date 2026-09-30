@@ -107,6 +107,82 @@ fn stamp_at(at: Moment) -> String {
     )
 }
 
+/// `2026-09-24 Thu 09:00`: a moment as a clock line shows it, without
+/// the brackets.
+pub fn format_moment(at: Moment) -> String {
+    stamp_at(at)
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string()
+}
+
+/// The entries that have been clocked, the most recently started first,
+/// each with when its latest clock started: Org's clock history, read from
+/// the logbooks rather than remembered.
+pub fn history<'a>(
+    entries: impl IntoIterator<Item = &'a crate::entry::Entry>,
+) -> Vec<(&'a crate::entry::Entry, Moment)> {
+    let mut clocked: Vec<(&crate::entry::Entry, Moment)> = entries
+        .into_iter()
+        .filter_map(|entry| {
+            let last = entry.clocks.iter().map(|(start, _)| *start).max()?;
+            Some((entry, last))
+        })
+        .collect();
+    clocked.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| a.0.file_path.cmp(&b.0.file_path))
+            .then_with(|| a.0.line.cmp(&b.0.line))
+    });
+    clocked
+}
+
+/// Resolves idle time on the running clock, `idle` minutes of it, the way
+/// Org asks to: `Keep` counts it, `Subtract` stops the clock where the idle
+/// time began and starts it again now, `Stop` only stops it there, and
+/// `Cancel` throws the clock away.
+pub fn resolve_idle(
+    text: &str,
+    idle: i64,
+    choice: IdleChoice,
+    now: Moment,
+) -> Result<String, ClockError> {
+    let clock = running(text).ok_or(ClockError::NotRunning)?;
+    let idle_start = (now - idle.max(0)).max(clock.start);
+    match choice {
+        IdleChoice::Keep => Ok(text.to_string()),
+        IdleChoice::Subtract => {
+            let entry = entry_of(text, &clock).ok_or(ClockError::NoEntry)?;
+            let (stopped, _) = clock_out(text, idle_start)?;
+            clock_in(&stopped, entry, now)
+        }
+        IdleChoice::Stop => clock_out(text, idle_start).map(|(after, _)| after),
+        IdleChoice::Cancel => clock_cancel(text),
+    }
+}
+
+/// What to do with idle time on a clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdleChoice {
+    Keep,
+    Subtract,
+    Stop,
+    Cancel,
+}
+
+impl IdleChoice {
+    /// Org's keys: `k`, `s`, `S`, `C`.
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "k" | "K" => Some(Self::Keep),
+            "s" => Some(Self::Subtract),
+            "S" => Some(Self::Stop),
+            "C" | "c" => Some(Self::Cancel),
+            _ => None,
+        }
+    }
+}
+
 /// Starts a clock on the entry at `line`.
 ///
 /// Refuses while another clock in the same text is running: Org has one
@@ -413,6 +489,56 @@ mod tests {
 
     fn at(date: &str, hour: u32, minute: u32) -> Moment {
         moment(Date::parse_iso(date).unwrap(), Time { hour, minute })
+    }
+
+    #[test]
+    fn idle_time_is_kept_subtracted_or_dropped() {
+        let text = "* Task\n:LOGBOOK:\nCLOCK: [2026-09-24 Thu 09:00]\n:END:\n";
+        let now = at("2026-09-24", 10, 0);
+
+        assert_eq!(resolve_idle(text, 20, IdleChoice::Keep, now).unwrap(), text);
+
+        let subtracted = resolve_idle(text, 20, IdleChoice::Subtract, now).unwrap();
+        assert_eq!(
+            subtracted,
+            "* Task\n:LOGBOOK:\nCLOCK: [2026-09-24 Thu 10:00]\n\
+             CLOCK: [2026-09-24 Thu 09:00]--[2026-09-24 Thu 09:40] =>  0:40\n:END:\n"
+        );
+
+        let stopped = resolve_idle(text, 20, IdleChoice::Stop, now).unwrap();
+        assert!(running(&stopped).is_none());
+        assert!(stopped.contains("--[2026-09-24 Thu 09:40] =>  0:40"));
+
+        // More idle than the clock ran stops it where it started.
+        let all = resolve_idle(text, 600, IdleChoice::Stop, now).unwrap();
+        assert!(all.contains("=>  0:00"), "{all}");
+
+        assert_eq!(
+            resolve_idle(text, 20, IdleChoice::Cancel, now).unwrap(),
+            "* Task\n"
+        );
+        assert_eq!(IdleChoice::from_key("S"), Some(IdleChoice::Stop));
+        assert_eq!(IdleChoice::from_key("x"), None);
+    }
+
+    #[test]
+    fn history_puts_the_latest_clocked_first() {
+        let text = "* Old\n:LOGBOOK:\nCLOCK: [2026-09-20 Sun 09:00]--[2026-09-20 Sun 10:00] =>  1:00\n:END:\n\
+                    * Never\n\
+                    * Recent\n:LOGBOOK:\nCLOCK: [2026-09-23 Wed 09:00]--[2026-09-23 Wed 09:30] =>  0:30\n\
+                    CLOCK: [2026-09-19 Sat 09:00]--[2026-09-19 Sat 09:30] =>  0:30\n:END:\n";
+        let entries = crate::entry::entries(
+            text,
+            std::path::Path::new("/n/a.org"),
+            &FileSettings::scan(text),
+        );
+        let history = history(&entries);
+        let titles: Vec<&str> = history
+            .iter()
+            .map(|(entry, _)| entry.title.as_str())
+            .collect();
+        assert_eq!(titles, ["Recent", "Old"]);
+        assert_eq!(format_moment(history[0].1), "2026-09-23 Wed 09:00");
     }
 
     #[test]
