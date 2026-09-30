@@ -32,7 +32,13 @@ pub struct Match {
 enum Term {
     Tag(String),
     TagRegex(Regex),
-    Property { name: String, op: Op, value: Value },
+    /// A group tag: any of its members, or a member matching a regexp.
+    Group(Vec<String>, Vec<Regex>),
+    Property {
+        name: String,
+        op: Op,
+        value: Value,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +127,30 @@ impl Match {
             .map(|alternative| parse_terms(alternative.trim(), today))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self { alternatives, todo })
+    }
+
+    /// The same match with each group tag standing for its members, as
+    /// `#+TAGS: [ Project : Work Home ]` asks: `+Project` then finds the
+    /// entries tagged `Work` or `Home` too.
+    pub fn with_groups(mut self, setup: &crate::tags::TagSetup) -> Self {
+        for terms in &mut self.alternatives {
+            for (_, term) in terms.iter_mut() {
+                let Term::Tag(name) = term else { continue };
+                if !setup.is_group(name) {
+                    continue;
+                }
+                let expansion = setup.expand(name);
+                // A pattern that does not compile is left out, as a tag
+                // that no entry has would be.
+                let patterns = expansion
+                    .patterns
+                    .iter()
+                    .filter_map(|pattern| regex(&format!("^(?:{pattern})$")).ok())
+                    .collect();
+                *term = Term::Group(expansion.tags, patterns);
+            }
+        }
+        self
     }
 
     pub fn matches(&self, entry: &Entry) -> bool {
@@ -383,6 +413,9 @@ impl Term {
         match self {
             Term::Tag(tag) => entry.all_tags().any(|own| own == tag),
             Term::TagRegex(pattern) => entry.all_tags().any(|own| pattern.is_match(own)),
+            Term::Group(tags, patterns) => entry.all_tags().any(|own| {
+                tags.contains(own) || patterns.iter().any(|pattern| pattern.is_match(own))
+            }),
             Term::Property { name, op, value } => {
                 match (property_of(entry, name), value) {
                     (Found::Text(found), Value::Text(wanted)) => {
@@ -559,6 +592,25 @@ DEADLINE: <2026-10-01 Thu>
             titles("TODO<>\"DONE\"&work"),
             ["Travail", "Rapport", "Réponse du chef"]
         );
+    }
+
+    #[test]
+    fn a_group_tag_finds_its_members() {
+        let setup =
+            crate::tags::TagSetup::parse(["[ Life : home Chores ]", "[ Chores : {^boss$} ]"]);
+        let found = entries(TEXT, Path::new("/n/a.org"), &FileSettings::scan(TEXT));
+        let today = Date::today();
+        let titles = |query: &str| -> Vec<String> {
+            let matcher = Match::parse(query, today).unwrap().with_groups(&setup);
+            found
+                .iter()
+                .filter(|entry| matcher.matches(entry))
+                .map(|entry| entry.title.clone())
+                .collect()
+        };
+        assert_eq!(titles("Life"), ["Réponse du chef", "Maison", "Tondre"]);
+        assert_eq!(titles("Life-boss"), ["Maison", "Tondre"]);
+        assert_eq!(titles("home"), ["Maison", "Tondre"]);
     }
 
     #[test]

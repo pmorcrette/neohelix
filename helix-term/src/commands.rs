@@ -496,6 +496,7 @@ impl MappableCommand {
         org_previous_sibling_heading, "Move to the previous heading at the same level",
         org_parent_heading, "Move to the parent heading",
         org_goto_heading, "Jump to a heading in this buffer by name",
+        org_set_tags, "Toggle the entry's tags from the file's #+TAGS, one key each",
         org_outline_path, "Show the outline path of the entry at the cursor",
         org_sparse_tree, "Hide everything but the entries matching a filter",
         org_narrow, "Hide everything outside the subtree at the cursor",
@@ -4487,9 +4488,62 @@ pub fn org_heading_picker(editor: &mut Editor) -> Option<Box<dyn Component>> {
     Some(Box::new(overlaid(picker)))
 }
 
+/// The entries clocked before, the latest first; choosing one clocks in to
+/// it.
+pub fn org_clock_history_picker(editor: &mut Editor) -> Option<Box<dyn Component>> {
+    let history = crate::roam::clock_history(editor);
+    if history.is_empty() {
+        editor.set_status("Nothing has been clocked yet");
+        return None;
+    }
+    let columns = [
+        ui::PickerColumn::new(
+            "last clocked",
+            |item: &crate::roam::Clocked, _: &PathStyleConfig| {
+                let mut when = helix_roam::clock::format_moment(item.last);
+                if item.running {
+                    when.push_str(" (running)");
+                }
+                when.into()
+            },
+        ),
+        ui::PickerColumn::new(
+            "entry",
+            |item: &crate::roam::Clocked, _: &PathStyleConfig| item.title.as_str().into(),
+        ),
+        ui::PickerColumn::new(
+            "file",
+            |item: &crate::roam::Clocked, _: &PathStyleConfig| {
+                item.path
+                    .strip_prefix(helix_stdx::env::current_working_dir())
+                    .unwrap_or(&item.path)
+                    .display()
+                    .to_string()
+                    .into()
+            },
+        ),
+    ];
+
+    let picker = Picker::new(
+        columns,
+        1,
+        history,
+        PathStyleConfig::new(&editor.theme),
+        |cx, item: &crate::roam::Clocked, _action| crate::roam::clock_in_to(cx.editor, item),
+    );
+
+    Some(Box::new(overlaid(picker)))
+}
+
 /// Asks what a sparse tree should keep.
 pub fn org_sparse_tree_prompt() -> Box<dyn Component> {
     property_prompt("Keep (TODO, :tag:, #A, /text): ", crate::roam::sparse_tree)
+}
+
+fn org_set_tags(cx: &mut Context) {
+    if let Some(select) = crate::roam::tag_select(cx.editor) {
+        cx.push_layer(select);
+    }
 }
 
 fn org_goto_heading(cx: &mut Context) {

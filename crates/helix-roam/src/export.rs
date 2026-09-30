@@ -14,11 +14,12 @@
 //! a [`Resolve`] the caller supplies from the graph.
 
 use std::collections::HashMap;
+use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
 
 use uuid::Uuid;
 
-use crate::hyperlink::{find_links, FileSearch, LinkKind};
+use crate::hyperlink::{find_links, radio_mentions, radio_targets, FileSearch, LinkKind};
 use crate::parser::FileSettings;
 use crate::restructure::{headline_level, is_planning_line};
 use crate::source::{common_indent, unescape};
@@ -160,6 +161,59 @@ pub fn anchor_for(title: &str, custom_id: Option<&str>) -> String {
         .collect()
 }
 
+/// `<<target>>` and `<<<radio target>>>` in `text`: each byte range, name,
+/// and whether it is a radio target.
+fn targets_in(text: &str) -> Vec<(Range<usize>, String, bool)> {
+    let mut found = Vec::new();
+    let mut from = 0;
+    while let Some(open) = text[from..].find("<<").map(|at| from + at) {
+        let radio = text[open..].starts_with("<<<");
+        let (start, close) = if radio {
+            (open + 3, ">>>")
+        } else {
+            (open + 2, ">>")
+        };
+        let Some(end) = text[start..].find(close).map(|at| start + at) else {
+            break;
+        };
+        let name = &text[start..end];
+        if !name.is_empty() && !name.contains(['\n', '<', '>']) && name.trim() == name {
+            found.push((open..end + close.len(), name.to_string(), radio));
+            from = end + close.len();
+        } else {
+            from = open + 2;
+        }
+    }
+    found
+}
+
+/// Where `=verbatim=` and `~code~` roughly sit in `text`, which a radio
+/// target's mention must not reach into.
+fn verbatim_spans(text: &str) -> Vec<Range<usize>> {
+    let mut spans = Vec::new();
+    let bytes = text.as_bytes();
+    let mut at = 0;
+    while at < bytes.len() {
+        let c = bytes[at];
+        let opens = matches!(c, b'=' | b'~')
+            && (at == 0 || !bytes[at - 1].is_ascii_alphanumeric())
+            && bytes.get(at + 1).is_some_and(|b| !b.is_ascii_whitespace());
+        if opens {
+            if let Some(close) = text[at + 1..]
+                .find(c as char)
+                .map(|close| at + 1 + close)
+                .filter(|&close| !text[at..close].contains('\n'))
+            {
+                spans.push(at..close + 1);
+                at = close + 1;
+                continue;
+            }
+        }
+        at += 1;
+    }
+    spans
+}
+
 // ── The tree ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,6 +232,12 @@ enum Inline {
     /// A footnote reference, by label.
     Footnote(String),
     LineBreak,
+    /// A `<<target>>` links land on, or a `<<<radio target>>>` whose text
+    /// shows.
+    Target {
+        anchor: String,
+        text: Option<String>,
+    },
     /// `[cite/style:prefix;@key suffix;…]`.
     Citation {
         style: Option<String>,
@@ -301,6 +361,8 @@ struct Document {
     /// Headline titles to the anchors they export with, for `*Headline`
     /// links.
     anchors: HashMap<String, String>,
+    /// `<<target>>` names, in lower case, to their anchors.
+    targets: HashMap<String, String>,
     warnings: Vec<String>,
     /// The bibliography's entries, from `#+BIBLIOGRAPHY:`.
     bib: Vec<crate::bib::Entry>,
@@ -321,6 +383,10 @@ struct Reader<'a> {
     /// Every `#+KEY: value`, for `{{{keyword(KEY)}}}`.
     keywords: HashMap<String, String>,
     cited: Vec<String>,
+    /// The `<<<radio targets>>>` the file declares, which its text mentions.
+    radio: Vec<String>,
+    /// Targets met so far, in lower case, to their anchors.
+    targets: HashMap<String, String>,
 }
 
 fn keyword<'a>(line: &'a str, name: &str) -> Option<&'a str> {
@@ -814,22 +880,78 @@ impl Reader<'_> {
     fn inlines(&mut self, text: &str) -> Vec<Inline> {
         let expanded = self.expand_macros(text, 0);
         let text = expanded.as_str();
-        let links = find_links(text, &self.settings.link_abbreviations);
+        let mut spans: Vec<(Range<usize>, Inline)> = Vec::new();
+        for link in find_links(text, &self.settings.link_abbreviations) {
+            let description = link.description.as_deref().map(|d| self.markup(d, &[]));
+            spans.push((
+                link.range,
+                Inline::Link {
+                    target: link.kind,
+                    description,
+                },
+            ));
+        }
+        let taken = |spans: &[(Range<usize>, Inline)], range: &Range<usize>| {
+            spans
+                .iter()
+                .any(|(span, _)| span.start < range.end && range.start < span.end)
+        };
+        for (range, name, radio) in targets_in(text) {
+            if taken(&spans, &range) {
+                continue;
+            }
+            let anchor = self.target_anchor(&name);
+            spans.push((
+                range,
+                Inline::Target {
+                    anchor,
+                    text: radio.then_some(name),
+                },
+            ));
+        }
+        if !self.radio.is_empty() {
+            let code = verbatim_spans(text);
+            for (range, name) in radio_mentions(text, &self.radio) {
+                if taken(&spans, &range)
+                    || code
+                        .iter()
+                        .any(|span| span.start < range.end && range.start < span.end)
+                {
+                    continue;
+                }
+                self.target_anchor(&name);
+                let shown = text[range.clone()].to_string();
+                spans.push((
+                    range,
+                    Inline::Link {
+                        target: LinkKind::Target(name),
+                        description: Some(vec![Inline::Text(shown)]),
+                    },
+                ));
+            }
+        }
+        spans.sort_by_key(|(range, _)| range.start);
+
         let mut masked = String::with_capacity(text.len());
         let mut last = 0;
         let mut found = Vec::new();
-        for (index, link) in links.iter().enumerate() {
-            masked.push_str(&text[last..link.range.start]);
+        for (index, (range, inline)) in spans.into_iter().enumerate() {
+            masked.push_str(&text[last..range.start]);
             masked.push(char::from_u32(0xF0000 + index as u32).unwrap());
-            last = link.range.end;
-            let description = link.description.as_deref().map(|d| self.markup(d, &[]));
-            found.push(Inline::Link {
-                target: link.kind.clone(),
-                description,
-            });
+            last = range.end;
+            found.push(inline);
         }
         masked.push_str(&text[last..]);
         self.markup(&masked, &found)
+    }
+
+    /// The anchor a target exports with, remembered so links can find it.
+    fn target_anchor(&mut self, name: &str) -> String {
+        let key = name.to_lowercase();
+        self.targets
+            .entry(key.clone())
+            .or_insert_with(|| format!("target-{}", anchor_for(&key, None)))
+            .clone()
     }
 
     /// `{{{name(arg, arg)}}}` replaced by the macro's body, `$1`, `$2`, …
@@ -1195,6 +1317,7 @@ fn plain(inlines: &[Inline]) -> String {
             Inline::Link { target, .. } => link_label(target),
             Inline::Footnote(_) => String::new(),
             Inline::LineBreak => " ".to_string(),
+            Inline::Target { text, .. } => text.clone().unwrap_or_default(),
             Inline::Citation { cites, .. } => cites
                 .iter()
                 .map(|cite| cite.key.clone())
@@ -1268,6 +1391,8 @@ fn read(text: &str, source: &Path) -> Document {
         macros,
         keywords,
         cited: Vec::new(),
+        radio: radio_targets(text),
+        targets: HashMap::new(),
     };
     let lines: Vec<&str> = text.lines().collect();
     let elements = reader.elements(&lines, true);
@@ -1301,6 +1426,7 @@ fn read(text: &str, source: &Path) -> Document {
         elements,
         footnotes: reader.footnotes,
         anchors,
+        targets: reader.targets,
         warnings,
         bib,
         cited: reader.cited,
@@ -1489,6 +1615,7 @@ struct Context<'a> {
     backend: Backend,
     resolve: &'a dyn Resolve,
     anchors: &'a HashMap<String, String>,
+    targets: &'a HashMap<String, String>,
     /// Footnote labels in order of first reference, which numbers them.
     footnote_order: Vec<String>,
     bib: &'a [crate::bib::Entry],
@@ -1588,6 +1715,9 @@ impl Context<'_> {
                     href.push_str(&anchor_for(title, None));
                 }
                 Href::Link(href)
+            }
+            LinkKind::Target(title) if self.targets.contains_key(&title.to_lowercase()) => {
+                Href::Link(format!("#{}", self.targets[&title.to_lowercase()]))
             }
             LinkKind::Headline(title) | LinkKind::Target(title) => Href::Link(format!(
                 "#{}",
@@ -1764,6 +1894,7 @@ pub fn export_with(
         backend,
         resolve,
         anchors: &document.anchors,
+        targets: &document.targets,
         footnote_order: Vec::new(),
         bib: &document.bib,
         references: cited_entries(&document)
@@ -1906,6 +2037,10 @@ mod markdown {
             }
             Inline::Footnote(label) => format!("[^{}]", cx.footnote_number(label)),
             Inline::LineBreak => "\\\n".to_string(),
+            Inline::Target { anchor, text } => format!(
+                "<a id=\"{anchor}\"></a>{}",
+                text.as_deref().map(escape).unwrap_or_default()
+            ),
             Inline::Citation {
                 style,
                 cites,
@@ -2194,6 +2329,11 @@ mod html {
                 format!("<sup><a id=\"fnr.{n}\" class=\"footref\" href=\"#fn.{n}\" role=\"doc-backlink\">{n}</a></sup>")
             }
             Inline::LineBreak => "<br>\n".to_string(),
+            Inline::Target { anchor, text } => format!(
+                "<a id=\"{}\"></a>{}",
+                escape(anchor),
+                text.as_deref().map(escape).unwrap_or_default()
+            ),
             Inline::Citation {
                 style,
                 cites,
@@ -2618,6 +2758,10 @@ mod latex {
                 format!("\\footnote{{{body}}}")
             }
             Inline::LineBreak => "\\\\\n".to_string(),
+            Inline::Target { anchor, text } => format!(
+                "\\label{{{anchor}}}{}",
+                text.as_deref().map(escape).unwrap_or_default()
+            ),
             Inline::Citation {
                 style,
                 cites,
@@ -2901,6 +3045,25 @@ mod tests {
 
     fn body_md(text: &str) -> String {
         md(&format!("#+OPTIONS: toc:nil\n{text}"))
+    }
+
+    #[test]
+    fn targets_export_as_anchors_links_reach() {
+        let out = body_md(
+            "<<<Helix>>> is an editor.\nWe like helix, see [[the spot]] or =helix=.\n\nHere is <<the spot>>.\n",
+        );
+        assert!(
+            out.contains("<a id=\"target-helix\"></a>Helix is an editor."),
+            "{out}"
+        );
+        assert!(out.contains("We like [helix](#target-helix)"), "{out}");
+        assert!(out.contains("see [the spot](#target-the-spot)"), "{out}");
+        // Verbatim text is not a mention.
+        assert!(out.contains("`helix`"), "{out}");
+        assert!(
+            out.contains("Here is <a id=\"target-the-spot\"></a>."),
+            "{out}"
+        );
     }
 
     #[test]

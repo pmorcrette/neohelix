@@ -1074,6 +1074,29 @@ impl EditorView {
                 }
                 cxt.editor.count = None;
             }
+            // Org's speed keys, on a headline's stars.
+            _ if mode == Mode::Normal
+                && self.keymaps.pending().is_empty()
+                && cxt.editor.count.is_none()
+                && cxt.editor.selected_register.is_none()
+                && crate::roam::speed_command(cxt.editor, event).is_some() =>
+            {
+                match crate::roam::speed_command(cxt.editor, event) {
+                    Some(crate::roam::Speed::Command(command)) => {
+                        command.execute(cxt);
+                        helix_event::dispatch(PostCommand {
+                            command: &command,
+                            cx: cxt,
+                        });
+                    }
+                    Some(crate::roam::Speed::Help) => {
+                        let rows = crate::roam::speed_help(cxt.editor);
+                        cxt.editor.autoinfo =
+                            Some(helix_view::info::Info::new("Speed keys", &rows));
+                    }
+                    None => {}
+                }
+            }
             _ => {
                 // set the count
                 cxt.count = cxt.editor.count;
@@ -1487,6 +1510,14 @@ impl Component for EditorView {
                 EventResult::Consumed(None)
             }
             Event::Key(mut key) => {
+                if let Some(prompt) = crate::roam::clock_idle_prompt(cx.editor) {
+                    // The key that ends the idle time answers nothing else.
+                    return EventResult::Consumed(Some(Box::new(
+                        move |compositor: &mut crate::compositor::Compositor, _: &mut Context| {
+                            compositor.push(prompt)
+                        },
+                    )));
+                }
                 cx.editor.reset_idle_timer();
                 canonicalize_key(&mut key);
 

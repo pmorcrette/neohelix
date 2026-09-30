@@ -191,6 +191,7 @@
 | `org_previous_sibling_heading` | Move to the previous heading at the same level |  |
 | `org_parent_heading` | Move to the parent heading |  |
 | `org_goto_heading` | Jump to a heading in this buffer by name |  |
+| `org_set_tags` | Toggle the entry's tags from the file's #+TAGS, one key each |  |
 | `org_outline_path` | Show the outline path of the entry at the cursor |  |
 | `org_sparse_tree` | Hide everything but the entries matching a filter |  |
 | `org_narrow` | Hide everything outside the subtree at the cursor |  |

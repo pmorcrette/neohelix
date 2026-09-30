@@ -349,7 +349,11 @@ pub fn follow_link(editor: &mut Editor) {
     };
 
     let Some(link) = helix_roam::hyperlink::link_at(&text, offset, &abbrevs) else {
-        editor.set_error("No Org link under the cursor");
+        // A mention of a radio target is a link too, to its `<<<target>>>`.
+        match helix_roam::hyperlink::radio_at(&text, offset) {
+            Some(target) => follow_radio(editor, &text, &target),
+            None => editor.set_error("No Org link under the cursor"),
+        }
         return;
     };
 
@@ -383,6 +387,9 @@ pub fn follow_link(editor: &mut Editor) {
         }
         helix_roam::LinkKind::Other { scheme, rest } if scheme == "attachment" => {
             follow_attachment(editor, &text, offset, &rest);
+        }
+        helix_roam::LinkKind::Other { scheme, rest } if scheme == "shell" => {
+            follow_shell(editor, &rest);
         }
         helix_roam::LinkKind::Other { scheme, .. } => {
             editor.set_error(format!("Links of type `{scheme}:` are not handled"));
@@ -494,6 +501,11 @@ fn follow_in_buffer(editor: &mut Editor, text: &str, needle: &str, what: &str) {
         Some(byte) => jump_to_byte(editor, byte),
         None => editor.set_error(format!("No {what} matching {needle}")),
     }
+}
+
+/// Jumps to a radio target, `<<<target>>>`, from a mention of it.
+fn follow_radio(editor: &mut Editor, text: &str, target: &str) {
+    follow_in_buffer(editor, text, &format!("<<<{target}>>>"), "radio target");
 }
 
 /// Hands a URL to the system, which is what following one means.
@@ -2399,6 +2411,178 @@ pub fn deadline(editor: &mut Editor, input: &str) {
     set_planning(editor, helix_roam::restructure::Planning::Deadline, input);
 }
 
+/// Org's speed keys, as `org-speed-commands` has them: a key, the command as
+/// the keymap writes it, and what it does.
+pub const SPEED_COMMANDS: &[(&str, &str, &str)] = &[
+    ("n", "org_next_heading", "next heading"),
+    ("p", "org_previous_heading", "previous heading"),
+    ("f", "org_next_sibling_heading", "next sibling"),
+    ("b", "org_previous_sibling_heading", "previous sibling"),
+    ("u", "org_parent_heading", "parent heading"),
+    ("j", ":org-goto-heading", "go to a heading"),
+    ("c", "cycle_fold", "cycle the subtree"),
+    ("C", "cycle_fold_all", "cycle the buffer"),
+    ("s", ":org-narrow", "narrow to the subtree"),
+    ("S", ":org-widen", "widen"),
+    ("k", ":org-cut-subtree", "cut the subtree"),
+    ("=", ":org-columns", "column view"),
+    ("U", ":org-move-subtree-up", "move the subtree up"),
+    ("D", ":org-move-subtree-down", "move the subtree down"),
+    ("r", ":org-demote", "demote the heading"),
+    ("l", ":org-promote", "promote the heading"),
+    ("R", ":org-demote-subtree", "demote the subtree"),
+    ("L", ":org-promote-subtree", "promote the subtree"),
+    ("i", ":org-insert-heading", "insert a heading"),
+    ("^", ":org-sort-entries", "sort the children"),
+    ("w", ":roam-refile", "refile"),
+    ("a", ":org-archive-subtree", "archive"),
+    ("I", ":org-clock-in", "clock in"),
+    ("O", ":org-clock-out", "clock out"),
+    ("t", ":org-todo", "cycle the state"),
+    (",", ":org-set-priority", "set the priority"),
+    // Not Org's `:`, which is the command line here.
+    ("T", "org_set_tags", "set the tags"),
+    ("e", ":org-set-effort", "set the effort"),
+    ("E", ":org-increment-effort", "step the effort"),
+    ("z", ":org-add-note", "add a note"),
+    ("v", ":org-agenda-dispatch", "the agenda"),
+    ("/", ":org-sparse-tree", "sparse tree"),
+    ("?", "", "this help"),
+];
+
+/// What a speed key does.
+pub enum Speed {
+    Command(crate::commands::MappableCommand),
+    Help,
+}
+
+/// The speed command a key runs, when speed keys are on and the cursor
+/// sits on the stars of a headline in an Org buffer.
+pub fn speed_command(editor: &Editor, key: helix_view::input::KeyEvent) -> Option<Speed> {
+    use helix_view::input::KeyCode;
+    use helix_view::keyboard::KeyModifiers;
+
+    let config = editor.config();
+    if !config.roam.speed_keys {
+        return None;
+    }
+    let KeyCode::Char(c) = key.code else {
+        return None;
+    };
+    if !(key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) {
+        return None;
+    }
+
+    let (view, doc) = current_ref!(editor);
+    let org = doc.language_name() == Some("org") || doc.path().is_some_and(is_org_file);
+    if !org {
+        return None;
+    }
+    let text = doc.text();
+    let cursor = doc.selection(view.id).primary().cursor(text.slice(..));
+    let line = text.char_to_line(cursor);
+    let column = cursor - text.line_to_char(line);
+    let line_text = text.line(line).to_string();
+    let stars = line_text.chars().take_while(|&c| c == '*').count();
+    let headline = stars > 0 && line_text[stars..].starts_with([' ', '\t']);
+    if !headline || column >= stars {
+        return None;
+    }
+
+    let key = c.to_string();
+    let command = match config.roam.speed_commands.get(&key) {
+        Some(command) => command.clone(),
+        None => SPEED_COMMANDS
+            .iter()
+            .find(|(own, _, _)| *own == key)?
+            .1
+            .to_string(),
+    };
+    if key == "?" && command.is_empty() {
+        return Some(Speed::Help);
+    }
+    if command.is_empty() {
+        return None;
+    }
+    match command.parse() {
+        Ok(command) => Some(Speed::Command(command)),
+        Err(_) => None,
+    }
+}
+
+/// The speed keys and what they do, for their help.
+pub fn speed_help(editor: &Editor) -> Vec<(String, String)> {
+    let overrides = &editor.config().roam.speed_commands;
+    let mut rows: Vec<(String, String)> = SPEED_COMMANDS
+        .iter()
+        .filter(|(key, _, _)| !overrides.contains_key(*key))
+        .map(|(key, _, what)| (key.to_string(), what.to_string()))
+        .collect();
+    let mut own: Vec<(&String, &String)> = overrides
+        .iter()
+        .filter(|(_, command)| !command.is_empty())
+        .collect();
+    own.sort();
+    rows.extend(
+        own.into_iter()
+            .map(|(key, command)| (key.clone(), command.clone())),
+    );
+    rows
+}
+
+/// Org's fast tag selection on the entry at the cursor: the file's
+/// `#+TAGS:` on keys, else every file's, else the tags the notes use.
+pub fn tag_select(editor: &mut Editor) -> Option<Box<dyn crate::compositor::Component>> {
+    use helix_roam::tags::{TagChoice, TagSetup};
+
+    let (text, line) = text_and_line(editor);
+    let mut setup = TagSetup::of_text(&text);
+    if setup.choices.is_empty() {
+        setup = editor.roam.read().tag_setup();
+    }
+    let tags = helix_roam::restructure::tags_at(&text, line);
+    // The tags the notes use, and the entry's own, when nothing declares
+    // them, get a key of their own on a row after the declared ones.
+    let row = setup.choices.iter().map(|c| c.row + 1).max().unwrap_or(0);
+    let mut extra: Vec<String> = if setup.choices.is_empty() {
+        known_tags(editor)
+    } else {
+        Vec::new()
+    };
+    extra.extend(tags.iter().cloned());
+    for name in extra {
+        if !setup.choices.iter().any(|choice| choice.name == name) {
+            setup.choices.push(TagChoice {
+                name,
+                key: None,
+                row,
+            });
+        }
+    }
+    if setup.choices.is_empty() {
+        editor.set_error("No tags to choose from: declare some with #+TAGS:");
+        return None;
+    }
+
+    let doc_id = doc!(editor).id();
+    Some(Box::new(crate::ui::tag_select::TagSelect::new(
+        setup,
+        tags,
+        move |cx, tags| {
+            let Some(doc) = cx.editor.documents.get(&doc_id) else {
+                return;
+            };
+            let text = doc.text().to_string();
+            let after = helix_roam::restructure::set_tags(&text, line, &tags);
+            match apply_to_document(cx.editor, doc_id, &after) {
+                Ok(()) if tags.is_empty() => cx.editor.set_status("Tags cleared"),
+                Ok(()) => cx.editor.set_status(format!("Tags :{}:", tags.join(":"))),
+                Err(err) => cx.editor.set_error(err),
+            }
+        },
+    )))
+}
+
 /// Tags used on any headline of the notes, for completing a tag prompt.
 pub fn known_tags(editor: &Editor) -> Vec<String> {
     let mut tags: Vec<String> = {
@@ -2942,7 +3126,7 @@ pub fn search_lines(editor: &Editor, search: &helix_roam::search::Search) -> Vec
 /// The projects with nothing to do next, as `stuck-projects` defines them.
 pub fn stuck_lines(editor: &Editor) -> Result<Vec<AgendaLine>, String> {
     let config = editor.config().roam.stuck_projects.clone();
-    let is_project = helix_roam::search::Match::parse(&config.query, helix_roam::Date::today())?;
+    let is_project = parse_match(editor, &config.query)?;
     let graph = editor.roam.read();
     let mut files: Vec<(&Path, &[helix_roam::Entry])> = graph
         .entries_by_file()
@@ -2963,27 +3147,33 @@ pub fn stuck_lines(editor: &Editor) -> Result<Vec<AgendaLine>, String> {
         .collect())
 }
 
+/// Reads a match, its group tags standing for their members as the notes'
+/// `#+TAGS:` lines declare them.
+pub fn parse_match(editor: &Editor, query: &str) -> Result<helix_roam::search::Match, String> {
+    let matcher = helix_roam::search::Match::parse(query, helix_roam::Date::today())?;
+    Ok(matcher.with_groups(&editor.roam.read().tag_setup()))
+}
+
 /// The lines of one block of a custom agenda view.
 pub fn block_lines(
     editor: &Editor,
     block: &helix_view::editor::AgendaBlock,
 ) -> Result<Vec<AgendaLine>, String> {
-    use helix_roam::search::{Match, Search};
+    use helix_roam::search::Search;
     use helix_view::editor::AgendaBlockKind;
 
-    let today = helix_roam::Date::today();
     let query = block.query.trim();
     Ok(match block.kind {
         AgendaBlockKind::Agenda => {
             let filter = (!query.is_empty())
-                .then(|| Match::parse(query, today))
+                .then(|| parse_match(editor, query))
                 .transpose()?;
             agenda_lines_matching(editor, block.days, filter.as_ref(), &ViewOptions::default())
         }
-        AgendaBlockKind::Todo => match_lines(editor, &Match::parse(&format!("/!{query}"), today)?),
-        AgendaBlockKind::Tags => match_lines(editor, &Match::parse(query, today)?),
+        AgendaBlockKind::Todo => match_lines(editor, &parse_match(editor, &format!("/!{query}"))?),
+        AgendaBlockKind::Tags => match_lines(editor, &parse_match(editor, query)?),
         AgendaBlockKind::TagsTodo => {
-            match_lines(editor, &Match::parse(&format!("{query}/!"), today)?)
+            match_lines(editor, &parse_match(editor, &format!("{query}/!"))?)
         }
         AgendaBlockKind::Search => search_lines(editor, &Search::parse(query)?),
         AgendaBlockKind::Stuck => stuck_lines(editor)?,
@@ -5230,6 +5420,139 @@ pub fn clock_goto(editor: &mut Editor) {
     editor.set_status(format!("Clocked in for {running}"));
 }
 
+/// An entry that has been clocked, for the history.
+#[derive(Debug, Clone)]
+pub struct Clocked {
+    pub path: PathBuf,
+    pub line: usize,
+    pub title: String,
+    /// When its latest clock started.
+    pub last: helix_roam::clock::Moment,
+    /// Whether that clock is still running.
+    pub running: bool,
+}
+
+/// Every clocked entry, the latest first: the notes' logbooks, with the
+/// open Org buffers read as they are rather than as last saved.
+pub fn clock_history(editor: &Editor) -> Vec<Clocked> {
+    let mut files: std::collections::HashMap<PathBuf, Vec<helix_roam::entry::Entry>> = editor
+        .roam
+        .read()
+        .entries_by_file()
+        .map(|(path, entries)| (path.to_path_buf(), entries.to_vec()))
+        .collect();
+    for doc in editor.documents() {
+        let Some(path) = doc.path() else {
+            continue;
+        };
+        if doc.language_name() != Some("org") && !is_org_file(path) {
+            continue;
+        }
+        let text = doc.text().to_string();
+        let settings = helix_roam::FileSettings::scan(&text);
+        files.insert(
+            path.to_path_buf(),
+            helix_roam::entry::entries(&text, path, &settings),
+        );
+    }
+    helix_roam::clock::history(files.values().flatten())
+        .into_iter()
+        .map(|(entry, last)| Clocked {
+            path: entry.file_path.clone(),
+            line: entry.line,
+            title: entry.title.clone(),
+            last,
+            running: entry.clocks.iter().any(|(_, end)| end.is_none()),
+        })
+        .collect()
+}
+
+/// Opens a clocked entry and clocks in to it.
+pub fn clock_in_to(editor: &mut Editor, entry: &Clocked) {
+    if let Err(err) = editor.open(&entry.path, helix_view::editor::Action::Replace) {
+        editor.set_error(format!("Could not open {}: {err}", entry.path.display()));
+        return;
+    }
+    goto_heading_line(editor, entry.line);
+    clock_in(editor);
+}
+
+/// Clocks in to the entry clocked most recently, as Org's
+/// `org-clock-in-last` does.
+pub fn clock_in_last(editor: &mut Editor) {
+    let Some(last) = clock_history(editor).into_iter().next() else {
+        editor.set_error("Nothing has been clocked yet");
+        return;
+    };
+    if last.running {
+        editor.set_status(format!("Already clocked in to {}", last.title));
+        return;
+    }
+    clock_in_to(editor, &last);
+}
+
+/// After `clock-idle-minutes` without a key while a clock runs, asks what
+/// to do with the idle time: keep it, subtract it, stop the clock where it
+/// began, or cancel the clock. Called on every key, and records the key.
+pub fn clock_idle_prompt(editor: &mut Editor) -> Option<Box<dyn crate::compositor::Component>> {
+    let now = std::time::Instant::now();
+    let last = std::mem::replace(&mut editor.org_last_key, now);
+    let threshold = editor.config().roam.clock_idle_minutes;
+    if threshold == 0 {
+        return None;
+    }
+    let idle = now.saturating_duration_since(last).as_secs() / 60;
+    if idle < threshold {
+        return None;
+    }
+    let (_, text) = find_running_clock(editor)?;
+    let clock = helix_roam::clock::running(&text)?;
+    let idle = (idle as i64).min(clock.minutes(now_moment()));
+    let question = format!(
+        "Idle {} on {}: k keep, s subtract, S stop there, C cancel the clock: ",
+        helix_roam::clock::format_duration(idle),
+        clock_title(&text)
+    );
+    Some(Box::new(crate::ui::Prompt::new(
+        question.into(),
+        None,
+        |_editor, _input| Vec::new(),
+        move |cx, input, event| {
+            if event == crate::ui::PromptEvent::Validate {
+                resolve_idle(cx.editor, input.trim(), idle);
+            }
+        },
+    )))
+}
+
+fn resolve_idle(editor: &mut Editor, key: &str, idle: i64) {
+    use helix_roam::clock::IdleChoice;
+
+    let Some(choice) = IdleChoice::from_key(if key.is_empty() { "k" } else { key }) else {
+        editor.set_error(format!(
+            "`{key}` is none of k, s, S and C; the idle time is kept"
+        ));
+        return;
+    };
+    let Some((home, text)) = find_running_clock(editor) else {
+        editor.set_error("No clock is running");
+        return;
+    };
+    let result = helix_roam::clock::resolve_idle(&text, idle, choice, now_moment())
+        .map_err(|err| err.to_string())
+        .and_then(|after| write_home(editor, &home, &after));
+    let idle = helix_roam::clock::format_duration(idle);
+    match result {
+        Ok(()) => editor.set_status(match choice {
+            IdleChoice::Keep => format!("Kept {idle} of idle time"),
+            IdleChoice::Subtract => format!("Subtracted {idle} of idle time; still clocked in"),
+            IdleChoice::Stop => format!("Clocked out {idle} ago, when the idle time began"),
+            IdleChoice::Cancel => "Cancelled the clock".to_string(),
+        }),
+        Err(err) => editor.set_error(err),
+    }
+}
+
 /// Inserts a clock report for the file at the cursor, or refreshes the one
 /// the cursor is in.
 pub fn clock_report(editor: &mut Editor) {
@@ -5748,6 +6071,115 @@ pub fn babel_execute(editor: &mut Editor) {
         );
         compositor.push(Box::new(prompt));
     });
+}
+
+/// Runs a `shell:` link's command, behind the same gates as a source
+/// block: the workspace trusted for running code, and each run confirmed,
+/// naming the command and where it runs. Org confirms these too, with
+/// `org-link-shell-confirm-function`.
+fn follow_shell(editor: &mut Editor, command: &str) {
+    let command = command.trim().to_string();
+    if command.is_empty() {
+        editor.set_error("The shell: link has no command");
+        return;
+    }
+    let doc = doc!(editor);
+    let dir = doc
+        .path()
+        .and_then(|path| path.parent())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(helix_stdx::env::current_working_dir);
+    let workspace = doc.workspace_root().to_path_buf();
+    let trusted = editor
+        .workspace_trust
+        .query(
+            &workspace,
+            helix_loader::workspace_trust::TrustQuery::CodeExecution,
+        )
+        .is_trusted();
+    if !trusted {
+        editor.set_error(format!(
+            "Running code is not trusted in {}; :workspace-trust allows it",
+            workspace.display()
+        ));
+        return;
+    }
+
+    let question = format!("Run `{command}` in {}? [y/N] ", dir.display());
+    crate::job::dispatch_blocking(move |_editor, compositor| {
+        let mut pending = Some((command, dir));
+        let prompt = crate::ui::Prompt::new(
+            question.into(),
+            None,
+            |_editor, _input| Vec::new(),
+            move |cx, input, event| {
+                if event != crate::ui::PromptEvent::Validate {
+                    return;
+                }
+                if !matches!(input.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+                    cx.editor.set_status("Not run");
+                    return;
+                }
+                if let Some((command, dir)) = pending.take() {
+                    run_shell_link(cx.editor, command, dir);
+                }
+            },
+        );
+        compositor.push(Box::new(prompt));
+    });
+}
+
+/// Runs a confirmed `shell:` command through the editor's shell, in the
+/// background, with the time limit blocks have.
+fn run_shell_link(editor: &mut Editor, command: String, dir: PathBuf) {
+    let mut argv = editor.config().shell.clone();
+    if argv.is_empty() {
+        argv = vec!["sh".to_string(), "-c".to_string()];
+    }
+    argv.push(command.clone());
+    editor.set_status(format!("Running `{command}`…"));
+    tokio::spawn(async move {
+        let result = run_command(&argv, &dir, &[]).await;
+        crate::job::dispatch(move |editor, _| match result {
+            Ok(output) => show_shell_output(editor, &command, output),
+            Err(err) => editor.set_error(err),
+        })
+        .await;
+    });
+}
+
+/// A line of output goes to the status line; more opens in a new buffer,
+/// as Emacs's `shell-command` does.
+fn show_shell_output(editor: &mut Editor, command: &str, output: std::process::Output) {
+    let mut text = String::from_utf8_lossy(&output.stdout).to_string();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    let failed = !output.status.success();
+    let code = output
+        .status
+        .code()
+        .map_or_else(|| "a signal".to_string(), |code| code.to_string());
+    let trimmed = text.trim_end();
+    if trimmed.lines().count() <= 1 {
+        let said = if trimmed.is_empty() {
+            "(no output)"
+        } else {
+            trimmed
+        };
+        if failed {
+            editor.set_error(format!("`{command}` exited with {code}: {said}"));
+        } else {
+            editor.set_status(said.to_string());
+        }
+        return;
+    }
+    let id = editor.new_file(helix_view::editor::Action::HorizontalSplit);
+    let _ = apply_to_document(editor, id, &format!("{trimmed}\n"));
+    let message = format!("`{command}` exited with {code}; its output is in this buffer");
+    if failed {
+        editor.set_error(message);
+    } else {
+        editor.set_status(message);
+    }
 }
 
 /// The texts of the Library of Babel's files, as configured.
@@ -6499,6 +6931,65 @@ pub fn graph(editor: &mut Editor, depth: Option<usize>) {
     });
 }
 
+/// Opens the graph in a browser, to be explored rather than looked at: a
+/// page like Org-Roam UI's, with the nodes to drag, zoom, search, filter by
+/// tag and narrow to a neighbourhood. With a depth, it opens on the node at
+/// the cursor and the nodes within that many links of it.
+///
+/// The page is one file holding the graph, so it needs no server; running
+/// the command again writes it afresh from the index.
+pub fn graph_ui(editor: &mut Editor, depth: Option<usize>) {
+    let center = match depth {
+        None => None,
+        Some(depth) => match node_at_cursor(editor) {
+            Some((id, _)) => Some((id, depth)),
+            None => {
+                editor.set_error("No node at the cursor to open the graph on");
+                return;
+            }
+        },
+    };
+    let page = {
+        let graph = editor.roam.read();
+        if graph.is_empty() {
+            drop(graph);
+            editor.set_error("The index is empty: nothing to draw");
+            return;
+        }
+        if let Some((id, _)) = center {
+            if !graph.contains_node(&id) {
+                drop(graph);
+                editor.set_error(
+                    "The node at the cursor is not in the index yet; save and try again",
+                );
+                return;
+            }
+        }
+        helix_roam::visual::html(&graph, center)
+    };
+    let dir = std::env::temp_dir().join("neohelix-graph");
+    let file = dir.join("roam-ui.html");
+    if let Err(err) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&file, page)) {
+        editor.set_error(format!("Could not write {}: {err}", file.display()));
+        return;
+    }
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    if cfg!(target_os = "windows") || on_path(opener).is_some() {
+        open_externally(editor, &file.to_string_lossy());
+    } else {
+        editor.set_status(format!(
+            "Wrote {}; {opener} is not installed to open it",
+            file.display()
+        ));
+    }
+}
+
 // ── Inline tasks ──────────────────────────────────────────────────────────
 
 /// Inserts an inline task below the cursor's line, with its `END` line.
@@ -6945,4 +7436,216 @@ pub fn decrypt_entry(editor: &mut Editor) {
             Err(err) => editor.set_error(format!("Not decrypted: {err}")),
         }
     });
+}
+
+// ── Timers ─────────────────────────────────────────────────────────────────
+
+/// Bumped each time a timer starts or stops, so the ticking task of a timer
+/// that is gone knows to end.
+static TIMER_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Makes `timer` the editor's timer, and ticks the status line once a
+/// second while it runs.
+fn run_timer(editor: &mut Editor, timer: helix_roam::timer::Timer) {
+    use std::sync::atomic::Ordering;
+
+    editor.org_timer = Some(timer);
+    let generation = TIMER_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            if TIMER_GENERATION.load(Ordering::SeqCst) != generation {
+                break;
+            }
+            crate::job::dispatch(timer_tick).await;
+        }
+    });
+}
+
+/// Forgets the timer, which ends its ticking.
+fn drop_timer(editor: &mut Editor) -> Option<helix_roam::timer::Timer> {
+    TIMER_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    editor.org_timer.take()
+}
+
+/// One second on: a countdown that has run out ends, and a pomodoro's
+/// phase gives way to the next.
+fn timer_tick(editor: &mut Editor, _: &mut crate::compositor::Compositor) {
+    let Some(timer) = editor.org_timer else {
+        return;
+    };
+    let now = std::time::Instant::now();
+    if timer.expired(now) {
+        match timer.next_phase(now) {
+            Some(next) => {
+                editor.org_timer = Some(next);
+                let minutes = next.length().unwrap_or_default().as_secs() / 60;
+                let phase = match next.kind {
+                    helix_roam::timer::Kind::Pomodoro { phase, .. } => phase.name(),
+                    _ => "",
+                };
+                editor.set_warning(format!("Pomodoro: {phase} for {minutes} min"));
+            }
+            None => {
+                drop_timer(editor);
+                editor.set_warning("Countdown finished");
+            }
+        }
+    }
+    helix_event::request_redraw();
+}
+
+/// Starts a relative timer, reading `offset` already.
+pub fn timer_start(editor: &mut Editor, offset: std::time::Duration) {
+    run_timer(
+        editor,
+        helix_roam::timer::Timer::relative(std::time::Instant::now(), offset),
+    );
+    editor.set_status(format!(
+        "Timer started at {}",
+        helix_roam::timer::hms(offset)
+    ));
+}
+
+/// The relative timer's reading, starting one if none runs, as Org does.
+fn timer_reading(editor: &mut Editor) -> String {
+    let now = std::time::Instant::now();
+    match editor.org_timer {
+        Some(timer) if timer.kind == helix_roam::timer::Kind::Relative => {
+            helix_roam::timer::hms(timer.elapsed(now))
+        }
+        _ => {
+            run_timer(
+                editor,
+                helix_roam::timer::Timer::relative(now, Default::default()),
+            );
+            helix_roam::timer::hms(Default::default())
+        }
+    }
+}
+
+/// Inserts the relative timer's reading at each cursor.
+pub fn timer_insert(editor: &mut Editor) {
+    let reading = timer_reading(editor);
+    let (view, doc) = current!(editor);
+    let transaction = helix_core::Transaction::insert(
+        doc.text(),
+        doc.selection(view.id),
+        format!("{reading} ").into(),
+    );
+    doc.apply(&transaction, view.id);
+}
+
+/// Starts a list item of notes taken against the timer, `- 0:03:12 :: `,
+/// on a line of its own below the cursor unless that line is empty.
+pub fn timer_item(editor: &mut Editor) {
+    let reading = timer_reading(editor);
+    let (text, line) = text_and_line(editor);
+    let current = text.lines().nth(line).unwrap_or("");
+    let indent: String = current.chars().take_while(|c| c.is_whitespace()).collect();
+    let item = format!("{indent}- {reading} :: ");
+
+    let (view, doc) = current!(editor);
+    let rope = doc.text();
+    let line = line.min(rope.len_lines().saturating_sub(1));
+    let (at, inserted) = if current.trim().is_empty() {
+        (rope.line_to_char(line), item.clone())
+    } else {
+        let end = rope.line_to_char(line) + rope.line(line).len_chars();
+        let end = if rope.line(line).chars().last() == Some('\n') {
+            end - 1
+        } else {
+            end
+        };
+        (end, format!("\n{item}"))
+    };
+    let replaced_end = if current.trim().is_empty() {
+        at + rope.line(line).chars().take_while(|c| *c != '\n').count()
+    } else {
+        at
+    };
+    let cursor = at + inserted.chars().count();
+    let transaction = helix_core::Transaction::change(
+        rope,
+        [(at, replaced_end, Some(inserted.into()))].into_iter(),
+    )
+    .with_selection(helix_core::Selection::point(cursor));
+    doc.apply(&transaction, view.id);
+    // Ready for the note, as Org leaves it.
+    editor.mode = helix_view::document::Mode::Insert;
+}
+
+/// Pauses the timer, or lets a paused one run again.
+pub fn timer_pause_or_continue(editor: &mut Editor) {
+    let now = std::time::Instant::now();
+    let Some(timer) = editor.org_timer.as_mut() else {
+        editor.set_error("No timer is running");
+        return;
+    };
+    if timer.is_paused() {
+        timer.resume(now);
+        editor.set_status("Timer continued");
+    } else {
+        timer.pause(now);
+        editor.set_status("Timer paused");
+    }
+}
+
+/// Stops the timer, saying what it read.
+pub fn timer_stop(editor: &mut Editor) {
+    match drop_timer(editor) {
+        Some(timer) => editor.set_status(format!(
+            "Timer stopped at {}",
+            timer.display(std::time::Instant::now())
+        )),
+        None => editor.set_error("No timer is running"),
+    }
+}
+
+/// Starts a countdown of `input`, or of the entry's effort when `input` is
+/// empty.
+pub fn timer_set(editor: &mut Editor, input: &str) {
+    let input = if input.trim().is_empty() {
+        let (text, line) = text_and_line(editor);
+        match helix_roam::restructure::property_value(&text, line, "EFFORT") {
+            Some(effort) => effort,
+            None => {
+                editor.set_error("Give a length, e.g. `25` or `1:30`, or set an effort");
+                return;
+            }
+        }
+    } else {
+        input.trim().to_string()
+    };
+    let Some(length) = helix_roam::timer::parse_duration(&input).filter(|d| !d.is_zero()) else {
+        editor.set_error(format!(
+            "`{input}` is not a length, e.g. `25`, `1:30` or `1h30m`"
+        ));
+        return;
+    };
+    run_timer(
+        editor,
+        helix_roam::timer::Timer::countdown(std::time::Instant::now(), length),
+    );
+    editor.set_status(format!("Countdown of {}", helix_roam::timer::hms(length)));
+}
+
+/// Starts a pomodoro, or stops the one running.
+pub fn pomodoro(editor: &mut Editor) {
+    if let Some(timer) = editor.org_timer {
+        if matches!(timer.kind, helix_roam::timer::Kind::Pomodoro { .. }) {
+            drop_timer(editor);
+            editor.set_status("Pomodoro stopped");
+            return;
+        }
+    }
+    let lengths = editor.config().roam.pomodoro.lengths();
+    run_timer(
+        editor,
+        helix_roam::timer::Timer::pomodoro(std::time::Instant::now(), lengths),
+    );
+    editor.set_status(format!(
+        "Pomodoro: work for {} min",
+        lengths.work.as_secs() / 60
+    ));
 }

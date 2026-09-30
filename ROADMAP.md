@@ -1372,17 +1372,28 @@ column moves.
 
 ### Task 1.28: Everyday Conveniences
 
-- [ ] Fast tag selection: the tags of `#+TAGS` on keys, toggled in one popup.
-- [ ] Tag groups and hierarchies (`#+TAGS: [ Project : Work Home ]`), which
+- [x] Fast tag selection: the tags of `#+TAGS` on keys, toggled in one popup.
+- [x] Tag groups and hierarchies (`#+TAGS: [ Project : Work Home ]`), which
       searches and the agenda expand.
-- [ ] Speed keys: one-key commands when the cursor is on a headline's stars.
-- [ ] Radio targets (`<<<target>>>`), which turn every mention into a link.
-- [ ] Timers: a relative timer, a countdown and a pomodoro in the status line.
-- [ ] Clocking, continued: idle detection, the history of clocked entries,
+- [x] Speed keys: one-key commands when the cursor is on a headline's stars.
+- [x] Radio targets (`<<<target>>>`), which turn every mention into a link.
+- [x] Timers: a relative timer, a countdown and a pomodoro in the status line.
+- [x] Clocking, continued: idle detection, the history of clocked entries,
       and resuming the last one.
-- [ ] `shell:` links, behind the same trust decision as Babel.
-- [ ] An interactive graph in a browser (Org-Roam UI); Graphviz covers the
+- [x] `shell:` links, behind the same trust decision as Babel.
+- [x] An interactive graph in a browser (Org-Roam UI); Graphviz covers the
       static one.
+
+*Done.* `:org-set-tags` toggles the `#+TAGS:` on one key each, exclusive
+groups included, and group tags and hierarchies expand in matches and the
+agenda. Speed keys are opt-in (`speed-keys`), with `T` for Org's `:`, which
+is the command line here. Radio targets link their mentions when followed
+and in every export. The timers show in the status line's `org-timer`
+element. Idle detection counts from the last key pressed, as the editor sees
+no other; the clock history is read from the logbooks, so it outlives the
+session. `shell:` links share Babel's trust and confirmation. `:roam-ui`
+writes a self-contained page, with its own force layout, rather than serving
+one: it needs no server and no network, and running it again refreshes it.
 
 ---
 

@@ -124,7 +124,7 @@ The `[editor.statusline]` key takes the following sub-keys:
 | ---           | ---         | ---     |
 | `left`        | A list of elements aligned to the left of the statusline | `["mode", "spinner", "file-name", "read-only-indicator", "file-modification-indicator"]` |
 | `center`      | A list of elements aligned to the middle of the statusline | `[]` |
-| `right`       | A list of elements aligned to the right of the statusline | `["diagnostics", "selections", "register", "position", "file-encoding"]` |
+| `right`       | A list of elements aligned to the right of the statusline | `["org-timer", "diagnostics", "selections", "register", "position", "file-encoding"]` |
 | `separator`   | The character used to separate elements in the statusline | `"│"` |
 | `mode.normal` | The text shown in the `mode` element for normal mode | `"NOR"` |
 | `mode.insert` | The text shown in the `mode` element for insert mode | `"INS"` |
@@ -160,6 +160,7 @@ The following statusline elements can be configured:
 | `version-control` | The current branch name or detached commit hash of the opened workspace |
 | `register` | The current selected register |
 | `code-action-hint` | Indicator for when code actions are available |
+| `org-timer` | Org's timer, countdown or pomodoro, while one runs |
 
 ### `[editor.lsp]` Section
 
@@ -622,6 +623,63 @@ Formulas (`#+TBLFM:`) are Calc's, as far as a table goes:
 
 As in Org, a word in a field is a variable: `$2=$1*2` on `two` gives `2 two`.
 The unit `h` is the hour here, where Calc makes it Planck's constant.
+
+#### Everyday conveniences
+
+| Key | Description | Default |
+|--|--|---------|
+|`speed-keys` | One-key commands on a headline's stars, in normal mode | `false` |
+|`speed-commands` | Speed keys added or changed, a key to a command as the keymap writes it (`"x" = ":org-cut-subtree"`); an empty command takes the key away | `{}` |
+|`pomodoro` | `work`, `short-break`, `long-break` (minutes) and `long-break-every` (sessions) | `25`, `5`, `15`, `4` |
+|`clock-idle-minutes` | Minutes without a key, with a clock running, after which the idle time is asked about; `0` never asks | `0` |
+
+**Tags.** `:org-set-tags` shows the tags of the file's `#+TAGS:` lines, one key
+each (`@office(o)`, or the first free letter), and toggles them on the entry at
+the cursor; `Space` clears them, `Enter` writes them. A tag in `{ … }` turns the
+others of its group off. A group tag, `[ Project : alpha beta ]` or
+`{ Context : @office @home }`, finds its members in matches and in the agenda,
+hierarchies included; a member written `{p@.+}` is a regular expression.
+
+**Speed keys.** With `speed-keys` on and the cursor on a headline's stars, one
+key runs a command: `t` the state, `,` the priority, `T` the tags, `e` and `E`
+the effort, `I` and `O` the clock, `n`, `p`, `f`, `b`, `u` and `j` to move,
+`c` and `C` to fold, `U`, `D`, `r`, `l`, `R`, `L` to restructure, `i` a new
+heading, `k` cut, `w` refile, `a` archive, `s` and `S` narrow and widen, `v`
+the agenda, `/` a sparse tree, and `?` lists them. Org's `:` is `T` here: `:`
+is the command line.
+
+**Radio targets.** `<<<target>>>` makes every mention of *target* in the file,
+in any case, a link to it: `:org-follow-link` on a mention goes there, and the
+exports link each mention to it, as they link `[[target]]` to a `<<target>>`.
+
+**Timers.** `:org-timer-start [offset]` starts a timer counting up,
+`:org-timer` inserts its reading, and `:org-timer-item` starts a list item
+stamped with it, for notes taken against a recording or a meeting.
+`:org-timer-set-timer 25` (or `1:30`, `1h30m`) counts down, from the entry's
+`EFFORT` when no length is given, and says when it ends.
+`:org-timer-pause-or-continue` and `:org-timer-stop` apply to either.
+`:org-pomodoro` runs work and breaks in turn, and stops the one running. The
+status line's `org-timer` element shows whichever runs.
+
+**Clocking.** `:org-clock-history` lists the entries clocked before, the latest
+first, and clocks in to the one chosen; `:org-clock-in-last` clocks in to the
+latest again. With `clock-idle-minutes` set, the first key after that long
+away, with a clock running, asks what to do with the idle time: `k` keep it,
+`s` subtract it and go on, `S` stop the clock where it began, `C` cancel the
+clock.
+
+**`shell:` links.** `[[shell:make test]]` runs its command through the editor's
+`shell` in the file's directory, behind the same gates as a source block: a
+workspace trusted for running code, and each run confirmed. One line of output
+is shown in the status line, more in a new buffer.
+
+**The graph in a browser.** `:roam-ui` opens the graph in a browser, to be
+explored the way Org-Roam UI's is: dragged, zoomed, searched, filtered by tag,
+and narrowed to a node's neighbourhood, with a node's links and backlinks
+beside it. `:roam-ui 2` opens it on the node at the cursor. The page is one
+file holding the graph, so it needs no server; running the command again
+brings it up to date. Its *Open in the editor* link is an
+`org-protocol://roam-node` URL, for the handler of the protocol.
 
 ### `[editor.integrated-terminal]` Section
 

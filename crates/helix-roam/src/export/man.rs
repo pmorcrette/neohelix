@@ -62,6 +62,7 @@ fn one(inline: &Inline, cx: &mut Context) -> String {
         }
         Inline::Footnote(label) => format!("[{}]", cx.footnote_number(label)),
         Inline::LineBreak => "\n.br\n".to_string(),
+        Inline::Target { text, .. } => text.as_deref().map(escape).unwrap_or_default(),
         Inline::Citation {
             style,
             cites,

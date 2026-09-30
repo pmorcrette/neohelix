@@ -156,6 +156,15 @@
 | `:org-clock-out` | Stop the running clock. |
 | `:org-clock-cancel` | Discard the running clock. |
 | `:org-clock-goto` | Jump to the entry with the running clock. |
+| `:org-timer-start` | Start a relative timer, reading an offset (`10`, `0:10:00`) if one is given. |
+| `:org-timer` | Insert the relative timer's reading at the cursor, starting it if needed. |
+| `:org-timer-item` | Start a list item stamped with the relative timer's reading. |
+| `:org-timer-pause-or-continue` | Pause the running timer, or continue a paused one. |
+| `:org-timer-stop` | Stop the running timer. |
+| `:org-timer-set-timer` | Start a countdown (`25`, `1:30`, `1h30m`), of the entry's effort if no length is given. |
+| `:org-pomodoro` | Start a pomodoro of work and breaks, or stop the running one. |
+| `:org-clock-in-last` | Clock in to the entry clocked most recently. |
+| `:org-clock-history` | Pick from the entries clocked before, the latest first, and clock in to it. |
 | `:org-clock-report` | Insert or refresh a clock report table. |
 | `:org-export` | Export the buffer next to its file: html (the default), md, latex, pdf, beamer, beamer-pdf, ascii, utf8, man, texi, odt or org; then `subtree` for the subtree at the cursor, `body` for the body alone, `async` in the background. |
 | `:org-icalendar-export` | Write the buffer's scheduled, deadline and dated entries to an iCalendar file next to it. |
@@ -174,6 +183,7 @@
 | `:org-decrypt-entry` | Decrypt the entry at the cursor. |
 | `:org-inline-task` | Insert an inline task, with its END line, below the cursor. |
 | `:roam-graph` | Draw the Org-Roam graph with Graphviz; with a depth, only the nodes that many links from the one at the cursor. |
+| `:roam-ui` | Explore the Org-Roam graph in a browser; with a depth, around the node at the cursor. |
 | `:org-attach` | Copy a file into the attachment directory of the entry at the cursor. |
 | `:org-attach-open` | Pick one of the files attached to the entry at the cursor. |
 | `:org-copy-subtree` | Copy the subtree at the cursor. |
@@ -224,6 +234,7 @@
 | `:roam-dailies-date` | Open the daily note for a date, creating it if needed. |
 | `:roam-dailies-next` | Open the next daily note that exists. |
 | `:roam-dailies-previous` | Open the previous daily note that exists. |
+| `:org-set-tags-command`, `:org-set-tags` | Choose the tags of the entry at the cursor in one popup, a key per tag of #+TAGS:, exclusive groups respected. |
 | `:roam-tag-add` | Add a tag to the node at the cursor. |
 | `:roam-tag-remove` | Remove a tag from the node at the cursor. |
 | `:roam-ref-add` | Add a ref to the node at the cursor. |

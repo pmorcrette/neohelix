@@ -125,6 +125,7 @@ fn one(inline: &Inline, set: &Charset, cx: &mut Context) -> String {
         }
         Inline::Footnote(label) => format!("[{}]", cx.footnote_number(label)),
         Inline::LineBreak => "\n".to_string(),
+        Inline::Target { text, .. } => text.clone().unwrap_or_default(),
         Inline::Citation {
             style,
             cites,

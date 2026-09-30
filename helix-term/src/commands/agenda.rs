@@ -56,7 +56,7 @@ pub fn org_match_picker(
     } else {
         query.to_string()
     };
-    let matcher = match helix_roam::search::Match::parse(&query, helix_roam::Date::today()) {
+    let matcher = match crate::roam::parse_match(editor, &query) {
         Ok(matcher) => matcher,
         Err(err) => {
             editor.set_error(err);

@@ -54,6 +54,8 @@ pub struct RoamGraph {
     /// Every headline of every file, by file: what the agenda reads, since
     /// a task need not be a node.
     entries: HashMap<PathBuf, Vec<crate::entry::Entry>>,
+    /// What each file's `#+TAGS:` declares, for the files that declare some.
+    tag_setups: HashMap<PathBuf, crate::tags::TagSetup>,
 }
 
 impl RoamGraph {
@@ -193,6 +195,7 @@ impl RoamGraph {
         }
 
         self.entries.remove(path);
+        self.tag_setups.remove(path);
 
         // Locations pointing at this file go with its nodes: the file has
         // just been re-read, and whatever it no longer declares is no longer
@@ -370,6 +373,28 @@ impl RoamGraph {
     /// The headlines read from `path`.
     pub fn entries_in_file(&self, path: &Path) -> &[crate::entry::Entry] {
         self.entries.get(path).map_or(&[], Vec::as_slice)
+    }
+
+    /// Sets what `path`'s `#+TAGS:` lines declare, replacing what it had.
+    pub fn set_tag_setup(&mut self, path: impl Into<PathBuf>, setup: crate::tags::TagSetup) {
+        let path = path.into();
+        if setup == crate::tags::TagSetup::default() {
+            self.tag_setups.remove(&path);
+        } else {
+            self.tag_setups.insert(path, setup);
+        }
+    }
+
+    /// The tags and groups every file declares, together: what a search
+    /// across the notes expands group tags by, as Org's agenda does.
+    pub fn tag_setup(&self) -> crate::tags::TagSetup {
+        let mut paths: Vec<&PathBuf> = self.tag_setups.keys().collect();
+        paths.sort();
+        let mut all = crate::tags::TagSetup::default();
+        for path in paths {
+            all.merge(&self.tag_setups[path]);
+        }
+        all
     }
 
     fn neighbours(&self, node_id: &Uuid, direction: Direction) -> Vec<(&Node, &Link)> {

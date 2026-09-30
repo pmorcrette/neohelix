@@ -833,6 +833,23 @@ pub struct RoamConfig {
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub babel_library: Vec<PathBuf>,
+    /// Org's speed keys: in normal mode, with the cursor on a headline's
+    /// stars, one key runs a command (`t` the state, `I` the clock…). Off
+    /// by default, as `org-use-speed-commands` is in Org.
+    #[serde(default)]
+    pub speed_keys: bool,
+    /// Speed keys added or changed, a key to a command as the keymap writes
+    /// it (`"x" = ":org-cut-subtree"`); an empty command takes a key away.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub speed_commands: HashMap<String, String>,
+    /// A pomodoro's lengths, for `:org-pomodoro`.
+    #[serde(default)]
+    pub pomodoro: PomodoroConfig,
+    /// Minutes without a key pressed, with a clock running, after which
+    /// the editor asks what to do with the idle time. `0` never asks.
+    #[serde(default)]
+    pub clock_idle_minutes: u64,
     /// The command that makes a PDF of a LaTeX export, `%f` standing for
     /// the `.tex` file, run in its directory. Empty: `latexmk` if it is
     /// installed, else `pdflatex` twice.
@@ -969,6 +986,40 @@ impl Default for StuckProjects {
                 "NEXTACTION".to_string(),
             ],
             tags: Vec::new(),
+        }
+    }
+}
+
+/// `[editor.roam.pomodoro]`, in minutes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct PomodoroConfig {
+    pub work: u64,
+    pub short_break: u64,
+    pub long_break: u64,
+    /// Every how many work sessions the break is a long one.
+    pub long_break_every: u32,
+}
+
+impl Default for PomodoroConfig {
+    fn default() -> Self {
+        Self {
+            work: 25,
+            short_break: 5,
+            long_break: 15,
+            long_break_every: 4,
+        }
+    }
+}
+
+impl PomodoroConfig {
+    pub fn lengths(&self) -> helix_roam::timer::Pomodoro {
+        let minutes = |m: u64| std::time::Duration::from_secs(m * 60);
+        helix_roam::timer::Pomodoro {
+            work: minutes(self.work),
+            short_break: minutes(self.short_break),
+            long_break: minutes(self.long_break),
+            long_break_every: self.long_break_every,
         }
     }
 }
@@ -1132,6 +1183,10 @@ impl Default for RoamConfig {
             agenda_columns: default_agenda_columns(),
             latex_compiler: Vec::new(),
             babel_library: Vec::new(),
+            speed_keys: false,
+            speed_commands: HashMap::new(),
+            pomodoro: PomodoroConfig::default(),
+            clock_idle_minutes: 0,
             icalendar_file: default_icalendar_file(),
             publish: Vec::new(),
             todo_dependencies: false,
@@ -1373,6 +1428,7 @@ impl Default for StatusLineConfig {
             ],
             center: vec![],
             right: vec![
+                E::OrgTimer,
                 E::Diagnostics,
                 E::Selections,
                 E::Register,
@@ -1479,6 +1535,9 @@ pub enum StatusLineElement {
 
     /// Indicator for when code actions are available
     CodeActionHint,
+
+    /// Org's timer, countdown or pomodoro, while one runs
+    OrgTimer,
 }
 
 // Cursor shape is read and used on every rendered frame and so needs
@@ -2055,6 +2114,11 @@ pub struct Editor {
     /// A hint, not the record: the running clock is whatever `CLOCK:` line
     /// has no end, and a file edited elsewhere may disagree with this.
     pub org_clock: Option<PathBuf>,
+    /// The timer `:org-timer-start`, `:org-timer-set-timer` or
+    /// `:org-pomodoro` started, which the status line shows.
+    pub org_timer: Option<helix_roam::timer::Timer>,
+    /// When a key was last pressed, which tells idle time on a clock.
+    pub org_last_key: std::time::Instant,
 
     /// The last subtree cut or copied, waiting to be pasted.
     ///
@@ -2224,6 +2288,8 @@ impl Editor {
             roam_unlinked: None,
             org_src_edits: HashMap::new(),
             org_clock: None,
+            org_timer: None,
+            org_last_key: std::time::Instant::now(),
             org_clip: None,
             pending_commit: None,
             pending_rebase: None,
