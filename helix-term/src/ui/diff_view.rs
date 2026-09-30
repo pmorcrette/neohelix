@@ -93,7 +93,7 @@ struct Item {
     text: String,
     /// A commit's author and date, for the margin.
     stamp: Option<Stamp>,
-    /// A listed repository's directory.
+    /// A listed repository's directory, or a keyword comment's file.
     path: Option<PathBuf>,
 }
 
@@ -470,8 +470,8 @@ static TODO_SETTINGS: std::sync::RwLock<Option<(Vec<String>, usize)>> =
 
 /// Takes the TODO section's settings from the configuration.
 pub fn set_todo_settings(config: &helix_view::editor::MagitConfig) {
-    let settings = config
-        .todos
+    // Listing none is the same as not listing them.
+    let settings = (config.todos && config.todos_max > 0)
         .then(|| (config.todo_keywords.clone(), config.todos_max));
     if let Ok(mut current) = TODO_SETTINGS.write() {
         *current = settings;
@@ -603,6 +603,10 @@ pub struct DiffView {
     /// Where a selection started (`C-Space`), as a row: the region runs
     /// from here to the cursor.
     mark: Option<usize>,
+    /// The keyword comments, read once when the status opens: staging or
+    /// committing does not change them, and the scan reads every file. The
+    /// menu's `g` opens the status afresh, which reads them again.
+    todos: Option<helix_magit::status::Todos>,
 }
 
 /// The views built on the status buffer's rendering.
@@ -705,6 +709,7 @@ impl DiffView {
             moved: HashSet::new(),
             margin: STATUS_MARGIN.get(),
             mark: None,
+            todos: None,
         };
         view.replace_sections(vec![Section {
             kind: SectionKind::Commit,
@@ -909,6 +914,7 @@ impl DiffView {
             moved: HashSet::new(),
             margin: STATUS_MARGIN.get(),
             mark: None,
+            todos: None,
         }
     }
 
@@ -1120,6 +1126,7 @@ impl DiffView {
             moved: HashSet::new(),
             margin: STATUS_MARGIN.get(),
             mark: None,
+            todos: None,
         };
         view.reload(&repository)?;
         Ok(view)
@@ -1210,7 +1217,10 @@ impl DiffView {
             return Ok(());
         }
         let mut overview = helix_magit::status::read(repository.workdir());
-        overview.todos = read_todos(repository.workdir());
+        overview.todos = self
+            .todos
+            .get_or_insert_with(|| read_todos(repository.workdir()))
+            .clone();
 
         self.head = repository.head_description();
         self.header = header_lines(&overview);
@@ -1705,6 +1715,12 @@ impl DiffView {
                     format!("Drop {} ({})? (y/N)", item.label, item.text),
                     Discard::Stash(item.label.clone()),
                 )),
+                SectionKind::Todos => {
+                    Err("A comment: edit it in its file (RET visits it)".to_string())
+                }
+                SectionKind::Assumed | SectionKind::Skipped => {
+                    Err("A file git is told to leave alone; see the file dispatch".to_string())
+                }
                 _ => Err("Commits cannot be discarded; see the reset menu".to_string()),
             };
         }
@@ -3295,6 +3311,7 @@ mod tests {
             moved: HashSet::new(),
             margin: STATUS_MARGIN.get(),
             mark: None,
+            todos: None,
         };
         view.replace_sections(build_sections(
             unmerged, untracked, unstaged, staged, overview,

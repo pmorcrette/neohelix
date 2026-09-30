@@ -629,11 +629,10 @@ source is reachable again.*
   LaTeX fragment preview was checked and dropped from the roadmap: it needs
   a terminal graphics protocol, and Helix has none — the only `kitty` in the
   tree is the keyboard protocol. Adding one is a `helix-tui` undertaking, not
-  Org work. **Pretty entities are within reach now**: since Task 1.4 a fold
-  hides a range and draws a marker in its place, so `\alpha` can fold to `α`.
-  What is missing is a marker *per fold*; today it is one string on
-  `TextFormat` for the whole buffer. That is a small, contained change to the
-  fold model, and it is the thing to do before this item rather than after.
+  Org work. Pretty entities were within reach: since Task 1.4 a fold hides a
+  range and draws a marker in its place, so `\alpha` could fold to `α` once
+  there was a marker *per fold* rather than one string on `TextFormat` for
+  the whole buffer — which the conceals above provide.
 
 ### Task 1.15: Source Blocks as Code
 
@@ -2521,7 +2520,9 @@ whether the fork wants them before starting, as each is a project of its own.
   optionally after `(who)`, so the word in prose is not a to-do; the
   comments are grouped by keyword, in the configured order. `RET` visits
   one at its line, `'` `T` jumps to the section, and a list longer than ten
-  starts folded. `[editor.magit]` has `todos` (on), `todo-keywords` and
+  starts folded. The scan reads every file (about 70 ms here), so it runs
+  when the status opens and the menu's `g` refreshes it, not after every
+  stage or commit. `[editor.magit]` has `todos` (on), `todo-keywords` and
   `todos-max` (200; the title says when more were left out). Forge stays
   undecided.
 

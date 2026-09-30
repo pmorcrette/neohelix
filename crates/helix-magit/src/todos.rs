@@ -6,8 +6,8 @@
 //! is not a to-do. The search is `git grep`, over the tracked files and the
 //! untracked ones git does not ignore.
 
+use crate::command::GitCommand;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// The keywords looked for when none are configured.
 pub const DEFAULT_KEYWORDS: [&str; 5] = ["TODO", "FIXME", "HACK", "XXX", "BUG"];
@@ -20,7 +20,8 @@ pub struct Todo {
     /// One-based.
     pub line: usize,
     pub keyword: String,
-    /// What follows the keyword, trimmed of comment closers.
+    /// What follows the keyword, trimmed of comment closers, and cut to
+    /// [`TEXT_MAX`] characters.
     pub text: String,
 }
 
@@ -86,7 +87,8 @@ fn find_keyword<'a>(content: &str, keywords: &[&'a str]) -> Option<(usize, &'a s
     for (rank, keyword) in keywords.iter().enumerate() {
         let mut from = 0;
         while let Some(at) = content[from..].find(keyword).map(|at| from + at) {
-            from = at + keyword.len();
+            // One character on, so an overlapping occurrence is still seen.
+            from = at + content[at..].chars().next().map_or(1, char::len_utf8);
             if word(content[..at].chars().next_back()) {
                 continue;
             }
@@ -109,13 +111,20 @@ fn find_keyword<'a>(content: &str, keywords: &[&'a str]) -> Option<(usize, &'a s
     best.map(|(_, rank, keyword, text)| (rank, keyword, text))
 }
 
+/// The longest comment text kept: a minified line would otherwise carry
+/// its whole tail into the status buffer.
+pub const TEXT_MAX: usize = 200;
+
 /// The comment's text without the closers of block comments.
 fn clean(text: &str) -> String {
     let mut text = text.trim();
     for closer in ["*/", "-->", "#}", "%}", "*)"] {
         text = text.strip_suffix(closer).unwrap_or(text).trim_end();
     }
-    text.to_string()
+    match text.char_indices().nth(TEXT_MAX) {
+        Some((cut, _)) => format!("{}…", &text[..cut]),
+        None => text.to_string(),
+    }
 }
 
 /// The keyword comments of the repository at `workdir`, at most `limit` of
@@ -124,28 +133,28 @@ pub fn scan(workdir: &Path, keywords: &[String], limit: usize) -> (Vec<Todo>, bo
     let Some(pattern) = pattern(keywords) else {
         return (Vec::new(), false);
     };
-    let output = Command::new("git")
-        .args([
-            "grep",
-            "-n",
-            "-I",
-            "--null",
-            "--no-color",
-            "--untracked",
-            "--exclude-standard",
-            "-E",
-            "-e",
-            &pattern,
-        ])
-        .current_dir(workdir)
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output();
-    // git grep exits with 1 when nothing matches.
+    let args = [
+        "grep",
+        "-n",
+        "-I",
+        "--null",
+        "--no-color",
+        "--untracked",
+        "--exclude-standard",
+        "-E",
+        "-e",
+        &pattern,
+    ];
+    let output = GitCommand::new(workdir, args.map(String::from).to_vec()).run();
+    // git grep exits with 1 when nothing matches, and outside a repository
+    // with 128; either way there is nothing to list.
     let Ok(output) = output else {
         return (Vec::new(), false);
     };
-    let mut todos = parse(&String::from_utf8_lossy(&output.stdout), keywords);
+    let mut todos = parse(&output.stdout, keywords);
+    // A path git printed with a newline in it was split across two lines
+    // and read wrong; what does not exist cannot be visited.
+    todos.retain(|todo| workdir.join(&todo.path).exists());
     let more = todos.len() > limit;
     todos.truncate(limit);
     (todos, more)
@@ -154,6 +163,7 @@ pub fn scan(workdir: &Path, keywords: &[String], limit: usize) -> (Vec<Todo>, bo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     fn keywords() -> Vec<String> {
         DEFAULT_KEYWORDS.iter().map(|k| k.to_string()).collect()
@@ -189,6 +199,19 @@ mod tests {
                 ("src/b.rs".to_string(), 7, "XXX", ""),
             ]
         );
+    }
+
+    #[test]
+    fn overlapping_keywords_are_found_and_long_text_is_cut() {
+        let hyphen = vec!["A-A".to_string()];
+        let todos = parse("f\x001\x00x A-A-A: ov\n", &hyphen);
+        assert_eq!(todos.len(), 1, "the second, overlapping A-A");
+        assert_eq!(todos[0].text, "ov");
+
+        let long = format!("f\x001\x00// TODO: {}\n", "é".repeat(TEXT_MAX + 5));
+        let todos = parse(&long, &keywords());
+        assert_eq!(todos[0].text.chars().count(), TEXT_MAX + 1);
+        assert!(todos[0].text.ends_with('…'));
     }
 
     #[test]

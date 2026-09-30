@@ -768,7 +768,7 @@ Set options for the Magit client (`<space>m`).
 |`repository-depth` | How many directory levels below each of those directories the list searches | `2` |
 |`todos` | Show the status buffer's `TODOs` section, as magit-todos does | `true` |
 |`todo-keywords` | The keywords it looks for, each followed by a colon | `["TODO", "FIXME", "HACK", "XXX", "BUG"]` |
-|`todos-max` | The most comments it lists | `200` |
+|`todos-max` | The most comments it lists; `0` turns the section off | `200` |
 
 Example
 
@@ -800,7 +800,9 @@ ones git does not ignore. A keyword counts only when a colon follows it,
 optionally after a name in parentheses (`TODO:`, `FIXME(ana):`), so the word
 in prose is not listed. The comments are grouped by keyword, in the order of
 `todo-keywords`. `RET` visits one at its line, `'` then `T` jumps to the
-section, and more than ten start folded.
+section, and it starts folded when the status opens on more than ten. The
+comments are read when the status opens, not after each action in it: the
+menu's `g` (Refresh) reads them again.
 
 ```toml
 [editor.magit]
