@@ -68,6 +68,9 @@ enum SectionKind {
     Cherries,
     /// The repository list.
     Repositories,
+    /// The `TODO:`-like comments of the repository, as magit-todos lists
+    /// them.
+    Todos,
 }
 
 impl SectionKind {
@@ -426,7 +429,66 @@ fn build_sections(
             "Skipped in the working tree".to_string(),
             path_items(&overview.skipped),
         ),
+        {
+            let todos = &overview.todos;
+            Section {
+                kind: SectionKind::Todos,
+                // The count follows, as for every section.
+                title: if todos.more {
+                    "TODOs — more not listed".to_string()
+                } else {
+                    "TODOs".to_string()
+                },
+                files: Vec::new(),
+                items: todos
+                    .items
+                    .iter()
+                    .map(|todo| Item {
+                        label: format!("{}:{}", todo.path.display(), todo.line),
+                        text: format!("{} {}", todo.keyword, todo.text)
+                            .trim_end()
+                            .to_string(),
+                        path: Some(todo.path.clone()),
+                        ..Item::default()
+                    })
+                    .collect(),
+                // Long lists start folded, as magit-todos' do.
+                folded: todos.items.len() > TODOS_UNFOLDED,
+            }
+        },
     ]
+}
+
+/// How many comments the TODO section shows before it starts folded.
+const TODOS_UNFOLDED: usize = 10;
+
+/// What the status buffer's TODO section looks for: the keywords and the
+/// most it lists, or `None` when it is off. Set from the configuration, as
+/// the status is read where the editor is not at hand.
+static TODO_SETTINGS: std::sync::RwLock<Option<(Vec<String>, usize)>> =
+    std::sync::RwLock::new(None);
+
+/// Takes the TODO section's settings from the configuration.
+pub fn set_todo_settings(config: &helix_view::editor::MagitConfig) {
+    let settings = config
+        .todos
+        .then(|| (config.todo_keywords.clone(), config.todos_max));
+    if let Ok(mut current) = TODO_SETTINGS.write() {
+        *current = settings;
+    }
+}
+
+/// The repository's keyword comments, when the section is on.
+fn read_todos(workdir: &Path) -> helix_magit::status::Todos {
+    let settings = TODO_SETTINGS
+        .read()
+        .ok()
+        .and_then(|settings| settings.clone());
+    let Some((keywords, max)) = settings else {
+        return Default::default();
+    };
+    let (items, more) = helix_magit::todos::scan(workdir, &keywords, max);
+    helix_magit::status::Todos { items, more }
 }
 
 /// The new-side line number of line `index` of a hunk. A deleted line is
@@ -1147,7 +1209,8 @@ impl DiffView {
             self.replace_sections(sections);
             return Ok(());
         }
-        let overview = helix_magit::status::read(repository.workdir());
+        let mut overview = helix_magit::status::read(repository.workdir());
+        overview.todos = read_todos(repository.workdir());
 
         self.head = repository.head_description();
         self.header = header_lines(&overview);
@@ -1825,6 +1888,9 @@ impl DiffView {
             (SectionKind::Assumed | SectionKind::Skipped, _) => {
                 return Some(Err("A file, not a commit".into()))
             }
+            (SectionKind::Todos, _) => {
+                return Some(Err("A comment, not a commit (RET visits it)".into()))
+            }
             _ if label.is_empty() => return Some(Err("This step is not a commit".into())),
             (SectionKind::Stashes, false) => (&["stash", "apply"], "Apply stash"),
             (SectionKind::Stashes, true) => {
@@ -1872,6 +1938,10 @@ impl DiffView {
                 SectionKind::Submodules | SectionKind::Assumed | SectionKind::Skipped => {
                     return Some((item.label.clone(), AskKind::Path))
                 }
+                SectionKind::Todos => {
+                    let path = item.path.as_ref()?.display().to_string();
+                    return Some((path, AskKind::Path));
+                }
                 _ => return None,
             };
             return Some((item.label.clone(), kind));
@@ -1906,6 +1976,7 @@ impl DiffView {
                 | SectionKind::Repositories
                 | SectionKind::Assumed
                 | SectionKind::Skipped
+                | SectionKind::Todos
         ))
         .then(|| section.items.get(item).map(|item| item.label.clone()))?
         .filter(|label| !label.is_empty())
@@ -1926,6 +1997,7 @@ impl DiffView {
             JumpTarget::Recent => SectionKind::Recent,
             JumpTarget::Worktrees => SectionKind::Worktrees,
             JumpTarget::Submodules => SectionKind::Submodules,
+            JumpTarget::Todos => SectionKind::Todos,
         };
         let Some(row) = self.rows.iter().position(
             |row| matches!(row, Row::Section { section } if self.sections[*section].kind == kind),
@@ -2046,6 +2118,15 @@ impl DiffView {
             let section = &self.sections[section];
             if section.kind == SectionKind::Unmerged {
                 return Ok((PathBuf::from(&section.items[item].text), 1));
+            }
+            if section.kind == SectionKind::Todos {
+                let item = &section.items[item];
+                let line = item
+                    .label
+                    .rsplit_once(':')
+                    .and_then(|(_, line)| line.parse().ok())
+                    .unwrap_or(1);
+                return Ok((item.path.clone().unwrap_or_default(), line));
             }
         }
         let file = self
@@ -3591,6 +3672,54 @@ mod tests {
         );
         view.cursor = 0;
         assert_eq!(view.revision_at_cursor(), None);
+    }
+
+    #[test]
+    fn todos_are_listed_last_and_visited_at_their_line() {
+        use helix_magit::todos::Todo;
+        let todo = |path: &str, line, keyword: &str, text: &str| Todo {
+            path: PathBuf::from(path),
+            line,
+            keyword: keyword.to_string(),
+            text: text.to_string(),
+        };
+        let overview = Overview {
+            todos: helix_magit::status::Todos {
+                items: vec![
+                    todo("src/a.rs", 12, "TODO", "tidy"),
+                    todo("src/b:c.rs", 3, "FIXME", ""),
+                ],
+                more: false,
+            },
+            ..Overview::default()
+        };
+        let mut view = make_full_view(Vec::new(), Vec::new(), Vec::new(), Vec::new(), &overview);
+        let section = view.sections.last().unwrap();
+        assert_eq!(section.title, "TODOs");
+        assert_eq!(section.items[0].text, "TODO tidy");
+        assert!(!section.folded);
+
+        assert!(view.jump_to(helix_magit::transient::JumpTarget::Todos));
+        view.cursor += 2;
+        assert_eq!(view.visit_target(), Ok((PathBuf::from("src/b:c.rs"), 3)));
+        assert_eq!(view.revision_at_cursor(), None);
+        assert_eq!(
+            view.target_at_cursor(),
+            Some(("src/b:c.rs".to_string(), AskKind::Path))
+        );
+
+        // A long list starts folded, and says when it was cut.
+        let many = Overview {
+            todos: helix_magit::status::Todos {
+                items: (1..=11).map(|line| todo("x.rs", line, "XXX", "")).collect(),
+                more: true,
+            },
+            ..Overview::default()
+        };
+        let view = make_full_view(Vec::new(), Vec::new(), Vec::new(), Vec::new(), &many);
+        let section = view.sections.last().unwrap();
+        assert_eq!(section.title, "TODOs — more not listed");
+        assert!(section.folded);
     }
 
     #[test]

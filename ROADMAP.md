@@ -449,11 +449,11 @@ and internal targets exist.
 - [x] `org-id` proper: create an ID on demand for the entry at point, rather
       than requiring the user to type a drawer by hand. Task 1.8's
       `roam-node-insert` needs this underneath it.
-- [ ] Inline preview of images. Blocked for the same reason as Task 1.14's
-      LaTeX preview: this wants a terminal graphics protocol Helix does not
-      have, and the capability has to exist before the feature can.
 - [x] Links drawn as their descriptions (Org's `org-link-descriptive`),
-      split out of the item above once conceals existed: see Task 1.14.
+      once conceals existed: see Task 1.14.
+
+Inline preview of images was dropped from the roadmap: it needs a terminal
+graphics protocol Helix does not have, as Task 1.14's LaTeX preview does.
 
 ### Task 1.11: Properties, Drawers and Logging
 
@@ -603,9 +603,7 @@ source is reachable again.*
   beside it declares, because the bibliography lives with the paper. Only the
   keys are read from BibTeX — a full parser is a different piece of work.
 
-- [ ] LaTeX fragment preview, which needs an image mechanism Helix does not
-      currently have.
-- [x] Pretty entities, split out of the item above once checked (below).
+- [x] Pretty entities (below).
 
   *Done.* Not with a marker per fold, as first planned below, but with
   *conceals* beside the folds: `helix_core::conceal` holds single-line
@@ -628,8 +626,8 @@ source is reachable again.*
   editor, including a bug found there: a cursor on a line's newline
   revealed the next line too, because a selection's end is exclusive.
 
-  Checked, and the two answers differ. **Preview is out of reach**: it needs a
-  terminal graphics protocol, and Helix has none — the only `kitty` in the
+  LaTeX fragment preview was checked and dropped from the roadmap: it needs
+  a terminal graphics protocol, and Helix has none — the only `kitty` in the
   tree is the keyboard protocol. Adding one is a `helix-tui` undertaking, not
   Org work. **Pretty entities are within reach now**: since Task 1.4 a fold
   hides a range and draws a marker in its place, so `\alpha` can fold to `α`.
@@ -2514,8 +2512,18 @@ whether the fork wants them before starting, as each is a project of its own.
 
 - [ ] Forge: pull requests and issues from GitHub and GitLab — list, show,
       check out, create, comment, review.
-- [ ] magit-todos: a status section listing the `TODO`, `FIXME` and similar
+- [x] magit-todos: a status section listing the `TODO`, `FIXME` and similar
       comments in the repository.
+
+  *Done.* A `TODOs` section at the bottom of the status buffer, filled by
+  `git grep` over the tracked files and the untracked ones git does not
+  ignore. As in magit-todos, a keyword counts only when a colon follows it,
+  optionally after `(who)`, so the word in prose is not a to-do; the
+  comments are grouped by keyword, in the configured order. `RET` visits
+  one at its line, `'` `T` jumps to the section, and a list longer than ten
+  starts folded. `[editor.magit]` has `todos` (on), `todo-keywords` and
+  `todos-max` (200; the title says when more were left out). Forge stays
+  undecided.
 
 ---
 

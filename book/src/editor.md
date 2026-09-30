@@ -766,6 +766,9 @@ Set options for the Magit client (`<space>m`).
 |`wip` | Save uncommitted work to hidden work-in-progress refs (`refs/wip/…`) after writing a file in a repository, and before a command that can lose it | `false` |
 |`repository-directories` | Where the repository list (`R` in the Magit menu) looks for repositories; `~` is expanded | the current working directory |
 |`repository-depth` | How many directory levels below each of those directories the list searches | `2` |
+|`todos` | Show the status buffer's `TODOs` section, as magit-todos does | `true` |
+|`todo-keywords` | The keywords it looks for, each followed by a colon | `["TODO", "FIXME", "HACK", "XXX", "BUG"]` |
+|`todos-max` | The most comments it lists | `200` |
 
 Example
 
@@ -789,6 +792,19 @@ another's working tree is not listed, and hidden directories are skipped.
 [editor.magit]
 repository-directories = ["~/src", "~/work"]
 repository-depth = 2
+```
+
+The status buffer's `TODOs` section lists the keyword comments of the
+repository, found with `git grep` in the tracked files and in the untracked
+ones git does not ignore. A keyword counts only when a colon follows it,
+optionally after a name in parentheses (`TODO:`, `FIXME(ana):`), so the word
+in prose is not listed. The comments are grouped by keyword, in the order of
+`todo-keywords`. `RET` visits one at its line, `'` then `T` jumps to the
+section, and more than ten start folded.
+
+```toml
+[editor.magit]
+todo-keywords = ["TODO", "FIXME", "NOTE"]
 ```
 
 ### `[editor.auto-pairs]` Section
