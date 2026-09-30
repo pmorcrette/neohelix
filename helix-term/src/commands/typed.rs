@@ -2566,6 +2566,75 @@ roam_buffer_command!(org_table_delete_row, crate::roam::table_delete_row);
 roam_buffer_command!(org_table_insert_column, crate::roam::table_insert_column);
 roam_buffer_command!(org_table_delete_column, crate::roam::table_delete_column);
 roam_buffer_command!(org_table_next_cell, crate::roam::table_next_cell);
+roam_buffer_command!(orgtbl_send_table, crate::roam::orgtbl_send_table);
+roam_buffer_command!(org_table_edit_field, crate::roam::table_edit_field);
+roam_buffer_command!(org_plot, crate::roam::plot);
+
+/// `:orgtbl-insert-radio-table NAME`.
+fn orgtbl_insert_radio_table(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        crate::roam::orgtbl_insert_radio_table(cx.editor, &args[0]);
+    }
+    Ok(())
+}
+
+/// `:org-table-import FILE [SEPARATOR]`.
+fn org_table_import(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        crate::roam::table_import(cx.editor, &args[0], args.get(1));
+    }
+    Ok(())
+}
+
+/// `:org-table-export [FILE] [FORMAT]`.
+fn org_table_export(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        crate::roam::table_export(cx.editor, args.first(), args.get(1));
+    }
+    Ok(())
+}
+
+/// `:org-table-convert-region [SEPARATOR]`.
+fn org_table_convert_region(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        crate::roam::table_convert_region(cx.editor, args.first());
+    }
+    Ok(())
+}
+
+/// `:org-table-create [COLUMNSxROWS]`.
+fn org_table_create(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event == PromptEvent::Validate {
+        crate::roam::table_create(cx.editor, args.first());
+    }
+    Ok(())
+}
+
+/// The table translators, for completing `:org-table-export`'s format.
+const TABLE_FORMATS: [&str; 7] = [
+    "csv", "tsv", "latex", "html", "texinfo", "orgtbl", "generic",
+];
+
 roam_buffer_command!(org_table_previous_cell, crate::roam::table_previous_cell);
 roam_buffer_command!(org_table_recalculate, crate::roam::table_recalculate);
 roam_buffer_command!(org_table_iterate, crate::roam::table_iterate);
@@ -6236,6 +6305,100 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &["org-table-recalc-all"],
         doc: "Recalculate every Org table in the buffer that has a #+TBLFM: line.",
         fun: org_table_recalculate_all,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "orgtbl-send-table",
+        aliases: &["orgtbl-send"],
+        doc: "Send the table at the cursor, under its #+ORGTBL: SEND line, to the lines between its BEGIN and END RECEIVE ORGTBL markers.",
+        fun: orgtbl_send_table,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "orgtbl-insert-radio-table",
+        aliases: &[],
+        doc: "Insert a radio table named NAME for the buffer's language: the receiving markers and a table to send.",
+        fun: orgtbl_insert_radio_table,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (1, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-import",
+        aliases: &[],
+        doc: "Insert a CSV or TSV file as a table at the cursor; the separator (csv, tsv, space or a character) is guessed unless given.",
+        fun: org_table_import,
+        completer: CommandCompleter::positional(&[completers::filename, completers::none]),
+        signature: Signature {
+            positionals: (1, Some(2)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-export",
+        aliases: &[],
+        doc: "Write the table at the cursor to FILE (else the entry's TABLE_EXPORT_FILE) as FORMAT: csv, tsv, latex, html, texinfo, orgtbl, generic, or a full orgtbl-to-… spec (else TABLE_EXPORT_FORMAT, else the extension's).",
+        fun: org_table_export,
+        completer: CommandCompleter::positional(&[completers::filename, |_editor, input| {
+            TABLE_FORMATS
+                .iter()
+                .filter(|name| name.starts_with(input))
+                .map(|name| ((0..), (*name).into()))
+                .collect()
+        }]),
+        signature: Signature {
+            positionals: (0, Some(2)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-convert-region",
+        aliases: &["org-table-create-or-convert-from-region"],
+        doc: "Turn the selected lines into a table, split on SEPARATOR (csv, tsv, space or a character), guessed unless given.",
+        fun: org_table_convert_region,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-create",
+        aliases: &[],
+        doc: "Insert an empty table of COLUMNSxROWS, 5x2 by default.",
+        fun: org_table_create,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-table-edit-field",
+        aliases: &[],
+        doc: "Edit the table field at the cursor in a buffer of its own; writing it puts the field back.",
+        fun: org_table_edit_field,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "org-plot",
+        aliases: &["org-plot-gnuplot"],
+        doc: "Plot the table at the cursor through gnuplot, as its #+PLOT: lines say: into their file:, or drawn in text in a scratch buffer.",
+        fun: org_plot,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

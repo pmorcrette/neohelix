@@ -269,7 +269,7 @@ pub fn columnview(text: &str, block: &DynamicBlock) -> Vec<String> {
         rows,
         start: 0,
         end: 0,
-        indent: 0,
+        prefix: String::new(),
     }
     .render()
 }

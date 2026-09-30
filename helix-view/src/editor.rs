@@ -537,6 +537,9 @@ pub struct OrgSrcEdit {
     pub begin_line: usize,
     /// The block's body as last written back.
     pub body: String,
+    /// For a table field rather than a block (Org's ``C-c ` ``): its column,
+    /// from zero; `begin_line` is then its row.
+    pub field: Option<usize>,
 }
 
 /// What the panel shows in its unlinked-references section.

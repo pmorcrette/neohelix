@@ -559,6 +559,70 @@ the call. `:org-babel-detangle`, in a file tangled with `:comments link`,
 writes its edited code back into the blocks it came from; a block whose
 noweb references were expanded is left as it is.
 
+#### Tables
+
+The table commands (`:org-table-align`, `:org-table-recalculate`, …) work
+in any buffer, and on a table behind line comments too (`# | a | b |`,
+`// | a | b |`), which is how a table lives in another language's file.
+
+| Command | Does |
+|--|--|
+|`:org-table-create [5x2]` | Insert an empty table, a rule under its first row |
+|`:org-table-convert-region [sep]` | Turn the selected lines into a table; the separator (`csv`, `tsv`, `space` or a character) is guessed unless given |
+|`:org-table-import file [sep]` | Insert a CSV or TSV file as a table (quoted fields and all) |
+|`:org-table-export [file] [format]` | Write the table to a file; without arguments, the entry's `TABLE_EXPORT_FILE` and `TABLE_EXPORT_FORMAT`, else the file's extension, else tab-separated |
+|`:org-table-edit-field` | Edit a long field in a buffer of its own; `:w` puts it back on one line |
+|`:orgtbl-insert-radio-table name` | Insert a radio table for the buffer's language |
+|`:orgtbl-send-table` | Send the table to where it is received |
+|`:org-plot` | Plot the table through gnuplot |
+
+A radio table sends a table into text of another syntax: the translated
+table replaces whatever is between the markers, which can be in any comment.
+
+```text
+<!-- BEGIN RECEIVE ORGTBL prices -->
+<!-- END RECEIVE ORGTBL prices -->
+<!--
+#+ORGTBL: SEND prices orgtbl-to-html
+| Item | Price |
+|------+-------|
+| tea  |   2.5 |
+-->
+```
+
+The translators are `orgtbl-to-latex`, `-html`, `-csv`, `-tsv`, `-texinfo`,
+`-orgtbl` and `-generic`, with `:splice t` (the rows alone), `:skip n` (table
+lines left out from the top), `:skipcols (1 3)`, `:hline "…"` (`nil` for none),
+and `:lstart`, `:lend`, `:sep`, `:tstart`, `:tend`. Cells are escaped for the
+target, not exported: `*bold*` stays as written. Exporting a table uses the same
+translators.
+
+`:org-plot` reads the `#+PLOT:` lines above the table: `title:"…"`, `ind:1`
+(the column along x; a column of words labels the ticks), `deps:(2 3)` (the
+columns plotted, every column of numbers by default), `type:2d`, `3d` or
+`grid`, `with:lines` (or `histograms`, `points`, …), `labels:("a" "b")`,
+`xlabel:` and `ylabel:`, `timefmt:"%Y-%m-%d"`, `set:"yrange [0:]"` (repeatable)
+and `file:"plot.svg"` (png, svg, pdf, jpg, gif, eps). Without a `file:` the plot
+is drawn in text in a scratch buffer. gnuplot must be installed, and the
+workspace trusted, since `set:` lines are gnuplot's to run.
+
+Formulas (`#+TBLFM:`) are Calc's, as far as a table goes:
+
+| Written | Is |
+|--|--|
+|`$3=$2-$1`, `$4=$1+7`, `<2026-10-01>` | Dates: a timestamp in a field or a formula; two subtract to days, and days move one |
+|`date(2026, 1, 31)`, `now()`, `year($1)`, `month`, `day`, `weekday`, `hour`, `minute`, `second`, `incmonth($1, 1)`, `incyear` | Making and taking apart dates |
+|`$3=$2-$1;T`, `;U`, `;t` | Durations: `12:30` and `12:30:45` are times, written back as `02:30:00`, `02:30`, or hours (`2.50`) |
+|`12 km`, `$1/$2`, `uconvert($1, mph)`, `ubase`, `uremove`, `uextract` | Units, kept through arithmetic: a sum takes the left side's units |
+|`x + x`, `($1)^2`, `deriv($1, x)`, `integ`, `subst($1, x, 2)` | Other names are variables, collected and expanded as polynomials |
+|`if($1 > 50, 1, 0)`, `==`, `!=`, `<`, `<=`, `&&`, `\|\|`, `!` | Conditions; a comparison is 1 or 0 |
+|`sin`, `cos`, `tan`, `arcsin`, … | In degrees, as Calc's default is; `;R` for radians |
+|`@#`, `$#` | The row's and the column's number |
+|`'(concat $1 " " $2)` | Emacs Lisp: fields go in as strings, as numbers with `;N`, as written with `;L`; the string and number functions (`concat`, `substring`, `format`, `upcase`, `+`, `apply`, `if`, …) |
+
+As in Org, a word in a field is a variable: `$2=$1*2` on `two` gives `2 two`.
+The unit `h` is the hour here, where Calc makes it Planck's constant.
+
 ### `[editor.integrated-terminal]` Section
 
 Set options for the integrated terminal (`:terminal`, `<space>t`).

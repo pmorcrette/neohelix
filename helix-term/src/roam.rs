@@ -3473,6 +3473,382 @@ pub fn table_recalculate_all(editor: &mut Editor) {
     }
 }
 
+// ── Tables, continued: radio tables, CSV, fields, plots ──────────────────
+
+/// The directory relative paths are read from: the buffer's file's, or the
+/// working directory.
+fn buffer_dir(editor: &Editor) -> PathBuf {
+    doc!(editor)
+        .path()
+        .and_then(|path| path.parent())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(helix_stdx::env::current_working_dir)
+}
+
+/// A path as given, from the buffer's directory when relative.
+fn resolve_path(editor: &Editor, path: &str) -> PathBuf {
+    let path = helix_stdx::path::expand_tilde(Path::new(path)).into_owned();
+    if path.is_absolute() {
+        path
+    } else {
+        buffer_dir(editor).join(path)
+    }
+}
+
+/// Sends the table at the cursor to its receivers, as Org's
+/// `orgtbl-send-table`: the lines between `BEGIN RECEIVE ORGTBL name` and
+/// `END RECEIVE ORGTBL name`.
+pub fn orgtbl_send_table(editor: &mut Editor) {
+    let (text, line) = text_and_line(editor);
+    match helix_roam::orgtbl::send(&text, line) {
+        Ok(sent) => {
+            let places = if sent.receivers == 1 {
+                "place"
+            } else {
+                "places"
+            };
+            apply_to_buffer(
+                editor,
+                format!("Sent {} to {} {places}", sent.name, sent.receivers),
+                sent.text,
+            );
+        }
+        Err(err) => editor.set_error(err),
+    }
+}
+
+/// Inserts a radio table's skeleton at the cursor's line, for the buffer's
+/// language: the receiving markers and the table to send.
+pub fn orgtbl_insert_radio_table(editor: &mut Editor, name: &str) {
+    let language = doc!(editor).language_name().unwrap_or("").to_string();
+    let skeleton = helix_roam::orgtbl::radio_skeleton(name, &language);
+    insert_at_line(editor, &skeleton, "Inserted a radio table");
+}
+
+/// Inserts `text` before the cursor's line.
+fn insert_at_line(editor: &mut Editor, text: &str, done: &str) {
+    let (buffer, line) = text_and_line(editor);
+    let mut lines: Vec<&str> = buffer.lines().collect();
+    let at = line.min(lines.len());
+    let inserted: Vec<&str> = text.lines().collect();
+    lines.splice(at..at, inserted);
+    let mut after = lines.join("\n");
+    if buffer.ends_with('\n') || buffer.is_empty() {
+        after.push('\n');
+    }
+    apply_to_buffer(editor, done.to_string(), after);
+}
+
+/// A separator named by an argument: `csv`, `tsv`, `space` or a character.
+fn separator_arg(arg: Option<&str>) -> Result<Option<char>, String> {
+    Ok(match arg {
+        None => None,
+        Some("csv" | "comma") => Some(','),
+        Some("tsv" | "tab") => Some('\t'),
+        Some("space" | "whitespace") => None,
+        Some(other) => {
+            let mut chars = other.chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) => Some(c),
+                _ => {
+                    return Err(format!(
+                        "{other:?} is not a separator: csv, tsv, space or one character"
+                    ))
+                }
+            }
+        }
+    })
+}
+
+/// Inserts a CSV or TSV file as a table at the cursor's line, as Org's
+/// `org-table-import`.
+pub fn table_import(editor: &mut Editor, file: &str, separator: Option<&str>) {
+    let separator = match separator_arg(separator) {
+        Ok(separator) => separator,
+        Err(err) => return editor.set_error(err),
+    };
+    let path = resolve_path(editor, file);
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(err) => return editor.set_error(format!("Could not read {}: {err}", path.display())),
+    };
+    let rows = helix_roam::table::parse_delimited(&content, separator);
+    if rows.is_empty() {
+        return editor.set_error(format!("{} holds no rows", path.display()));
+    }
+    let table = helix_roam::table::table_text(&rows, "");
+    insert_at_line(
+        editor,
+        &table,
+        &format!("Imported {} rows from {}", rows.len(), path.display()),
+    );
+}
+
+/// Turns the selected lines into a table, or makes an empty one, as Org's
+/// `org-table-create-or-convert-from-region`.
+pub fn table_convert_region(editor: &mut Editor, separator: Option<&str>) {
+    let separator = match separator_arg(separator) {
+        Ok(separator) => separator,
+        Err(err) => return editor.set_error(err),
+    };
+    let (view, doc) = current_ref!(editor);
+    let text = doc.text();
+    let range = doc.selection(view.id).primary();
+    let (first, last) = range.line_range(text.slice(..));
+    let buffer = text.to_string();
+    let lines: Vec<&str> = buffer.lines().collect();
+    let region = lines[first.min(lines.len())..(last + 1).min(lines.len())].join("\n");
+    let rows = helix_roam::table::parse_delimited(&region, separator);
+    if rows.is_empty() {
+        return editor.set_error("Nothing to turn into a table: select the lines first");
+    }
+    let table = helix_roam::table::table_text(&rows, "");
+    let mut out: Vec<&str> = lines.clone();
+    let end = (last + 1).min(out.len());
+    out.splice(first.min(end)..end, table.lines());
+    let mut after = out.join("\n");
+    if buffer.ends_with('\n') {
+        after.push('\n');
+    }
+    apply_to_buffer(
+        editor,
+        format!("Made a table of {} rows", rows.len()),
+        after,
+    );
+}
+
+/// Inserts an empty table, `COLUMNSxROWS` (5x2 by default), as Org's
+/// `org-table-create`.
+pub fn table_create(editor: &mut Editor, size: Option<&str>) {
+    let (columns, rows) = match size {
+        None => (5, 2),
+        Some(size) => match size
+            .split_once(['x', 'X'])
+            .and_then(|(c, r)| Some((c.parse().ok()?, r.parse().ok()?)))
+        {
+            Some(size) => size,
+            None => {
+                return editor.set_error(format!("{size:?} is not a size: COLUMNSxROWS, e.g. 5x2"))
+            }
+        },
+    };
+    let table = helix_roam::table::create(columns, rows, "");
+    insert_at_line(editor, &table, "Inserted a table");
+}
+
+/// Writes the table at the cursor to a file, as Org's `org-table-export`:
+/// the file and format from the arguments, else from the entry's
+/// `TABLE_EXPORT_FILE` and `TABLE_EXPORT_FORMAT`, else from the file's
+/// extension; tab-separated when nothing says.
+pub fn table_export(editor: &mut Editor, file: Option<&str>, format: Option<&str>) {
+    let (text, line) = text_and_line(editor);
+    let Some(table) = helix_roam::table::parse_table(&text, line) else {
+        return editor.set_error("No Org table at the cursor");
+    };
+    let property = |name: &str| helix_roam::restructure::property_value(&text, line, name);
+    let Some(file) = file
+        .map(str::to_string)
+        .or_else(|| property("TABLE_EXPORT_FILE"))
+    else {
+        return editor.set_error("Name a file, or give the entry a TABLE_EXPORT_FILE property");
+    };
+    let path = resolve_path(editor, &file);
+    let spec = format
+        .map(|format| {
+            if format.starts_with("orgtbl-to-") {
+                format.to_string()
+            } else {
+                format!("orgtbl-to-{format}")
+            }
+        })
+        .or_else(|| property("TABLE_EXPORT_FORMAT"))
+        .or_else(|| {
+            let extension = path.extension()?.to_string_lossy().into_owned();
+            helix_roam::orgtbl::Kind::from_extension(&extension)?;
+            Some(format!(
+                "orgtbl-to-{}",
+                if extension == "txt" {
+                    "tsv"
+                } else {
+                    &extension
+                }
+            ))
+        })
+        .unwrap_or_else(|| "orgtbl-to-tsv".to_string());
+    let translator = match helix_roam::orgtbl::Translator::parse(&spec) {
+        Ok(translator) => translator,
+        Err(err) => return editor.set_error(err),
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::write(&path, translator.translate(&table)) {
+        Ok(()) => editor.set_status(format!("Exported the table to {}", path.display())),
+        Err(err) => editor.set_error(format!("Could not write {}: {err}", path.display())),
+    }
+}
+
+/// Opens the field at the cursor in a buffer of its own, for a field too
+/// long to edit in place, as Org's ``C-c ` ``: writing the buffer puts it
+/// back, on one line, and realigns the table.
+pub fn table_edit_field(editor: &mut Editor) {
+    let (text, line) = text_and_line(editor);
+    let column = cursor_column(editor);
+    let Some(field) = helix_roam::table::field_at(&text, line, column) else {
+        return editor.set_error("Not in a table field");
+    };
+    let org_doc = doc!(editor).id();
+
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join("neohelix-src").join(format!(
+        "{}-field-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let path = dir.join("field.txt");
+    let body = format!("{field}\n");
+    if let Err(err) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&path, &body)) {
+        return editor.set_error(format!("Could not create {}: {err}", path.display()));
+    }
+    editor.org_src_edits.insert(
+        path.clone(),
+        helix_view::editor::OrgSrcEdit {
+            org_doc,
+            begin_line: line,
+            body: field,
+            field: Some(column),
+        },
+    );
+    if let Err(err) = editor.open(&path, helix_view::editor::Action::HorizontalSplit) {
+        editor.org_src_edits.remove(&path);
+        return editor.set_error(format!("Could not open the field: {err}"));
+    }
+    editor.set_status("Editing the field: :w puts it back, :q when done");
+}
+
+/// Puts an edited field back into its table.
+fn sync_field_edit(
+    editor: &mut Editor,
+    path: &Path,
+    edit: helix_view::editor::OrgSrcEdit,
+    column: usize,
+    content: String,
+) {
+    let Some(org) = editor.documents.get(&edit.org_doc) else {
+        return editor
+            .set_error("The buffer this field came from was closed; nothing was written back");
+    };
+    let text = org.text().to_string();
+    let Some(row) = helix_roam::table::find_field(&text, edit.begin_line, column, &edit.body)
+    else {
+        return editor.set_error(
+            "The field changed in its buffer since it was opened; nothing was written back",
+        );
+    };
+    let Some(after) = helix_roam::table::set_field(&text, row, column, &content) else {
+        return editor.set_error("The field's table is gone; nothing was written back");
+    };
+    let written = helix_roam::table::field_at(&after, row, column).unwrap_or_default();
+    if let Err(err) = apply_to_document(editor, edit.org_doc, &after) {
+        return editor.set_error(err);
+    }
+    editor.org_src_edits.insert(
+        path.to_path_buf(),
+        helix_view::editor::OrgSrcEdit {
+            org_doc: edit.org_doc,
+            begin_line: row,
+            body: written,
+            field: Some(column),
+        },
+    );
+    editor.set_status("Written back into the field");
+}
+
+/// Plots the table at the cursor through gnuplot, from the `#+PLOT:` lines
+/// above it, as Org's `org-plot/gnuplot`: into the `file:` they name, or
+/// drawn in text in a scratch buffer.
+pub fn plot(editor: &mut Editor) {
+    let doc = doc!(editor);
+    let workspace = doc.workspace_root().to_path_buf();
+    // A plot's `set:` lines are gnuplot, which can run commands.
+    let trusted = editor
+        .workspace_trust
+        .query(
+            &workspace,
+            helix_loader::workspace_trust::TrustQuery::CodeExecution,
+        )
+        .is_trusted();
+    if !trusted {
+        return editor.set_error(format!(
+            "Running gnuplot is not trusted in {}; :workspace-trust allows it",
+            workspace.display()
+        ));
+    }
+    let (text, line) = text_and_line(editor);
+    let dir = buffer_dir(editor);
+    // The drawing opens beside the buffer, in half its width, less the
+    // gutter.
+    let area = view!(editor).area;
+    let size = (
+        (area.width / 2).saturating_sub(8).max(40),
+        area.height.saturating_sub(4).max(12),
+    );
+    let plan = match helix_roam::plot::plan(&text, line, &dir, size) {
+        Ok(plan) => plan,
+        Err(err) => return editor.set_error(err),
+    };
+
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let scratch = std::env::temp_dir().join("neohelix-plot").join(format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let data = scratch.join("data.tsv");
+    let script_path = scratch.join("plot.gp");
+    let script = plan
+        .script
+        .replace("{data}", &data.to_string_lossy().replace('\'', "''"));
+    let written = std::fs::create_dir_all(&scratch)
+        .and_then(|()| std::fs::write(&data, &plan.data))
+        .and_then(|()| std::fs::write(&script_path, &script));
+    if let Err(err) = written {
+        return editor.set_error(format!("Could not write the plot's data: {err}"));
+    }
+    if let Some(parent) = plan.file.as_deref().and_then(Path::parent) {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    editor.set_status("Plotting…");
+    let file = plan.file.clone();
+    tokio::spawn(async move {
+        let command = vec![
+            "gnuplot".to_string(),
+            script_path.to_string_lossy().into_owned(),
+        ];
+        let result = run_command(&command, &dir, &[]).await;
+        let _ = std::fs::remove_dir_all(&scratch);
+        crate::job::dispatch(move |editor, _| match result {
+            Err(err) => editor.set_error(err),
+            Ok(output) if !output.status.success() => {
+                let errors = String::from_utf8_lossy(&output.stderr);
+                let first = errors.lines().rev().find(|line| !line.trim().is_empty());
+                editor.set_error(format!("gnuplot failed: {}", first.unwrap_or("no message")));
+            }
+            Ok(output) => match file {
+                Some(file) => editor.set_status(format!("Plotted into {}", file.display())),
+                None => {
+                    let drawing = String::from_utf8_lossy(&output.stdout).into_owned();
+                    editor
+                        .new_scratch_with_text(helix_view::editor::Action::VerticalSplit, &drawing);
+                    editor.set_status("Plotted; give the table's #+PLOT: a file: to keep it");
+                }
+            },
+        })
+        .await;
+    });
+}
+
 // ── Subtree clipboard, sorting and dynamic blocks ─────────────────────────
 
 /// Copies the subtree at the cursor into the editor's Org clipboard.
@@ -4441,7 +4817,7 @@ pub fn edit_src(editor: &mut Editor) {
     let existing = editor
         .org_src_edits
         .iter()
-        .find(|(_, edit)| edit.org_doc == org_doc && edit.body == body)
+        .find(|(_, edit)| edit.org_doc == org_doc && edit.field.is_none() && edit.body == body)
         .map(|(path, _)| path.clone());
     if let Some(path) = existing {
         if let Err(err) = editor.open(&path, helix_view::editor::Action::VerticalSplit) {
@@ -4478,6 +4854,7 @@ pub fn edit_src(editor: &mut Editor) {
             org_doc,
             begin_line: block.begin,
             body,
+            field: None,
         },
     );
 
@@ -4515,6 +4892,10 @@ pub fn sync_src_edit(editor: &mut Editor, path: &Path, code: String) {
     let Some(edit) = editor.org_src_edits.get(path).cloned() else {
         return;
     };
+    if let Some(column) = edit.field {
+        sync_field_edit(editor, path, edit, column, code);
+        return;
+    }
     let Some(org) = editor.documents.get(&edit.org_doc) else {
         editor
             .set_error("The Org buffer this block came from was closed; nothing was written back");
@@ -4558,6 +4939,7 @@ pub fn sync_src_edit(editor: &mut Editor, path: &Path, code: String) {
             org_doc: edit.org_doc,
             begin_line: begin,
             body: written,
+            field: None,
         },
     );
     editor.set_status("Written back into the block");
