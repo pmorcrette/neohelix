@@ -19,6 +19,7 @@ pub mod refs;
 pub mod repos;
 pub mod repository;
 pub mod status;
+pub mod todos;
 pub mod trailers;
 pub mod transient;
 pub mod wip;
