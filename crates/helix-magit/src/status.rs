@@ -140,6 +140,16 @@ pub struct Overview {
     /// leaves out whole directories that way).
     pub assumed: Vec<String>,
     pub skipped: Vec<String>,
+    /// The keyword comments of the repository, for magit-todos' section.
+    /// [`read`] leaves them empty: the caller knows the keywords.
+    pub todos: Todos,
+}
+
+/// The keyword comments listed, and whether there were more.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Todos {
+    pub items: Vec<crate::todos::Todo>,
+    pub more: bool,
 }
 
 /// A tag, and how many commits lie between it and HEAD.
@@ -441,6 +451,7 @@ pub fn read(workdir: &Path) -> Overview {
         bisect_log,
         assumed,
         skipped,
+        todos: Todos::default(),
     }
 }
 

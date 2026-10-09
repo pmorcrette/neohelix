@@ -365,10 +365,11 @@ pub enum JumpTarget {
     Recent,
     Worktrees,
     Submodules,
+    Todos,
 }
 
 impl JumpTarget {
-    pub const ALL: [(char, JumpTarget, &'static str); 10] = [
+    pub const ALL: [(char, JumpTarget, &'static str); 11] = [
         ('m', JumpTarget::Unmerged, "Unmerged"),
         ('n', JumpTarget::Untracked, "Untracked"),
         ('u', JumpTarget::Unstaged, "Unstaged"),
@@ -379,6 +380,7 @@ impl JumpTarget {
         ('r', JumpTarget::Recent, "Recent commits"),
         ('w', JumpTarget::Worktrees, "Worktrees"),
         ('o', JumpTarget::Submodules, "Submodules"),
+        ('T', JumpTarget::Todos, "TODOs"),
     ];
 }
 

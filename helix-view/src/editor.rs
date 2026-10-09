@@ -770,6 +770,13 @@ pub struct MagitConfig {
     pub repository_directories: Vec<PathBuf>,
     /// How many directory levels below each of those the list searches.
     pub repository_depth: usize,
+    /// Show the status buffer's section of `TODO:`-like comments, as
+    /// magit-todos does.
+    pub todos: bool,
+    /// The keywords that section looks for, each followed by a colon.
+    pub todo_keywords: Vec<String>,
+    /// The most comments it lists.
+    pub todos_max: usize,
 }
 
 impl Default for MagitConfig {
@@ -778,6 +785,11 @@ impl Default for MagitConfig {
             wip: false,
             repository_directories: Vec::new(),
             repository_depth: 2,
+            todos: true,
+            todo_keywords: ["TODO", "FIXME", "HACK", "XXX", "BUG"]
+                .map(String::from)
+                .to_vec(),
+            todos_max: 200,
         }
     }
 }
